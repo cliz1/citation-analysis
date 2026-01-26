@@ -4,6 +4,7 @@ from pathlib import Path
 import fitz
 import re
 import unicodedata
+from collections import defaultdict
 
 # -----------------------------
 # Config
@@ -11,16 +12,28 @@ import unicodedata
 
 # Paths
 ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
-PAPERS_LIST_FILE = Path("papers_list.txt")  # local file with one title per line
+PAPERS_LIST_FILE = Path("papers_list2.txt")  # local file with one title per line
 
 # -----------------------------
 # Load and Filter PDFs by Title
 # -----------------------------
 
+def clean_title(raw: str) -> str:
+    # Remove author prefix before colon
+    raw = re.sub(r"^.*?:\s*", "", raw)
+
+    # Remove year in parentheses
+    raw = re.sub(r"\(\d{4}\)", "", raw)
+
+    # Remove LaTeX math
+    raw = re.sub(r"\$.*?\$", "", raw)
+
+    return raw.strip()
+
 # Load titles to keep
 with open(PAPERS_LIST_FILE, "r", encoding="utf-8") as f:
     # Strip whitespace and ignore empty lines
-    paper_titles = [line.strip() for line in f if line.strip()]
+    paper_titles = [clean_title(line.strip()) for line in f if line.strip()]
 
 print(f"Loaded {len(paper_titles)} paper titles from papers_list.txt")
 
@@ -29,27 +42,61 @@ pdf_files = list(ZOTERO_STORAGE.rglob("*.pdf"))
 print(f"Found {len(pdf_files)} PDFs in Zotero storage")
 
 def normalize(text: str) -> str:
-    # Normalize Unicode
-    text = unicodedata.normalize("NFKC", text)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
 
-    # Lowercase
     text = text.lower()
-
-    # Replace any whitespace run with a single space
     text = re.sub(r"\s+", " ", text)
-
-    # Keep only alphanumerics and spaces
     text = re.sub(r"[^a-z0-9 ]", "", text)
 
     return text.strip()
 
-def pdf_matches_title(pdf_path: Path, titles: list[str]) -> bool:
+STOPWORDS = {
+    "the","a","an","and","or","of","for","to","in","on",
+    "with","without","via","using","from","by","at",
+    "scheme","protocol","system","method","analysis","attack",
+    "paper","model","efficient"
+}
+
+def pdf_matches_title(pdf_path: Path, titles: list[str]):
     filename = normalize(pdf_path.stem)
-    return any(normalize(title) in filename for title in titles)
+    filename_tokens = {t for t in filename.split() if t not in STOPWORDS}
 
+    for title in titles:
+        title_norm = normalize(title)
+        title_tokens = {t for t in title_norm.split() if t not in STOPWORDS}
 
-filtered_pdfs = [pdf for pdf in pdf_files if pdf_matches_title(pdf, paper_titles)]
-print(f"{len(filtered_pdfs)} PDFs match titles in papers_list.txt")
+        if len(title_tokens) < 4:
+            continue
+
+        overlap = filename_tokens & title_tokens
+
+        # Require a long distinctive word
+        long_words = [w for w in title_tokens if len(w) >= 7]
+        if long_words and not any(w in filename_tokens for w in long_words):
+            continue
+
+        # Require >=70% title coverage
+        if len(overlap) / len(title_tokens) >= 0.7:
+            return title
+
+    return None
+
+matches = defaultdict(list)
+
+for pdf in pdf_files:
+    matched_title = pdf_matches_title(pdf, paper_titles)
+    if matched_title:
+        matches[matched_title].append(pdf)
+
+print(f"{sum(len(v) for v in matches.values())} PDFs match titles in papers_list.txt")
+
+deduped_pdfs = {}
+
+for title, pdf_list in matches.items():
+    best_pdf = max(pdf_list, key=lambda p: p.stat().st_size)
+    deduped_pdfs[title] = best_pdf
+
 
 # ---------------------------------------------
 # Functions for Parsing and Extracting References
@@ -218,22 +265,22 @@ def classify_reference(reference: str):
 data = {} # paper title : {category counts}
 
 # Loop over filtered PDFs and extract References
-for pdf_path in filtered_pdfs:
+for title, pdf_path in deduped_pdfs.items():
     #print(f"\nReading PDF: {pdf_path.name}\n")
-    # initialize cateogry counts for this paper
-    data[pdf_path] = {"crypto":0, "security":0, "news": 0, "policy_gov": 0, "technical_doc":0, "other":0}
+    # initialize category counts for this paper
+    data[title] = {"crypto":0, "security":0, "news": 0, "policy_gov": 0, "technical_doc":0, "other":0}
     pdf_text = extract_text_from_pdf(pdf_path)
     references_text = extract_references_section(pdf_text)
     if references_text:
         parsed_refs = parse_references(references_text)
         for ref in parsed_refs:
             bucket = classify_reference(ref)
-            data[pdf_path][bucket] += 1
+            data[title][bucket] += 1
     else:
         print("No References section found.\n")
 
 for key in data:
-    print(str(key)[47:]) # display the title, slicing off my local file path
+    print(str(key)) # display the title, slicing off my local file path
     print(data[key])
     print("\n")
  
