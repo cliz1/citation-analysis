@@ -20,6 +20,12 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
 PAPERS_LIST_FILE = Path("papers_list2.txt")  # local file with one title per line
 
+SAMPLE_SIZE = 10
+
+
+SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE"
+TEST_RANGE = "Crypto"
+
 # -----------------------------
 # Google Sheets Helper
 # -----------------------------
@@ -47,11 +53,8 @@ def get_sheets_service():
 
     return build("sheets", "v4", credentials=creds)
 
-SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE"
-TEST_RANGE = "Crypto!A1:C10"
-
 # -----------------------------
-# Load and Filter PDFs by Title
+# Title cleaning helper
 # -----------------------------
 
 def clean_title(raw: str) -> str:
@@ -66,12 +69,45 @@ def clean_title(raw: str) -> str:
 
     return raw.strip()
 
-# Load titles to keep
-with open(PAPERS_LIST_FILE, "r", encoding="utf-8") as f:
-    # Strip whitespace and ignore empty lines
-    paper_titles = [clean_title(line.strip()) for line in f if line.strip()]
 
-print(f"Loaded {len(paper_titles)} paper titles from papers_list.txt")
+# ------------------------------------------------------------------------------
+# Collect titles from google sheets AND record app. awareness for later use
+# ------------------------------------------------------------------------------
+
+count = 0
+paper_titles = []
+app_awareness = {}
+
+service = get_sheets_service()
+sheet = service.spreadsheets()
+
+result = sheet.values().get(
+    spreadsheetId=SPREADSHEET_ID,
+    range=TEST_RANGE
+).execute()
+
+rows = result.get("values", [])
+
+if not rows:
+    print("No data found in sheet.")
+else:
+    for row in rows:
+        if count == SAMPLE_SIZE:
+            break
+        if len(row) > 2:
+            if row[2] == "1" or row[2] == "2": # Crypto or Analysis
+                count +=1
+                cleaned_title = clean_title(row[0].strip())
+                paper_titles.append(cleaned_title)
+                app_awareness[cleaned_title] = row[4]
+        
+
+print(f"Loaded {len(paper_titles)} paper titles from google sheets.")
+print("application awareness: ", app_awareness)
+
+# -----------------------------------------------------------
+# Find pdfs in Zotero that match the titles in our collection
+# -----------------------------------------------------------
 
 # Find all PDFs recursively
 pdf_files = list(ZOTERO_STORAGE.rglob("*.pdf"))
@@ -294,32 +330,6 @@ def classify_reference(reference: str):
         return "technical_doc"
     return "other"
 
-
-# ---------------------------------
-# Google sheets test
-# ---------------------------------
-
-
-print("\n--- Testing Google Sheets Connection ---")
-
-service = get_sheets_service()
-sheet = service.spreadsheets()
-
-result = sheet.values().get(
-    spreadsheetId=SPREADSHEET_ID,
-    range=TEST_RANGE
-).execute()
-
-rows = result.get("values", [])
-
-if not rows:
-    print("No data found in sheet.")
-else:
-    print("Sample rows from Google Sheets:")
-    for row in rows:
-        print(row)
-
-print("--- End Sheets Test ---\n")
 
 
 # ---------------------------------
