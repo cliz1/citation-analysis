@@ -5,14 +5,50 @@ import fitz
 import re
 import unicodedata
 from collections import defaultdict
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+import pickle
 
 # -----------------------------
 # Config
 # -----------------------------
 
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+
 # Paths
 ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
 PAPERS_LIST_FILE = Path("papers_list2.txt")  # local file with one title per line
+
+# -----------------------------
+# Google Sheets Helper
+# -----------------------------
+
+def get_sheets_service():
+    creds = None
+
+    # Load cached token if it exists
+    if Path("token.pickle").exists():
+        with open("token.pickle", "rb") as token:
+            creds = pickle.load(token)
+
+    # Authenticate if needed
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                "credentials.json", SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+
+        with open("token.pickle", "wb") as token:
+            pickle.dump(creds, token)
+
+    return build("sheets", "v4", credentials=creds)
+
+SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE"
+TEST_RANGE = "Crypto!A1:C10"
 
 # -----------------------------
 # Load and Filter PDFs by Title
@@ -257,6 +293,34 @@ def classify_reference(reference: str):
     if any(k in c for k in tech_doc_keywords):
         return "technical_doc"
     return "other"
+
+
+# ---------------------------------
+# Google sheets test
+# ---------------------------------
+
+
+print("\n--- Testing Google Sheets Connection ---")
+
+service = get_sheets_service()
+sheet = service.spreadsheets()
+
+result = sheet.values().get(
+    spreadsheetId=SPREADSHEET_ID,
+    range=TEST_RANGE
+).execute()
+
+rows = result.get("values", [])
+
+if not rows:
+    print("No data found in sheet.")
+else:
+    print("Sample rows from Google Sheets:")
+    for row in rows:
+        print(row)
+
+print("--- End Sheets Test ---\n")
+
 
 # ---------------------------------
 # Main Processing Loop
