@@ -9,6 +9,8 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import pickle
+import pandas as pd
+import matplotlib.pyplot as plt
 
 # -----------------------------
 # Config
@@ -20,11 +22,11 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
 PAPERS_LIST_FILE = Path("papers_list2.txt")  # local file with one title per line
 
-SAMPLE_SIZE = 10
+SAMPLE_SIZE = 400
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE"
-TEST_RANGE = "Crypto"
+TEST_RANGE = "USENIX"
 
 # -----------------------------
 # Google Sheets Helper
@@ -77,6 +79,7 @@ def clean_title(raw: str) -> str:
 count = 0
 paper_titles = []
 app_awareness = {}
+awareness_values = ["1", "2", "3", "4"]
 
 service = get_sheets_service()
 sheet = service.spreadsheets()
@@ -99,11 +102,11 @@ else:
                 count +=1
                 cleaned_title = clean_title(row[0].strip())
                 paper_titles.append(cleaned_title)
-                app_awareness[cleaned_title] = row[4]
+                if row[4] in awareness_values: # for coders who didn't record app. awareness correctly >:(
+                    app_awareness[cleaned_title] = row[4]
         
 
 print(f"Loaded {len(paper_titles)} paper titles from google sheets.")
-print("application awareness: ", app_awareness)
 
 # -----------------------------------------------------------
 # Find pdfs in Zotero that match the titles in our collection
@@ -251,8 +254,10 @@ def parse_references(text: str):
     return refs
 
 # -------------------------------------
-# Function for Categorizing References
+# Function for Categorizing References - also collect some "other" citations for inspection
 # -------------------------------------
+
+others = []
 
 def classify_reference(reference: str):
     c = reference.lower()
@@ -328,6 +333,7 @@ def classify_reference(reference: str):
     "white paper", "whitepaper"]
     if any(k in c for k in tech_doc_keywords):
         return "technical_doc"
+    others.append(reference)
     return "other"
 
 
@@ -353,11 +359,60 @@ for title, pdf_path in deduped_pdfs.items():
     else:
         print("No References section found.\n")
 
-for key in data:
-    print(str(key)) # display the title, slicing off my local file path
-    print(data[key])
-    print("\n")
+# ---------------------------------
+# Build DataFrame for Plotting
+# ---------------------------------
+
+rows = []
+
+for title, buckets in data.items():
+    total_refs = sum(buckets.values())
+
+    if total_refs == 0:
+        continue
+
+    # normalize bucket distribution
+    normalized = {k: v / total_refs for k, v in buckets.items()}
+
+    # attach application awareness score
+    awareness = app_awareness.get(title)
+
+    if awareness is None:
+        continue
+
+    rows.append({
+        "title": title,
+        "app_awareness": int(awareness),
+        **normalized
+    })
+
+df = pd.DataFrame(rows)
+
+print(df.head())
+
+# awareness level -> average fraction of references per bucket
  
+bucket_cols = ["crypto","security","news","policy_gov","technical_doc","other"]
+
+grouped = df.groupby("app_awareness")[bucket_cols].mean()
+
+print(grouped)
+
+# stacked bar chart
+
+grouped.plot(
+    kind="bar",
+    stacked=True,
+    figsize=(8,5)
+)
+
+plt.ylabel("Average Citation Share")
+plt.xlabel("Application Awareness Level")
+plt.title("Average Citation Distribution by Application Awareness Level - USENIX")
+plt.legend(title="Reference Type", bbox_to_anchor=(1.05, 1))
+plt.tight_layout()
+plt.show()
+
 
 
 
