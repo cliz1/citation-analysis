@@ -21,7 +21,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 # Paths
 ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
 
-SAMPLE_SIZE = 10
+SAMPLE_SIZE = 400
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE"
@@ -39,7 +39,11 @@ CRYPTO_KEYWORDS =  [
         "lncs", 
         "ppml",
         "mpc",
-        "differential privacy"
+        "differential privacy",
+         "arxiv", "eprint", "corr", "acns", "sac", "fc",
+        "pldi", "focs", "stock", "soda", "siam", "ieee trans.", "journal of cryptology",
+        "open whisper systems", "arkworks", "blockchain protocols", "pos proofs", "oracles", "group key exchange",
+        "double ratchet", "streamlet", "crypten"
     ]
 
 SECURITY_KEYWORDS =  [
@@ -54,8 +58,10 @@ SECURITY_KEYWORDS =  [
         "www",
         "acsac",
         "EuroS&P",
-        "IEEE European Symposium on Security and Privacy",
-        "Computer Security"
+        "ieee european symposium on security and privacy",
+        "computer security", "eurosec", "provsec", "communications security",
+        "csf", "micro", "dimva", "host", "s&p", "ieee security & privacy", "iee trans. dependable secure comput.", "network security",
+        "anonymous messaging", "ddos", "side channel", "side-channel", "matrix.org"
     ]
 
 NEWS_KEYWORDS = [
@@ -101,7 +107,7 @@ TECH_DOC_KEYWORDS = [
     "w3c",
     "iso/",
     "iec",
-    "white paper", "whitepaper"]
+    "white paper", "whitepaper", "documentation"]
 
 SOURCE_CODE_KEYWORDS = [
     "github.com",
@@ -124,9 +130,87 @@ INDUSTRY_BLOG_KEYWORDS = [
     "medium",
     "blog",
     "substack",
-    "github.io"
+    "github.io",
+    "sites.google.com",
+    "bitcointalk.org"
 ]
 
+MATH_KEYWORDS = ["gaussian", "matrix", "l2 norm", "discrete logarithms", "modular multiplication", "statistical", "probability"]
+
+ECONOMICS_GT_KEYWORDS = [
+    "game theory",
+    "cooperative game",
+    "non-cooperative",
+    "repeated games",
+    "supergames",
+    "equilibrium",
+    "sequential equilibria",
+    "reputation",
+    "market insurance",
+    "self-insurance",
+    "self-protection",
+    "informal institutions",
+    "institutional economics",
+    "economic review",
+    "american economic review",
+    "harvard university press",
+    "oxford university press"
+]
+
+IOT_NETWORK_KEYWORDS = [
+    "iot",
+    "internet of things",
+    "sensor network",
+    "wireless sensor",
+    "lora",
+    "helium network",
+    "sigfox",
+    "bluetooth",
+    "ble",
+    "wifi",
+    "mobile ad hoc network",
+    "manet",
+    "starlink",
+    "edge computing",
+    "federated infrastructure",
+    "city-scale sensing",
+    "smart parking",
+    "wildlife tracking",
+    "forest fire detection",
+    "energy harvesting sensors",
+    "zebranet",
+    "signpost platform",
+    "esp-idp",
+    "nordic semi",
+    "location privacy",
+    "wireless sensor nodes",
+    "lan"
+]
+
+SYSTEMS_KEYWORDS = [
+    "consensus",
+    "byzantine fault tolerance",
+    "bft",
+    "paxos",
+    "dag-based",
+    "hotstuff",
+    "zyzzyva",
+    "sync hotstuff",
+    "state machine replication",
+    "permissionless network",
+    "stellar",
+    "ethereum node tracker",
+    "distributed systems",
+    "peer-to-peer",
+    "accountable systems",
+    "mempool",
+    "network measurement",
+    "sosp",
+    "eurosys",
+    "icdcs",
+    "podc",
+    "acm trans. comput. syst.",
+]
 
 
 # -----------------------------
@@ -317,7 +401,7 @@ def looks_like_body_text(text: str) -> bool:
         return False
 
     # Return True if any of the keywords appear (case-insensitive)
-    return bool(re.search(r"\b(we|hence|therefore|such that|this algorithm|sends|s.t.|←|adversary outputs|given)\b", text, re.I))
+    return bool(re.search(r"\b(we|hence|therefore|such that|this algorithm|sends|s.t.|←|adversary outputs|given|this is|as well as|indeed|compromised|Theorem|assume|lemma|Corollary|computes)\b", text, re.I))
 
 
 def parse_references(text: str, debug=False):
@@ -388,7 +472,10 @@ def classify_reference(reference: str):
         "technical_doc": 0,
         "source_code": 0,
         "vendor_doc": 0,
-        "industry_blog": 0
+        "industry_blog": 0,
+        "systems": 0,
+        "IoT_networks": 0,
+        "economics": 0
     }
 
     scores["crypto"] += sum(k in c for k in CRYPTO_KEYWORDS)
@@ -399,6 +486,9 @@ def classify_reference(reference: str):
     scores["source_code"] += sum(k in c for k in SOURCE_CODE_KEYWORDS)
     scores["vendor_doc"] += sum(k in c for k in VENDOR_DOC_KEYWORDS)
     scores["industry_blog"] += sum(k in c for k in INDUSTRY_BLOG_KEYWORDS)
+    scores["economics"] += sum(k in c for k in ECONOMICS_GT_KEYWORDS)
+    scores["IoT_networks"] += sum(k in c for k in IOT_NETWORK_KEYWORDS)
+    scores["systems"] += sum(k in c for k in SYSTEMS_KEYWORDS)
 
     # No matches at all → OTHER
     if all(v == 0 for v in scores.values()):
@@ -421,23 +511,21 @@ data = {} # paper title : {category counts}
 for title, pdf_path in deduped_pdfs.items():
     #print(f"\nReading PDF: {pdf_path.name}\n")
     # initialize category counts for this paper
-    data[title] = {"crypto":0, "security":0, "news": 0, "policy_gov": 0, "technical_doc":0, "other":0, "source_code": 0, "vendor_doc": 0, "industry_blog":0}
+    data[title] = {"crypto":0, "security":0, "news": 0, "policy_gov": 0, "technical_doc":0, "other":0, "source_code": 0, "vendor_doc": 0, "industry_blog":0, "systems": 0, "economics": 0, "IoT_networks": 0}
     pdf_text = extract_text_from_pdf(pdf_path)
     references_text = extract_references_section(pdf_text)
     if references_text:
         parsed_refs = parse_references(references_text)
-        print(title)
-        print(len(parsed_refs))
         for ref in parsed_refs:
             bucket = classify_reference(ref)
             data[title][bucket] += 1
     else:
         print("No References section found.\n")
 
-for key in data:
-    print(str(key)) # display the title, slicing off my local file path
-    print(data[key])
-    print("\n")
+#for key in data:
+    #print(str(key))
+    #print(data[key])
+    #print("\n")
  
 
 #for ref in others:
@@ -447,7 +535,7 @@ for key in data:
 # Build DataFrame for Plotting
 # ---------------------------------
 
-""" rows = []
+rows = []
 
 for title, buckets in data.items():
     total_refs = sum(buckets.values())
@@ -476,7 +564,7 @@ print(df.head())
 
 # awareness level -> average fraction of references per bucket
  
-bucket_cols = ["crypto","security","news","policy_gov","technical_doc","other"]
+bucket_cols = ["crypto","security","news","policy_gov","technical_doc","other", "source_code", "industry_blog", "vendor_doc", "systems", "IoT_networks", "economics"]
 
 grouped = df.groupby("app_awareness")[bucket_cols].mean()
 
@@ -484,10 +572,17 @@ print(grouped)
 
 # stacked bar chart
 
+# Define a custom color map with enough distinct colors
+colors = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#aec7e8", "#050505"
+]
+
 grouped.plot(
     kind="bar",
     stacked=True,
-    figsize=(8,5)
+    figsize=(8,5),
+    color=colors
 )
 
 plt.ylabel("Average Citation Share")
@@ -495,7 +590,7 @@ plt.xlabel("Application Awareness Level")
 plt.title("Average Citation Distribution by Application Awareness Level - USENIX")
 plt.legend(title="Reference Type", bbox_to_anchor=(1.05, 1))
 plt.tight_layout()
-plt.show() """
+plt.show()
 
 
 
