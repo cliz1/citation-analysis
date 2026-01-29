@@ -21,7 +21,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 # Paths
 ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
 
-SAMPLE_SIZE = 400
+SAMPLE_SIZE = 10
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE"
@@ -53,6 +53,9 @@ SECURITY_KEYWORDS =  [
         "sigcomm",
         "www",
         "acsac",
+        "EuroS&P",
+        "IEEE European Symposium on Security and Privacy",
+        "Computer Security"
     ]
 
 NEWS_KEYWORDS = [
@@ -306,50 +309,72 @@ def extract_references_section(text: str) -> str:
     
     return references_text.strip()
 
+def looks_like_reference(line: str) -> bool:
+
+    # year signal
+    if re.search(r"\b(19|20)\d{2}\b", line):
+        return True
+    
+    # DOI / URL
+    if "doi" in line.lower() or "http" in line.lower():
+        return True
+
+    # author-like capitalized name pattern
+    if re.search(r"\b[A-Z][a-z]+,\s*[A-Z]", line):
+        return True
+
+    # et al.
+    if "et al" in line.lower():
+        return True
+
+    # venue-ish keywords
+    venue_keywords = [
+        "proceedings", "journal", "conference",
+        "ieee", "acm", "springer", "elsevier",
+        "arxiv", "cryptology", "security", "transactions"
+    ]
+    if any(v in line.lower() for v in venue_keywords):
+        return True
+
+    return False
+
 def parse_references(text: str):
-    """
-    Parses references handling both:
-      - numeric markers: 1. ...  or [1] ...
-      - bracketed alphanumeric markers: [ANWW13], [BCG+19a], [BCGI18], etc.
-    """
-
-    # Remove leading "References" header
     text = re.sub(r"^\s*references\s*", "", text, flags=re.IGNORECASE)
-
-    # Remove common page-range patterns like "pp. 33–53." (those will confuse the later regex)
     text = re.sub(r"\bpp\.?\s*\d{1,4}\s*[-–]\s*\d{1,4}\.?", "", text)
 
-    # Insert newline before reference markers:
-    marker_lookahead = r"(?=(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s))"
+    #marker_lookahead = r"(?=(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s))"
+    marker_lookahead = r"(?=(\[\d+\]|\d+\.)\s)"
     text = re.sub(r"\s" + marker_lookahead, "\n", text)
 
-    # Split into raw lines and group continuation lines
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
     refs = []
     current = None
-    # Start-of-reference markers:
-    marker_re = re.compile(r"^(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s)")
+
+    #marker_re = re.compile(r"^(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s)")
+    marker_re = re.compile(
+    r"^\s*(\[\d+\]|\d+\.)\s+"
+    )
+
 
     for ln in lines:
         if marker_re.match(ln):
-            # start a new reference
-            if current:
+            # commit previous only if it looks like a real reference
+            if current and looks_like_reference(current):
                 refs.append(current.strip())
+
+            # start new candidate
             current = ln
         else:
-            # continuation line: append to the current ref if exists
             if current is not None:
                 current += " " + ln
-            else:
-                # stray line before first marker: ignore
-                pass
 
-    # append the final buffered reference if any
-    if current:
+    # final commit
+    if current and looks_like_reference(current):
         refs.append(current.strip())
 
     return refs
+
 
 # -------------------------------------
 # Function for Categorizing References - also collect some "other" citations for inspection
@@ -405,15 +430,23 @@ for title, pdf_path in deduped_pdfs.items():
     references_text = extract_references_section(pdf_text)
     if references_text:
         parsed_refs = parse_references(references_text)
+        print(title)
         for ref in parsed_refs:
+            print(ref)
+            print("\n")
             bucket = classify_reference(ref)
             data[title][bucket] += 1
     else:
         print("No References section found.\n")
 
+for key in data:
+    print(str(key)) # display the title, slicing off my local file path
+    print(data[key])
+    print("\n")
+ 
 
-for ref in others:
-    print(ref)
+#for ref in others:
+    #print(ref)
 
 # ---------------------------------
 # Build DataFrame for Plotting
