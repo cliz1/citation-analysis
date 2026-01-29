@@ -289,92 +289,88 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
 
 def extract_references_section(text: str) -> str:
     """
-    Returns everything after the first occurrence of "References".
+    Returns everything after the first occurrence of "References" as a standalone word or heading.
+    Ignores words like "dereferences" that contain "references".
     """
-    lower_text = text.lower()
-    ref_start = lower_text.find("references")
-    
-    if ref_start == -1:
-        # no references section found
-        return ""
-    
-    # slice text starting from "References"
-    references_text = text[ref_start:]
-    
+    # Match "References" as a full word, optionally with punctuation, at start of line or after newline
+    m = re.search(r"(?:^|\n)\s*(references|bibliography|references and notes)\b", text, re.I)
+    if not m:
+        return ""  # no references section found
+
+    # slice from the end of the match
+    references_text = text[m.end():]
+
     # stop at common section markers after references
     for marker in ["appendix", "acknowledgements", "supplementary"]:
-        idx = references_text.lower().find(marker)
-        if idx != -1:
-            references_text = references_text[:idx]
-    
+        idx = re.search(rf"\n\s*{marker}\b", references_text, re.I)
+        if idx:
+            references_text = references_text[:idx.start()]
+
     return references_text.strip()
 
-def looks_like_reference(line: str) -> bool:
+def looks_like_body_text(text: str) -> bool:
+    """
+    Returns True if the block looks like body/prose rather than a reference.
+    Checks for keywords 'we', 'hence', or 'therefore'.
+    """
+    if not text:
+        return False
 
-    # year signal
-    if re.search(r"\b(19|20)\d{2}\b", line):
-        return True
-    
-    # DOI / URL
-    if "doi" in line.lower() or "http" in line.lower():
-        return True
+    # Return True if any of the keywords appear (case-insensitive)
+    return bool(re.search(r"\b(we|hence|therefore|such that|this algorithm|sends|s.t.|←|adversary outputs|given)\b", text, re.I))
 
-    # author-like capitalized name pattern
-    if re.search(r"\b[A-Z][a-z]+,\s*[A-Z]", line):
-        return True
 
-    # et al.
-    if "et al" in line.lower():
-        return True
+def parse_references(text: str, debug=False):
+    """
+    Parses references handling both:
+      - numeric markers: 1. ...  or [1] ...
+      - bracketed alphanumeric markers: [ANWW13], [BCG+19a], [BCGI18], etc.
+    Skips blocks that look like body text.
+    """
 
-    # venue-ish keywords
-    venue_keywords = [
-        "proceedings", "journal", "conference",
-        "ieee", "acm", "springer", "elsevier",
-        "arxiv", "cryptology", "security", "transactions"
-    ]
-    if any(v in line.lower() for v in venue_keywords):
-        return True
-
-    return False
-
-def parse_references(text: str):
+    # Remove leading "References" header
     text = re.sub(r"^\s*references\s*", "", text, flags=re.IGNORECASE)
+
+    # Remove common page-range patterns like "pp. 33–53."
     text = re.sub(r"\bpp\.?\s*\d{1,4}\s*[-–]\s*\d{1,4}\.?", "", text)
 
-    #marker_lookahead = r"(?=(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s))"
-    marker_lookahead = r"(?=(\[\d+\]|\d+\.)\s)"
+    # Insert newline before reference markers to help splitting
+    marker_lookahead = r"(?=(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s))"
     text = re.sub(r"\s" + marker_lookahead, "\n", text)
 
+    # Split into lines and strip whitespace
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
     refs = []
     current = None
-
-    #marker_re = re.compile(r"^(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s)")
-    marker_re = re.compile(
-    r"^\s*(\[\d+\]|\d+\.)\s+"
-    )
-
+    # Regex to detect start-of-reference lines
+    marker_re = re.compile(r"^(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s)")
 
     for ln in lines:
         if marker_re.match(ln):
-            # commit previous only if it looks like a real reference
-            if current and looks_like_reference(current):
-                refs.append(current.strip())
-
-            # start new candidate
+            # start a new reference
+            if current:
+                # Skip blocks that look like body text or if too short
+                if not looks_like_body_text(current) and len(current) > 35:
+                    refs.append(current.strip())
+                elif debug:
+                    print("Skipping body-like candidate:", current[:80].replace("\n", " "))
             current = ln
         else:
+            # continuation line: append to the current ref if exists
             if current is not None:
                 current += " " + ln
+            else:
+                # stray line before first marker: ignore
+                pass
 
-    # final commit
-    if current and looks_like_reference(current):
+    # append the final buffered reference if any
+    if current and not looks_like_body_text(current):
         refs.append(current.strip())
+    elif current and debug:
+        print("Skipping final body-like candidate:", current[:80].replace("\n", " "))
 
     return refs
-
 
 # -------------------------------------
 # Function for Categorizing References - also collect some "other" citations for inspection
@@ -431,9 +427,8 @@ for title, pdf_path in deduped_pdfs.items():
     if references_text:
         parsed_refs = parse_references(references_text)
         print(title)
+        print(len(parsed_refs))
         for ref in parsed_refs:
-            print(ref)
-            print("\n")
             bucket = classify_reference(ref)
             data[title][bucket] += 1
     else:
