@@ -20,13 +20,111 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
 # Paths
 ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
-PAPERS_LIST_FILE = Path("papers_list2.txt")  # local file with one title per line
 
 SAMPLE_SIZE = 400
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE"
 TEST_RANGE = "USENIX"
+
+CRYPTO_KEYWORDS =  [
+        "crypto",
+        "eurocrypt",
+        "asiacrypt",
+        "pkc",
+        "tcc",
+        "fse",
+        "ch es",
+        "icalp",  
+        "lncs", 
+        "ppml",
+        "mpc",
+        "differential privacy"
+    ]
+
+SECURITY_KEYWORDS =  [
+        "ccs",
+        "oakland",
+        "ieee s&p",
+        "security and privacy",
+        "ndss",
+        "usenix security",
+        "usenix",
+        "sigcomm",
+        "www",
+        "acsac",
+    ]
+
+NEWS_KEYWORDS = [
+    "reuters", "bbc", "guardian", "new york times", "nyt",
+    "washington post", "washpost", "wsj", "wall street journal",
+    "bloomberg", "financial times", "ft.com", "cnn", "fox news","npr",
+    "associated press", "ap news", "politico", "axios", "the verge",
+    "wired", "ars technica", "techcrunch", "engadget", "vice", "forbes"]
+
+POLICY_KEYWORDS = [
+    "nist",
+    "white house",
+    "executive order",
+    "department of",
+    "ministry of",
+    "u.s. government",
+    "us government",
+    "congress",
+    "house of representatives",
+    "senate",
+    "federal register",
+    "government accountability office",
+    "gao",
+    "department of justice",
+    "doj",
+    "department of homeland security",
+    "dhs",
+    "cisa",
+    "nsa",
+    "cia",
+    "policy",
+    "standards",
+    "commission"]
+
+TECH_DOC_KEYWORDS = [
+    "rfc ",
+    "rfc-",
+    "rfc:",
+    "internet-draft",
+    "ietf draft",
+    "ietf",
+    "request for comments",
+    "w3c",
+    "iso/",
+    "iec",
+    "white paper", "whitepaper"]
+
+SOURCE_CODE_KEYWORDS = [
+    "github.com",
+    "source code",
+    "repo",
+    "repository"
+]
+
+VENDOR_DOC_KEYWORDS = [
+    "aws",
+    "amazon",
+    "google cloud",
+    "pricing",
+    "prometheus",
+    "druid"
+]
+
+INDUSTRY_BLOG_KEYWORDS = [
+    "twitter",
+    "medium",
+    "blog",
+    "substack",
+    "github.io"
+]
+
+
 
 # -----------------------------
 # Google Sheets Helper
@@ -258,84 +356,38 @@ def parse_references(text: str):
 # -------------------------------------
 
 others = []
-
 def classify_reference(reference: str):
     c = reference.lower()
-    crypto_keywords = [
-        "crypto",
-        "eurocrypt",
-        "asiacrypt",
-        "pkc",
-        "tcc",
-        "fse",
-        "ch es",
-        "icalp",  
-        "lncs",   
-    ]
-    if any(k in c for k in crypto_keywords):
-        return "crypto"
-    security_keywords = [
-        "ccs",
-        "oakland",
-        "ieee s&p",
-        "security and privacy",
-        "ndss",
-        "usenix security",
-        "usenix",
-        "sigcomm",
-        "www",
-        "acsac",
-    ]
-    if any(k in c for k in security_keywords):
-        return "security"
-    news_sources = [
-    "reuters", "bbc", "guardian", "new york times", "nyt",
-    "washington post", "washpost", "wsj", "wall street journal",
-    "bloomberg", "financial times", "ft.com", "cnn", "fox news","npr",
-    "associated press", "ap news", "politico", "axios", "the verge",
-    "wired", "ars technica", "techcrunch", "engadget", "vice", "forbes"]
-    if any(k in c for k in news_sources):
-        return "news"
-    policy_gov_sources = [
-    "nist",
-    "white house",
-    "executive order",
-    "department of",
-    "ministry of",
-    "u.s. government",
-    "us government",
-    "congress",
-    "house of representatives",
-    "senate",
-    "federal register",
-    "government accountability office",
-    "gao",
-    "department of justice",
-    "doj",
-    "department of homeland security",
-    "dhs",
-    "cisa",
-    "nsa",
-    "cia"]
-    if any(k in c for k in policy_gov_sources):
-        return "policy_gov"
-    tech_doc_keywords = [
-    "rfc ",
-    "rfc-",
-    "rfc:",
-    "internet-draft",
-    "ietf draft",
-    "ietf",
-    "request for comments",
-    "w3c",
-    "iso/",
-    "iec",
-    "white paper", "whitepaper"]
-    if any(k in c for k in tech_doc_keywords):
-        return "technical_doc"
-    others.append(reference)
-    return "other"
 
+    scores = {
+        "crypto": 0,
+        "security": 0,
+        "news": 0,
+        "policy_gov": 0,
+        "technical_doc": 0,
+        "source_code": 0,
+        "vendor_doc": 0,
+        "industry_blog": 0
+    }
+
+    scores["crypto"] += sum(k in c for k in CRYPTO_KEYWORDS)
+    scores["security"] += sum(k in c for k in SECURITY_KEYWORDS)
+    scores["news"] += sum(k in c for k in NEWS_KEYWORDS)
+    scores["policy_gov"] += sum(k in c for k in POLICY_KEYWORDS)
+    scores["technical_doc"] += sum(k in c for k in TECH_DOC_KEYWORDS)
+    scores["source_code"] += sum(k in c for k in SOURCE_CODE_KEYWORDS)
+    scores["vendor_doc"] += sum(k in c for k in VENDOR_DOC_KEYWORDS)
+    scores["industry_blog"] += sum(k in c for k in INDUSTRY_BLOG_KEYWORDS)
+
+    # No matches at all → OTHER
+    if all(v == 0 for v in scores.values()):
+        others.append(reference)
+        return "other"
+
+    # Pick category with highest score
+    best = max(scores, key=scores.get)
+
+    return best
 
 
 # ---------------------------------
@@ -348,7 +400,7 @@ data = {} # paper title : {category counts}
 for title, pdf_path in deduped_pdfs.items():
     #print(f"\nReading PDF: {pdf_path.name}\n")
     # initialize category counts for this paper
-    data[title] = {"crypto":0, "security":0, "news": 0, "policy_gov": 0, "technical_doc":0, "other":0}
+    data[title] = {"crypto":0, "security":0, "news": 0, "policy_gov": 0, "technical_doc":0, "other":0, "source_code": 0, "vendor_doc": 0, "industry_blog":0}
     pdf_text = extract_text_from_pdf(pdf_path)
     references_text = extract_references_section(pdf_text)
     if references_text:
@@ -359,11 +411,15 @@ for title, pdf_path in deduped_pdfs.items():
     else:
         print("No References section found.\n")
 
+
+for ref in others:
+    print(ref)
+
 # ---------------------------------
 # Build DataFrame for Plotting
 # ---------------------------------
 
-rows = []
+""" rows = []
 
 for title, buckets in data.items():
     total_refs = sum(buckets.values())
@@ -411,7 +467,7 @@ plt.xlabel("Application Awareness Level")
 plt.title("Average Citation Distribution by Application Awareness Level - USENIX")
 plt.legend(title="Reference Type", bbox_to_anchor=(1.05, 1))
 plt.tight_layout()
-plt.show()
+plt.show() """
 
 
 
