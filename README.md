@@ -236,7 +236,3 @@ You will also need:
 
   *Marco Palazzo et al.: Privacy-Preserving Data Aggregation with Public Verifiability Against Internal Adversaries:*
   also coded but not in Zotero.
-
----
-
-If you'd like, I can also produce a shorter “publication-facing” version of this README and keep this one as a technical/internal version.
