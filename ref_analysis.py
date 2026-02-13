@@ -24,8 +24,8 @@ ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with p
 SAMPLE_SIZE = 400
 
 
-SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE"
-TEST_RANGE = "USENIX"
+SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" # find this in the sheets URL should it ever change
+TEST_RANGE = "Crypto" # One conference (sheet) per run
 
 CRYPTO_KEYWORDS =  [
         "crypto",
@@ -419,7 +419,7 @@ def parse_references(text: str, debug=False):
     text = re.sub(r"\bpp\.?\s*\d{1,4}\s*[-–]\s*\d{1,4}\.?", "", text)
 
     # Insert newline before reference markers to help splitting
-    marker_lookahead = r"(?=(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s))"
+    marker_lookahead = r"(?=(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*))"
     text = re.sub(r"\s" + marker_lookahead, "\n", text)
 
     # Split into lines and strip whitespace
@@ -428,7 +428,7 @@ def parse_references(text: str, debug=False):
     refs = []
     current = None
     # Regex to detect start-of-reference lines
-    marker_re = re.compile(r"^(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s)")
+    marker_re = re.compile(r"^(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*)")
 
     for ln in lines:
         if marker_re.match(ln):
@@ -492,7 +492,7 @@ def classify_reference(reference: str):
 
     # No matches at all → OTHER
     if all(v == 0 for v in scores.values()):
-        others.append(reference)
+        #others.append(reference)
         return "other"
 
     # Pick category with highest score
