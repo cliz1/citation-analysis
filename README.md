@@ -1,8 +1,5 @@
 # Reference Analysis Pipeline
 
-**Author:** Nathaniel Clizbe
-**Date:** January 2026
-
 ## Overview
 
 `ref_analysis.py` is a data pipeline for analyzing citation distributions in academic papers.
