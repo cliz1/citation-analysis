@@ -211,29 +211,21 @@ def looks_like_affiliation(text: str) -> bool:
     return bool(re.search(r"\b(" + "|".join(keywords) + r")\b", text, re.I))
 
 def parse_affiliations(text: str, title: str = "", debug=False):
-    """
-    Extract likely author affiliations from author section.
-    Avoids grabbing pieces of the paper title.
-    """
-
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     affiliations = []
-
-    # Normalize title for comparison
     title_norm = normalize(title) if title else ""
     title_tokens = set(title_norm.split())
 
-    for ln in lines:
+    # NEW: detect author-name lines (has superscript markers or (B) suffix)
+    author_line_pattern = re.compile(r"\(\s*[Bb]\s*\)|^\d+$|\d+[,\d]*\s*\(")
 
+    prev_affiliation = None
+
+    for ln in lines:
         original_ln = ln
 
-        # Remove leading numeric markers like 1University
         ln = re.sub(r"^\d+\s*", "", ln)
-
-        # Remove trailing numeric markers like "... 2"
         ln = re.sub(r"\s\d+$", "", ln)
-
-        # Remove emails but KEEP rest of line
         ln = re.sub(r"\S+@\S+", "", ln).strip(" ,.")
 
         if not ln:
@@ -242,18 +234,33 @@ def parse_affiliations(text: str, title: str = "", debug=False):
         if len(ln) > 200:
             continue
 
+        # skip author name lines with (B) or numeric superscripts
+        if author_line_pattern.search(original_ln):
+            if debug:
+                print("Skipping author name line:", original_ln)
+            continue
+
+        # skip very short geographic-only fragments like "USA", "Germany"
+        if re.match(r"^[A-Z]{2,3}$", ln) or (len(ln.split()) == 1 and ln[0].isupper()):
+            if debug:
+                print("Skipping lone token:", ln)
+            continue
+
         if title_tokens:
             ln_norm = normalize(ln)
-            ln_tokens = set(ln_norm.split())
+            # normalize hyphens before tokenizing to catch hyphenated title fragments
+            ln_norm_dehyphen = ln_norm.replace("-", " ")
+            title_norm_dehyphen = title_norm.replace("-", " ")
+            title_tokens_dehyphen = set(title_norm_dehyphen.split())
+            ln_tokens = set(ln_norm_dehyphen.split())
 
             if len(ln_tokens) >= 3:
-                overlap = ln_tokens & title_tokens
-                if len(overlap) / len(ln_tokens) > 0.6:
+                overlap = ln_tokens & title_tokens_dehyphen
+                if len(overlap) / len(ln_tokens) > 0.4:
                     if debug:
                         print("Skipping title-like line:", original_ln)
                     continue
 
-        # --- Academic indicators ---
         academic_patterns = [
             r"\buniversity\b", r"\buniv\b",
             r"\bcollege\b", r"\binstitute\b",
@@ -264,7 +271,6 @@ def parse_affiliations(text: str, title: str = "", debug=False):
             r"\buc\s?[A-Z]"
         ]
 
-        # --- Industry indicators ---
         industry_patterns = [
             r"\bcorp\b", r"\binc\b", r"\bltd\b",
             r"\bllc\b", r"\bcompany\b",
@@ -278,17 +284,65 @@ def parse_affiliations(text: str, title: str = "", debug=False):
         is_industry = any(re.search(p, ln, re.I) for p in industry_patterns)
         is_location = re.match(location_pattern, ln)
 
+        # capital_phrase no longer alone qualifies — must also match academic/industry/location
         capital_phrase = (
             1 <= len(ln.split()) <= 4
             and all(word[0].isupper() for word in ln.split() if word[0].isalpha())
         )
 
-        if is_academic or is_industry or is_location or capital_phrase:
+        if is_academic or is_industry or is_location:
             affiliations.append(ln)
         elif debug:
             print("Skipping non-affiliation:", original_ln)
 
     return affiliations
+
+# -----------------------------------------------------------
+#  Categorization helper
+# -----------------------------------------------------------
+
+def categorize_affiliation(aff: str) -> str:
+    aff_lower = aff.lower()
+
+    academic_patterns = [
+        r"\buniversity\b", r"\buniv\b", r"\bcollege\b",
+        r"\binstitute of technology\b", r"\binstitute\b",
+        r"\bschool of\b", r"\bfaculty\b", r"\bdepartment\b",
+        r"\bacademy\b", r"\bpolytechnic\b"
+    ]
+
+    government_patterns = [
+        r"\bnational laboratory\b", r"\bnational lab\b",
+        r"\bgovernment\b", r"\bministry\b", r"\bagency\b",
+        r"\bnist\b", r"\bnsa\b", r"\bdarpa\b", r"\bdod\b",
+        r"\bcnrs\b", r"\binria\b", r"\bcas\b",
+        r"\bnational research\b", r"\bfederal\b"
+    ]
+
+    industry_patterns = [
+        r"\bcorp\b", r"\binc\b", r"\bltd\b", r"\bllc\b",
+        r"\bgmbh\b", r"\bcompany\b", r"\bco\.\b",
+        r"\blabs?\b", r"\bresearch lab\b",
+        r"\bntt\b", r"\bibm\b", r"\bgoogle\b", r"\bmicrosoft\b",
+        r"\bamazon\b", r"\bmeta\b", r"\bapple\b", r"\bintel\b",
+        r"\bpqshield\b", r"\bsilence labs\b", r"\bdeel\b"
+    ]
+
+    is_academic = any(re.search(p, aff_lower) for p in academic_patterns)
+    is_government = any(re.search(p, aff_lower) for p in government_patterns)
+    is_industry = any(re.search(p, aff_lower) for p in industry_patterns)
+
+    # Avoid mislabeling academic institutions that mention "research"
+    if is_academic and is_industry:
+        return "Academic"
+    if is_academic:
+        return "Academic"
+    if is_government:
+        return "Government"
+    if is_industry:
+        return "Industry"
+
+    return "Unknown"
 
 # -----------------------------------------------------------
 # Extract and display author affiliations for matched papers
@@ -322,18 +376,22 @@ for title, pdf_path in deduped_pdfs.items():
 
     author_section = extract_author_section(text)
 
-    print("\n")
-    print("section: ", author_section)
-    print("\n")
+    #print("\n")
+    #print("section: ", author_section)
+    #print("\n")
 
     affiliations = parse_affiliations(author_section, title)
+
+    seen = dict.fromkeys(affiliations)
+    affiliations = list(seen)
 
     if not affiliations:
         print("No affiliations detected.")
     else:
         print("\nDetected Affiliations:")
         for aff in affiliations:
-            print("  -", aff)
+            category = categorize_affiliation(aff)
+            print(f"  - [{category}] {aff}")
 
     results[title] = affiliations
 
