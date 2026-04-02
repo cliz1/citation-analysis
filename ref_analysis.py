@@ -25,7 +25,7 @@ SAMPLE_SIZE = 400
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" # find this in the sheets URL should it ever change
-TEST_RANGE = "Crypto" # One conference (sheet) per run
+TEST_RANGE = "USENIX" # One conference (sheet) per run
 
 CRYPTO_KEYWORDS =  [
         "crypto",
@@ -92,8 +92,6 @@ POLICY_KEYWORDS = [
     "cisa",
     "nsa",
     "cia",
-    "policy",
-    "standards",
     "commission"]
 
 TECH_DOC_KEYWORDS = [
@@ -153,8 +151,6 @@ ECONOMICS_GT_KEYWORDS = [
     "institutional economics",
     "economic review",
     "american economic review",
-    "harvard university press",
-    "oxford university press"
 ]
 
 IOT_NETWORK_KEYWORDS = [
@@ -490,7 +486,7 @@ def classify_reference(reference: str):
     scores["IoT_networks"] += sum(k in c for k in IOT_NETWORK_KEYWORDS)
     scores["systems"] += sum(k in c for k in SYSTEMS_KEYWORDS)
 
-    # No matches at all → OTHER
+    # No matches at all -> OTHER
     if all(v == 0 for v in scores.values()):
         #others.append(reference)
         return "other"
@@ -526,10 +522,6 @@ for title, pdf_path in deduped_pdfs.items():
     #print(str(key))
     #print(data[key])
     #print("\n")
- 
-
-#for ref in others:
-    #print(ref)
 
 # ---------------------------------
 # Build DataFrame for Plotting
@@ -560,6 +552,9 @@ for title, buckets in data.items():
 
 df = pd.DataFrame(rows)
 
+df.to_csv("usenix_data.csv", index=False)
+print("Saved per-paper data to paper_reference_data.csv")
+
 print(df.head())
 
 # awareness level -> average fraction of references per bucket
@@ -582,12 +577,12 @@ grouped.plot(
     kind="bar",
     stacked=True,
     figsize=(8,5),
-    color=colors
+    color=colors,
 )
 
 plt.ylabel("Average Citation Share")
 plt.xlabel("Application Awareness Level")
-plt.title("Average Citation Distribution by Application Awareness Level - USENIX")
+plt.title("Average Citation Distribution by Application Awareness Level - Oakland")
 plt.legend(title="Reference Type", bbox_to_anchor=(1.05, 1))
 plt.tight_layout()
 plt.show()

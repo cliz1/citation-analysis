@@ -21,11 +21,11 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 # Paths
 ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
 
-SAMPLE_SIZE = 10
+SAMPLE_SIZE = 400
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" # find this in the sheets URL should it ever change
-TEST_RANGE = "Crypto" # One conference (sheet) per run
+TEST_RANGE = "USENIX" # One conference (sheet) per run
 
 
 # -----------------------------
@@ -316,7 +316,28 @@ def categorize_affiliation(aff: str) -> str:
         r"\bgovernment\b", r"\bministry\b", r"\bagency\b",
         r"\bnist\b", r"\bnsa\b", r"\bdarpa\b", r"\bdod\b",
         r"\bcnrs\b", r"\binria\b", r"\bcas\b",
-        r"\bnational research\b", r"\bfederal\b"
+        r"\bnational research\b", r"\bfederal\b",
+
+        # European agencies
+        r"\banssi\b",       # France
+        r"\bbsi\b",         # Germany
+        r"\bncsc\b",        # UK / Netherlands
+        r"\bgchq\b",        # UK
+        r"\baivd\b",        # Netherlands
+        r"\bbnd\b",         # Germany
+        r"\bfsi\b",         # various
+
+        # Research funding bodies often attached to government
+        r"\bfraunhofer\b",  # Germany
+        r"\bcei\b",
+        r"\bcea\b",         # France atomic energy
+        r"\bdstl\b",        # UK defence science
+
+        # Asia-Pacific
+        r"\bnict\b",        # Japan
+        r"\bnist\b",
+        r"\basd\b",         # Australia signals
+        r"\bkisa\b",        # Korea
     ]
 
     industry_patterns = [
@@ -363,6 +384,12 @@ def extract_text_from_pdf_first_page(pdf_path: Path) -> str:
 
 results = {}
 
+# ---------------------------------
+# Build results and display
+# ---------------------------------
+
+rows = []
+
 for title, pdf_path in deduped_pdfs.items():
     print("=" * 80)
     print(f"TITLE: {title}")
@@ -375,24 +402,68 @@ for title, pdf_path in deduped_pdfs.items():
         continue
 
     author_section = extract_author_section(text)
-
-    #print("\n")
-    #print("section: ", author_section)
-    #print("\n")
-
     affiliations = parse_affiliations(author_section, title)
 
-    seen = dict.fromkeys(affiliations)
-    affiliations = list(seen)
+    # Deduplicate
+    affiliations = list(dict.fromkeys(affiliations))
 
-    if not affiliations:
-        print("No affiliations detected.")
-    else:
-        print("\nDetected Affiliations:")
-        for aff in affiliations:
-            category = categorize_affiliation(aff)
-            print(f"  - [{category}] {aff}")
+    # Categorize
+    categories = [categorize_affiliation(aff) for aff in affiliations]
+    category_counts = {"Academic": 0, "Government": 0, "Industry": 0, "Unknown": 0}
+    for cat in categories:
+        category_counts[cat] += 1
 
+    if SAMPLE_SIZE <= 20:
+        # Text mode
+        if not affiliations:
+            print("No affiliations detected.")
+        else:
+            print("\nDetected Affiliations:")
+            for aff, cat in zip(affiliations, categories):
+                print(f"  - [{cat}] {aff}")
+    
     results[title] = affiliations
 
+    # Attach awareness for graph mode
+    awareness = app_awareness.get(title)
+    if awareness is None:
+        continue
+
+    total = sum(category_counts.values())
+    if total == 0:
+        continue
+
+    normalized = {k: v / total for k, v in category_counts.items()}
+    rows.append({
+        "title": title,
+        "app_awareness": int(awareness),
+        **normalized
+    })
+
 print("\nDone.")
+
+# ---------------------------------
+# Graph mode
+# ---------------------------------
+
+if SAMPLE_SIZE > 20 and rows:
+    df = pd.DataFrame(rows)
+
+    bucket_cols = ["Academic", "Government", "Industry", "Unknown"]
+    grouped = df.groupby("app_awareness")[bucket_cols].mean()
+
+    colors = ["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728"]
+
+    grouped.plot(
+        kind="bar",
+        stacked=True,
+        figsize=(8, 5),
+        color=colors
+    )
+
+    plt.ylabel("Average Affiliation Share")
+    plt.xlabel("Application Awareness Level")
+    plt.title(f"Author Affiliation Distribution by Application Awareness Level - {TEST_RANGE}")
+    plt.legend(title="Affiliation Type", bbox_to_anchor=(1.05, 1))
+    plt.tight_layout()
+    plt.show()
