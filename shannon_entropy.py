@@ -11,6 +11,8 @@ from google.auth.transport.requests import Request
 import pickle
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
 
 # -----------------------------
 # Config
@@ -564,6 +566,26 @@ def classify_reference(reference: str):
 
 
 # ---------------------------------
+# Shannon Entropy Helper
+# ---------------------------------
+
+def shannon_entropy(prob_dist: dict) -> float:
+    """
+    Compute Shannon entropy of a probability distribution.
+    Expects values to sum to ~1.
+    """
+    probs = np.array(list(prob_dist.values()), dtype=float)
+
+    # remove zeros to avoid log issues
+    probs = probs[probs > 0]
+
+    if len(probs) == 0:
+        return 0.0
+
+    return -np.sum(probs * np.log2(probs))
+
+
+# ---------------------------------
 # Main Processing Loop
 # ---------------------------------
 
@@ -610,22 +632,25 @@ for title, buckets in data.items():
     if awareness is None:
         continue
 
+    entropy = shannon_entropy(normalized)
+
     rows.append({
         "title": title,
         "app_awareness": int(awareness),
+        "entropy": entropy,
         **normalized
     })
 
 df = pd.DataFrame(rows)
 
-#df.to_csv("usenix_data.csv", index=False)
-#print("Saved per-paper data to paper_reference_data.csv")
+df.to_csv("crypto_data.csv", index=False)
+print("Saved per-paper data to paper_reference_data.csv")
 
 print(df.head())
 
 # awareness level -> average fraction of references per bucket
  
-bucket_cols = ["crypto","security","external","standards","unclassified"]
+bucket_cols = ["crypto","security","standards","external","unclassified"]
 
 grouped = df.groupby("app_awareness")[bucket_cols].mean()
 
@@ -633,26 +658,13 @@ print(grouped)
 
 # stacked bar chart
 
-# Define a custom color map with enough distinct colors
-colors = [
-    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#aec7e8", "#050505"
-]
+plt.figure(figsize=(7,5))
+sns.boxplot(data=df, x="app_awareness", y="entropy")
 
-grouped.plot(
-    kind="bar",
-    stacked=True,
-    figsize=(8,5),
-    color=colors,
-)
-
-plt.ylabel("Average Citation Share")
 plt.xlabel("Application Awareness Level")
-plt.title("Average Citation Distribution by Application Awareness Level - USENIX")
-plt.legend(title="Reference Type", bbox_to_anchor=(1.05, 1))
+plt.ylabel("Shannon Entropy (bits)")
+plt.title("Citation Diversity vs Application Awareness - USENIX")
+
 plt.tight_layout()
 plt.show()
-
-
-
 
