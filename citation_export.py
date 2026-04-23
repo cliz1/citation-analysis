@@ -1,4 +1,4 @@
-# ref_analysis.py
+# citation_export.py
 # Nathaniel Clizbe (github.com/cliz1), January 2026
 from pathlib import Path
 import fitz
@@ -567,117 +567,108 @@ def classify_reference(reference: str):
 # Main Processing Loop
 # ---------------------------------
 
-data = {} # paper title : {category counts}
+def extract_venue(reference: str) -> str:
 
-# Loop over filtered PDFs and extract References
+    # LNCS style: "In: Editors (eds.) VENUE YEAR. LNCS"
+    m = re.search(r"In:\s+.{0,80}?\(eds?\.\)\s+([A-Z][A-Za-z0-9 &\-]+\d{4})", reference)
+    if m:
+        return m.group(1).strip()
+
+    # LNCS abbreviated: "In: VENUE YEAR. LNCS, vol."
+    m = re.search(r"In:\s+([A-Z][A-Za-z0-9 &\-]+\d{4})\.", reference)
+    if m:
+        return m.group(1).strip()
+
+    # IEEE/ACM short style: "in S&P 2021," or "in CCS 2018,"
+    m = re.search(r"\bin\s+([A-Z][A-Za-z0-9 &'\-]{2,40}),?\s*\d{4}", reference)
+    if m:
+        return m.group(1).strip()
+
+    # "In Proceedings of ..." or "In Proc. ..."
+    m = re.search(r"\bIn\s+(?:Proceedings\s+of\s+|Proc\.?\s+)([^,\.]+)", reference, re.I)
+    if m:
+        return m.group(1).strip()
+
+    # Journal style: "J. Cryptology" / "SIAM J. Comput." etc.
+    m = re.search(r"\b((?:J\.|Journal|Trans\.|IEEE Trans\.|ACM Trans\.)\s+[A-Za-z][A-Za-z0-9 \.]{2,40})", reference)
+    if m:
+        return m.group(1).strip()
+    
+    # Short acronym style: "In: ITC (2023)" or "In: 24th ACM STOC"
+    m = re.search(r"In:\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z0-9&\- ]{1,30})[,\s]+(?:ACM|IEEE|Springer)?\s*(?:Press\b|,)?\s*\w*\s*\d{4}", reference)
+    if m:
+        return m.group(1).strip()
+
+    # Abbreviated journal names ending in volume/issue numbers
+    m = re.search(r"([A-Z][A-Za-z\. ]{3,40})\s+\d+\(\d+\)", reference)
+    if m:
+        return m.group(1).strip()
+
+    if re.search(r"https?:\s*//\s*github\.com", reference, re.I):
+        return "GitHub"
+
+    # ePrint / arXiv
+    if re.search(r"eprint\.iacr\.org|Cryptol(?:ogy)?\s+ePrint", reference, re.I):
+        return "ePrint"
+    if re.search(r"arxiv\.org|arXiv", reference, re.I):
+        return "arXiv"
+    
+    # Web/blog/forum references with no venue
+    if re.search(r"https?://", reference):
+        if re.search(r"github\.com|gitlab\.com", reference, re.I):
+            return "GitHub"
+        if re.search(r"ethresear\.ch|vitalik\.ca|bitcointalk", reference, re.I):
+            return "web_forum"
+        return "web"
+
+    return ""
+
+# ---------------------------------
+# Main Processing Loop — venue extraction
+# ---------------------------------
+
+citation_rows = []
+
 for title, pdf_path in deduped_pdfs.items():
-    #print(f"\nReading PDF: {pdf_path.name}\n")
-    # initialize category counts for this paper
-    data[title] = {"crypto":0, "security":0, "standards": 0, "external": 0, "unclassified":0}
     pdf_text = extract_text_from_pdf(pdf_path)
     references_text = extract_references_section(pdf_text)
-    if references_text:
-        parsed_refs = parse_references(references_text)
-        for ref in parsed_refs:
-            bucket = classify_reference(ref)
-            data[title][bucket] += 1
-    else:
-        print("No References section found.\n")
-
-#for key in data:
-    #print(str(key))
-    #print(data[key])
-    #print("\n")
-
-# ---------------------------------
-# Build DataFrame for Plotting
-# ---------------------------------
-
-# Improve plot styling for publication
-plt.rcParams.update({
-    "font.size": 12,
-    "axes.titlesize": 14,
-    "axes.labelsize": 12,
-    "legend.fontsize": 10
-})
-
-# Keep text editable in vector formats (PDF)
-plt.rcParams["pdf.fonttype"] = 42
-plt.rcParams["ps.fonttype"] = 42
-
-rows = []
-
-for title, buckets in data.items():
-    total_refs = sum(buckets.values())
-
-    if total_refs == 0:
+    if not references_text:
+        print(f"No References section found: {pdf_path.name}")
         continue
 
-    # normalize bucket distribution
-    normalized = {k: v / total_refs for k, v in buckets.items()}
-
-    # attach application awareness score
+    parsed_refs = parse_references(references_text)
     awareness = app_awareness.get(title)
 
-    if awareness is None:
-        continue
+    for ref in parsed_refs:
+        venue = extract_venue(ref)
+        citation_rows.append({
+            "source_paper": title,
+            "app_awareness": awareness,
+            "venue_raw": venue,
+            "raw_reference": ref,
+        })
 
-    rows.append({
-        "title": title,
-        "app_awareness": int(awareness),
-        **normalized
-    })
-
-df = pd.DataFrame(rows)
-
-#df.to_csv("usenix_data.csv", index=False)
-#print("Saved per-paper data to paper_reference_data.csv")
-
-print(df.head())
-
-# awareness level -> average fraction of references per bucket
-
-bucket_cols = ["crypto","security","external","standards","unclassified"]
-
-grouped = df.groupby("app_awareness")[bucket_cols].mean()
-
-print(grouped)
-
-# ---------------------------------
-# Stacked bar chart
-# ---------------------------------
-
-# Define a clean, publication-friendly color palette
-colors = [
-    "#4C72B0",  # crypto (blue)
-    "#DD8452",  # security (orange)
-    "#55A868",  # external (green)
-    "#C44E52",  # standards (red)
-    "#8172B3",  # unclassified (purple)
-]
-
-grouped.plot(
-    kind="bar",
-    stacked=True,
-    figsize=(8,5),
-    color=colors,
+df_citations = pd.DataFrame(citation_rows)
+df_citations.to_csv(
+    f"{TEST_RANGE}_citations_raw.csv",
+    index=False,
+    escapechar="\\",
+    quoting=1  # QUOTE_ALL — wraps every field in quotes, sidesteps the issue entirely
 )
+print(f"Saved {len(df_citations)} citation rows to {TEST_RANGE}_citations_raw.csv")
 
-plt.ylabel("Average Citation Share")
-plt.xlabel("Application Awareness Level")
-plt.title("Average Citation Distribution by Application Awareness Level - USENIX")
-plt.legend(title="Reference Type", bbox_to_anchor=(1.05, 1))
+# Quick diagnostic: how many references got a venue extracted?
+extracted = df_citations[df_citations["venue_raw"] != ""].shape[0]
+total = len(df_citations)
+print(f"Venue extracted: {extracted}/{total} ({100*extracted/total:.1f}%)")
 
-plt.tight_layout()
+# Preview unmatched to tune regex
+unmatched_sample = df_citations[df_citations["venue_raw"] == ""]["raw_reference"].head(20)
+print("\nSample of references with no venue extracted:")
+for r in unmatched_sample:
+    print(" ", r[:120])
 
-# ---------------------------------
-# Save figures (vector + raster)
-# ---------------------------------
-
-output_base = f"figuresAndTables/{TEST_RANGE}_citation_plot"
-
-plt.savefig(f"{output_base}.pdf")          # vector (best for LaTeX)
-plt.savefig(f"{output_base}.png", dpi=300) # high-res fallback
-
-plt.close()  # important for scripts generating multiple plots
-
+ # Check venue extraction rate by app_awareness level
+print("\nExtraction rate by awareness level:")
+df_citations["extracted"] = df_citations["venue_raw"] != ""
+print(df_citations.groupby("app_awareness")["extracted"].mean().round(3))

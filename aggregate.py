@@ -1,5 +1,5 @@
-# ref_analysis.py
-# Nathaniel Clizbe (github.com/cliz1), January 2026
+# ref_analysis_multi.py
+
 from pathlib import Path
 import fitz
 import re
@@ -18,14 +18,11 @@ import matplotlib.pyplot as plt
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
-# Paths
-ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
-
+ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/")
 SAMPLE_SIZE = 400
+SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE"
 
-
-SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" # find this in the sheets URL should it ever change
-TEST_RANGE = "USENIX" # One conference (sheet) per run
+venues = ["USENIX", "Oakland", "Crypto", "EuroCrypt"]
 
 CRYPTO_KEYWORDS =  [
         "crypto",
@@ -295,12 +292,10 @@ IOT_NETWORK_KEYWORDS = [
 def get_sheets_service():
     creds = None
 
-    # Load cached token if it exists
     if Path("token.pickle").exists():
         with open("token.pickle", "rb") as token:
             creds = pickle.load(token)
 
-    # Authenticate if needed
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -316,74 +311,21 @@ def get_sheets_service():
     return build("sheets", "v4", credentials=creds)
 
 # -----------------------------
-# Title cleaning helper
+# Helpers
 # -----------------------------
 
 def clean_title(raw: str) -> str:
-    # Remove author prefix before colon
     raw = re.sub(r"^.*?:\s*", "", raw)
-
-    # Remove year in parentheses
     raw = re.sub(r"\(\d{4}\)", "", raw)
-
-    # Remove LaTeX math
     raw = re.sub(r"\$.*?\$", "", raw)
-
     return raw.strip()
-
-
-# ------------------------------------------------------------------------------
-# Collect titles from google sheets AND record app. awareness for later use
-# ------------------------------------------------------------------------------
-
-count = 0
-paper_titles = []
-app_awareness = {}
-awareness_values = ["1", "2", "3", "4"]
-
-service = get_sheets_service()
-sheet = service.spreadsheets()
-
-result = sheet.values().get(
-    spreadsheetId=SPREADSHEET_ID,
-    range=TEST_RANGE
-).execute()
-
-rows = result.get("values", [])
-
-if not rows:
-    print("No data found in sheet.")
-else:
-    for row in rows:
-        if count == SAMPLE_SIZE:
-            break
-        if len(row) > 2:
-            if row[2] == "1" or row[2] == "2": # Crypto or Analysis
-                count +=1
-                cleaned_title = clean_title(row[0].strip())
-                paper_titles.append(cleaned_title)
-                if row[4] in awareness_values: # for coders who didn't record app. awareness correctly >:(
-                    app_awareness[cleaned_title] = row[4]
-        
-
-print(f"Loaded {len(paper_titles)} paper titles from google sheets.")
-
-# -----------------------------------------------------------
-# Find pdfs in Zotero that match the titles in our collection
-# -----------------------------------------------------------
-
-# Find all PDFs recursively
-pdf_files = list(ZOTERO_STORAGE.rglob("*.pdf"))
-print(f"Found {len(pdf_files)} PDFs in Zotero storage")
 
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKD", text)
     text = "".join(c for c in text if not unicodedata.combining(c))
-
     text = text.lower()
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"[^a-z0-9 ]", "", text)
-
     return text.strip()
 
 STOPWORDS = {
@@ -406,36 +348,15 @@ def pdf_matches_title(pdf_path: Path, titles: list[str]):
 
         overlap = filename_tokens & title_tokens
 
-        # Require a long distinctive word
         long_words = [w for w in title_tokens if len(w) >= 7]
         if long_words and not any(w in filename_tokens for w in long_words):
             continue
 
-        # Require >=70% title coverage
         if len(overlap) / len(title_tokens) >= 0.7:
             return title
 
     return None
 
-matches = defaultdict(list)
-
-for pdf in pdf_files:
-    matched_title = pdf_matches_title(pdf, paper_titles)
-    if matched_title:
-        matches[matched_title].append(pdf)
-
-print(f"{sum(len(v) for v in matches.values())} PDFs match titles in papers_list.txt")
-
-deduped_pdfs = {}
-
-for title, pdf_list in matches.items():
-    best_pdf = max(pdf_list, key=lambda p: p.stat().st_size)
-    deduped_pdfs[title] = best_pdf
-
-
-# ---------------------------------------------
-# Functions for Parsing and Extracting References
-# ---------------------------------------------
 def extract_text_from_pdf(pdf_path: Path) -> str:
     text = ""
     try:
@@ -447,19 +368,12 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
     return text
 
 def extract_references_section(text: str) -> str:
-    """
-    Returns everything after the first occurrence of "References" as a standalone word or heading.
-    Ignores words like "dereferences" that contain "references".
-    """
-    # Match "References" as a full word, optionally with punctuation, at start of line or after newline
     m = re.search(r"(?:^|\n)\s*(references|bibliography|references and notes)\b", text, re.I)
     if not m:
-        return ""  # no references section found
+        return ""
 
-    # slice from the end of the match
     references_text = text[m.end():]
 
-    # stop at common section markers after references
     for marker in ["appendix", "acknowledgements", "supplementary"]:
         idx = re.search(rf"\n\s*{marker}\b", references_text, re.I)
         if idx:
@@ -467,217 +381,182 @@ def extract_references_section(text: str) -> str:
 
     return references_text.strip()
 
-def looks_like_body_text(text: str) -> bool:
-    """
-    Returns True if the block looks like body/prose rather than a reference.
-    Checks for keywords 'we', 'hence', or 'therefore'.
-    """
-    if not text:
-        return False
-
-    # Return True if any of the keywords appear (case-insensitive)
-    return bool(re.search(r"\b(we|hence|therefore|such that|this algorithm|sends|s.t.|←|adversary outputs|given|this is|as well as|indeed|compromised|Theorem|assume|lemma|Corollary|computes)\b", text, re.I))
-
-
-def parse_references(text: str, debug=False):
-    """
-    Parses references handling both:
-      - numeric markers: 1. ...  or [1] ...
-      - bracketed alphanumeric markers: [ANWW13], [BCG+19a], [BCGI18], etc.
-    Skips blocks that look like body text.
-    """
-
-    # Remove leading "References" header
+def parse_references(text: str):
     text = re.sub(r"^\s*references\s*", "", text, flags=re.IGNORECASE)
 
-    # Remove common page-range patterns like "pp. 33–53."
-    text = re.sub(r"\bpp\.?\s*\d{1,4}\s*[-–]\s*\d{1,4}\.?", "", text)
-
-    # Insert newline before reference markers to help splitting
     marker_lookahead = r"(?=(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*))"
     text = re.sub(r"\s" + marker_lookahead, "\n", text)
 
-    # Split into lines and strip whitespace
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
     refs = []
     current = None
-    # Regex to detect start-of-reference lines
     marker_re = re.compile(r"^(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*)")
 
     for ln in lines:
         if marker_re.match(ln):
-            # start a new reference
-            if current:
-                # Skip blocks that look like body text or if too short
-                if not looks_like_body_text(current) and len(current) > 35:
-                    refs.append(current.strip())
-                elif debug:
-                    print("Skipping body-like candidate:", current[:80].replace("\n", " "))
+            if current and len(current) > 35:
+                refs.append(current.strip())
             current = ln
         else:
-            # continuation line: append to the current ref if exists
-            if current is not None:
+            if current:
                 current += " " + ln
-            else:
-                # stray line before first marker: ignore
-                pass
 
-    # append the final buffered reference if any
-    if current and not looks_like_body_text(current):
+    if current and len(current) > 35:
         refs.append(current.strip())
-    elif current and debug:
-        print("Skipping final body-like candidate:", current[:80].replace("\n", " "))
 
     return refs
 
-# -------------------------------------
-# Function for Categorizing References - also collect some "other" citations for inspection
-# -------------------------------------
-
-others = []
 def classify_reference(reference: str):
+    # assumes keyword arrays exist
     c = reference.lower()
 
     scores = {
-        "crypto": 0,
-        "security": 0,
-        "standards": 0,
-        "external": 0,
+        "crypto": sum(k in c for k in CRYPTO_KEYWORDS),
+        "security": sum(k in c for k in SECURITY_SYSTEMS_KEYWORDS),
+        "standards": sum(k in c for k in TECH_DOC_KEYWORDS),
+        "external": sum(k in c for k in REAL_WORLD_KEYWORDS),
         "unclassified": 0,
     }
 
-    scores["crypto"] += sum(k in c for k in CRYPTO_KEYWORDS)
-    scores["security"] += sum(k in c for k in SECURITY_SYSTEMS_KEYWORDS)
-    scores["standards"] += sum(k in c for k in TECH_DOC_KEYWORDS)
-    scores["external"] += sum(k in c for k in REAL_WORLD_KEYWORDS)
-
-    # No matches at all -> OTHER
     if all(v == 0 for v in scores.values()):
-        #others.append(reference)
         return "unclassified"
 
-    # Pick category with highest score
-    best = max(scores, key=scores.get)
+    return max(scores, key=scores.get)
 
-    return best
+# -----------------------------
+# Core pipeline per venue
+# -----------------------------
 
+def compute_grouped(TEST_RANGE):
 
-# ---------------------------------
-# Main Processing Loop
-# ---------------------------------
+    service = get_sheets_service()
+    sheet = service.spreadsheets()
 
-data = {} # paper title : {category counts}
+    result = sheet.values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=TEST_RANGE
+    ).execute()
 
-# Loop over filtered PDFs and extract References
-for title, pdf_path in deduped_pdfs.items():
-    #print(f"\nReading PDF: {pdf_path.name}\n")
-    # initialize category counts for this paper
-    data[title] = {"crypto":0, "security":0, "standards": 0, "external": 0, "unclassified":0}
-    pdf_text = extract_text_from_pdf(pdf_path)
-    references_text = extract_references_section(pdf_text)
-    if references_text:
-        parsed_refs = parse_references(references_text)
-        for ref in parsed_refs:
-            bucket = classify_reference(ref)
-            data[title][bucket] += 1
-    else:
-        print("No References section found.\n")
+    rows = result.get("values", [])
 
-#for key in data:
-    #print(str(key))
-    #print(data[key])
-    #print("\n")
+    paper_titles = []
+    app_awareness = {}
 
-# ---------------------------------
-# Build DataFrame for Plotting
-# ---------------------------------
+    count = 0
 
-# Improve plot styling for publication
+    for row in rows:
+        if count == SAMPLE_SIZE:
+            break
+        if len(row) > 2:
+            if row[2] in ["1", "2"]:
+                count += 1
+                title = clean_title(row[0].strip())
+                paper_titles.append(title)
+                if row[4] in ["1","2","3","4"]:
+                    app_awareness[title] = row[4]
+
+    pdf_files = list(ZOTERO_STORAGE.rglob("*.pdf"))
+
+    matches = defaultdict(list)
+
+    for pdf in pdf_files:
+        matched_title = pdf_matches_title(pdf, paper_titles)
+        if matched_title:
+            matches[matched_title].append(pdf)
+
+    deduped_pdfs = {
+        title: max(pdfs, key=lambda p: p.stat().st_size)
+        for title, pdfs in matches.items()
+    }
+
+    data = {}
+
+    for title, pdf_path in deduped_pdfs.items():
+        data[title] = {"crypto":0,"security":0,"standards":0,"external":0,"unclassified":0}
+
+        text = extract_text_from_pdf(pdf_path)
+        refs_section = extract_references_section(text)
+
+        if refs_section:
+            refs = parse_references(refs_section)
+            for ref in refs:
+                bucket = classify_reference(ref)
+                data[title][bucket] += 1
+
+    rows = []
+
+    for title, buckets in data.items():
+        total = sum(buckets.values())
+        if total == 0:
+            continue
+
+        normalized = {k: v/total for k,v in buckets.items()}
+        awareness = app_awareness.get(title)
+
+        if awareness is None:
+            continue
+
+        rows.append({
+            "title": title,
+            "app_awareness": int(awareness),
+            **normalized
+        })
+
+    df = pd.DataFrame(rows)
+
+    bucket_cols = ["crypto","security","external","standards","unclassified"]
+
+    return df.groupby("app_awareness")[bucket_cols].mean()
+
+# -----------------------------
+# Run all venues + plot
+# -----------------------------
+
 plt.rcParams.update({
     "font.size": 12,
     "axes.titlesize": 14,
-    "axes.labelsize": 12,
-    "legend.fontsize": 10
+    "axes.labelsize": 12
 })
-
-# Keep text editable in vector formats (PDF)
 plt.rcParams["pdf.fonttype"] = 42
-plt.rcParams["ps.fonttype"] = 42
 
-rows = []
+results = {}
 
-for title, buckets in data.items():
-    total_refs = sum(buckets.values())
+for venue in venues:
+    print(f"Processing {venue}...")
+    results[venue] = compute_grouped(venue)
 
-    if total_refs == 0:
-        continue
+fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharey=True)
+axes = axes.flatten()
 
-    # normalize bucket distribution
-    normalized = {k: v / total_refs for k, v in buckets.items()}
+colors = ["#4C72B0","#DD8452","#55A868","#C44E52","#8172B3"]
 
-    # attach application awareness score
-    awareness = app_awareness.get(title)
+for i, (venue, grouped) in enumerate(results.items()):
+    ax = axes[i]
 
-    if awareness is None:
-        continue
+    grouped.plot(
+        kind="bar",
+        stacked=True,
+        ax=ax,
+        color=colors,
+        legend=False
+    )
 
-    rows.append({
-        "title": title,
-        "app_awareness": int(awareness),
-        **normalized
-    })
+    ax.set_title(venue)
+    ax.text(-0.15, 1.05, f"({chr(97+i)})", transform=ax.transAxes,
+            fontsize=12, fontweight="bold")
 
-df = pd.DataFrame(rows)
+# shared labels
+fig.text(0.5, 0.04, "Application Awareness Level", ha="center")
+fig.text(0.04, 0.5, "Average Citation Share", va="center", rotation="vertical")
 
-#df.to_csv("usenix_data.csv", index=False)
-#print("Saved per-paper data to paper_reference_data.csv")
+# shared legend
+handles, labels = axes[0].get_legend_handles_labels()
+fig.legend(handles, labels, title="Reference Type", loc="center right")
 
-print(df.head())
+plt.tight_layout(rect=[0.05, 0.05, 0.85, 1])
 
-# awareness level -> average fraction of references per bucket
+plt.savefig("citation_distribution_all_venues.pdf")
+plt.savefig("citation_distribution_all_venues.png", dpi=300)
 
-bucket_cols = ["crypto","security","external","standards","unclassified"]
-
-grouped = df.groupby("app_awareness")[bucket_cols].mean()
-
-print(grouped)
-
-# ---------------------------------
-# Stacked bar chart
-# ---------------------------------
-
-# Define a clean, publication-friendly color palette
-colors = [
-    "#4C72B0",  # crypto (blue)
-    "#DD8452",  # security (orange)
-    "#55A868",  # external (green)
-    "#C44E52",  # standards (red)
-    "#8172B3",  # unclassified (purple)
-]
-
-grouped.plot(
-    kind="bar",
-    stacked=True,
-    figsize=(8,5),
-    color=colors,
-)
-
-plt.ylabel("Average Citation Share")
-plt.xlabel("Application Awareness Level")
-plt.title("Average Citation Distribution by Application Awareness Level - USENIX")
-plt.legend(title="Reference Type", bbox_to_anchor=(1.05, 1))
-
-plt.tight_layout()
-
-# ---------------------------------
-# Save figures (vector + raster)
-# ---------------------------------
-
-output_base = f"figuresAndTables/{TEST_RANGE}_citation_plot"
-
-plt.savefig(f"{output_base}.pdf")          # vector (best for LaTeX)
-plt.savefig(f"{output_base}.png", dpi=300) # high-res fallback
-
-plt.close()  # important for scripts generating multiple plots
-
+plt.close()
