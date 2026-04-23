@@ -11,6 +11,10 @@ from google.auth.transport.requests import Request
 import pickle
 import pandas as pd
 import matplotlib.pyplot as plt
+import time
+import urllib.parse
+import urllib.request
+import json
 
 # -----------------------------
 # Config
@@ -21,11 +25,11 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 # Paths
 ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
 
-SAMPLE_SIZE = 400
+SAMPLE_SIZE = 5
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" # find this in the sheets URL should it ever change
-TEST_RANGE = "USENIX" # One conference (sheet) per run
+TEST_RANGE = "EuroCrypt" # One conference (sheet) per run
 
 CRYPTO_KEYWORDS =  [
         "crypto",
@@ -563,8 +567,52 @@ def classify_reference(reference: str):
     return best
 
 
+# -------------------------------------
+# DBLP helper 
+# -------------------------------------
+
+def query_dblp_for_venue(raw_reference: str) -> str:
+    title = ""
+
+    # LNCS style: "Lastname, F.: Title. In: ..."
+    m = re.search(r":\s+([A-Z][^:\.]{10,120})\.\s+In:", raw_reference)
+    if m:
+        title = m.group(1).strip()
+
+    # Quoted title fallback
+    if not title:
+        m = re.search(r'"([^"]{10,120})"', raw_reference)
+        if m:
+            title = m.group(1).strip()
+
+    # Period-delimited before In/IACR/arXiv fallback
+    if not title:
+        m = re.search(r'\.\s+([A-Z][^\.]{10,120})\.\s+(?:In|IACR|arXiv)', raw_reference)
+        if m:
+            title = m.group(1).strip()
+
+    print(f"    extracted title: '{title[:60] if title else 'NONE'}'")  # add this
+
+    if not title or len(title) < 10:
+        title = raw_reference  # fallback
+
+    try:
+        query = urllib.parse.quote(title)
+        url = f"https://dblp.org/search/publ/api?q={query}&format=json&h=1"
+        req = urllib.request.Request(url, headers={"User-Agent": "citation-analysis-research/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read())
+        hits = data.get("result", {}).get("hits", {}).get("hit", [])
+        if not hits:
+            return ""
+        info = hits[0].get("info", {})
+        venue = info.get("venue", "")
+        return venue.strip() if venue else ""
+    except Exception:
+        return ""
+
 # ---------------------------------
-# Main Processing Loop
+# Venue extraction helper
 # ---------------------------------
 
 def extract_venue(reference: str) -> str:
@@ -606,6 +654,7 @@ def extract_venue(reference: str) -> str:
 
     if re.search(r"https?:\s*//\s*github\.com", reference, re.I):
         return "GitHub"
+    
 
     # ePrint / arXiv
     if re.search(r"eprint\.iacr\.org|Cryptol(?:ogy)?\s+ePrint", reference, re.I):
@@ -641,10 +690,17 @@ for title, pdf_path in deduped_pdfs.items():
 
     for ref in parsed_refs:
         venue = extract_venue(ref)
+        if not venue:
+            print(f"  DBLP query ref: {ref[:80]}")
+            venue = query_dblp_for_venue(ref)
+            print(f"  DBLP result: {venue or 'none'}")
+            time.sleep(0.5)
+            
         citation_rows.append({
             "source_paper": title,
             "app_awareness": awareness,
             "venue_raw": venue,
+            "venue_source": "regex" if venue else "dblp" if venue else "none",
             "raw_reference": ref,
         })
 
