@@ -15,6 +15,8 @@ import time
 import urllib.parse
 import urllib.request
 import json
+import ssl
+import certifi
 
 # -----------------------------
 # Config
@@ -25,11 +27,11 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 # Paths
 ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
 
-SAMPLE_SIZE = 5
+SAMPLE_SIZE = 400
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" # find this in the sheets URL should it ever change
-TEST_RANGE = "EuroCrypt" # One conference (sheet) per run
+TEST_RANGE = "USENIX" # One conference (sheet) per run
 
 CRYPTO_KEYWORDS =  [
         "crypto",
@@ -579,6 +581,11 @@ def query_dblp_for_venue(raw_reference: str) -> str:
     if m:
         title = m.group(1).strip()
 
+    # Author-year style: "Lastname, F., ...: Title. In VENUE" or just "Title. In "
+    m = re.search(r":\s+([A-Z][^:\.]{10,120})\.\s+In\b", raw_reference)
+    if m:
+        title = m.group(1).strip()
+
     # Quoted title fallback
     if not title:
         m = re.search(r'"([^"]{10,120})"', raw_reference)
@@ -591,7 +598,7 @@ def query_dblp_for_venue(raw_reference: str) -> str:
         if m:
             title = m.group(1).strip()
 
-    print(f"    extracted title: '{title[:60] if title else 'NONE'}'")  # add this
+    #print(f"    extracted title: '{title[:60] if title else 'NONE'}'")  # add this
 
     if not title or len(title) < 10:
         title = raw_reference  # fallback
@@ -600,7 +607,8 @@ def query_dblp_for_venue(raw_reference: str) -> str:
         query = urllib.parse.quote(title)
         url = f"https://dblp.org/search/publ/api?q={query}&format=json&h=1"
         req = urllib.request.Request(url, headers={"User-Agent": "citation-analysis-research/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as response:
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(req, timeout=10, context=context) as response:
             data = json.loads(response.read())
         hits = data.get("result", {}).get("hits", {}).get("hit", [])
         if not hits:
@@ -654,7 +662,7 @@ def extract_venue(reference: str) -> str:
 
     if re.search(r"https?:\s*//\s*github\.com", reference, re.I):
         return "GitHub"
-    
+
 
     # ePrint / arXiv
     if re.search(r"eprint\.iacr\.org|Cryptol(?:ogy)?\s+ePrint", reference, re.I):
@@ -720,9 +728,9 @@ print(f"Venue extracted: {extracted}/{total} ({100*extracted/total:.1f}%)")
 
 # Preview unmatched to tune regex
 unmatched_sample = df_citations[df_citations["venue_raw"] == ""]["raw_reference"].head(20)
-print("\nSample of references with no venue extracted:")
-for r in unmatched_sample:
-    print(" ", r[:120])
+#print("\nSample of references with no venue extracted:")
+#for r in unmatched_sample:
+    #print(" ", r[:120])
 
  # Check venue extraction rate by app_awareness level
 print("\nExtraction rate by awareness level:")
