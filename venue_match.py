@@ -104,6 +104,39 @@ ABBREV_MAP = {
 "Advances in Cryptology - EUROCRYPT": "Annual International Conference on the Theory and Applications of Cryptographic Techniques",
 "Information Security and Cryptology - ICISC": "International Conference on Information Security and Cryptology",
 
+# Venues you're missing
+"CCC": "Computational Complexity Conference",
+"ESA": "European Symposium on Algorithms",
+"ISSAC": "International Symposium on Symbolic and Algebraic Computation",
+"LATIN": "Latin American Theoretical Informatics Symposium",
+"ESORICS": "European Symposium on Research in Computer Security",
+"ICICS": "International Conference on Information and Communications Security",
+"NordSec": "Nordic Conference on Secure IT Systems",
+"FC": "Financial Cryptography and Data Security",
+"SEC": "IFIP International Information Security Conference",
+"Inscrypt": "International Conference on Information Security and Cryptology",
+"AES 2004": "Advanced Encryption Standard Conference",
+
+# IEEE Trans variants - add to normalize_venue strip logic
+"IEEE Trans. Inform. Theory": "IEEE Transactions on Information Theory",
+"IEEE Trans. Inf. Theor.": "IEEE Transactions on Information Theory",
+"IEEE Trans. Comput.": "IEEE Transactions on Computers",
+"IEEE Trans. Emerg. Top. Comput.": "IEEE Transactions on Emerging Topics in Computing",
+
+# Journals
+"J. Complex.": "Journal of Complexity",
+"J. Algebra": "Journal of Algebra",
+"Commun. Algebra": "Communications in Algebra",
+"Compos. Math.": "Compositio Mathematica",
+"Distrib. Comput.": "Distributed Computing",
+"ACM Trans. Program. Lang. Syst.": "ACM Transactions on Programming Languages and Systems",
+"Linear Multilinear Algebra": "Linear and Multilinear Algebra",
+
+# Verbose CRYPTO/EUROCRYPT/PKC variants
+"Advances in Cryptology - CRYPTO": "International Cryptology Conference",
+"Public-Key Cryptography - PKC": "International Conference on Practice and Theory of Public Key Cryptography",
+"Cryptology - EUROCRYPT": "Annual International Conference on the Theory and Applications of Cryptographic Techniques",
+
     # Unfixable
     "August": "",  # this is a month name leaking in, discard
     "Adv. Comput. Res.": "",  # obscure, leave unmatched
@@ -117,6 +150,8 @@ def normalize_venue(venue_raw: str) -> str:
     normalized = re.sub(r'\s+\d+(\(\d+\))?$', '', normalized)
     # Fix hyphenation artifacts
     normalized = re.sub(r'-\s+', '', normalized)
+    # also collapse internal spaces after hyphen removal
+    normalized = re.sub(r'\s{2,}', ' ', normalized)
     # Strip "Advances in Cryptology - " prefix
     normalized = re.sub(r'^Advances in Cryptology\s*-\s*', '', normalized)
     # Strip "Information Security and Cryptology - " prefix  

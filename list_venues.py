@@ -2,7 +2,7 @@ import csv
 from collections import Counter
 
 counts = Counter()
-with open('EuroCrypt_citations_matched.csv', 'r') as f:
+with open('Crypto_citations_matched.csv', 'r') as f:
     reader = csv.reader(f, escapechar='\\')
     header = next(reader)
     print("Headers:", header)

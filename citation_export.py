@@ -31,7 +31,7 @@ SAMPLE_SIZE = 400
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" # find this in the sheets URL should it ever change
-TEST_RANGE = "USENIX" # One conference (sheet) per run
+TEST_RANGE = "EuroCrypt" # One conference (sheet) per run
 
 CRYPTO_KEYWORDS =  [
         "crypto",
@@ -634,6 +634,21 @@ def extract_venue(reference: str) -> str:
     m = re.search(r"In:\s+([A-Z][A-Za-z0-9 &\-]+\d{4})\.", reference)
     if m:
         return m.group(1).strip()
+
+    # LNCS style: "In: Editors (eds.) VENUE YEAR. LNCS"
+    m = re.search(r"In:\s+.{0,80}?\(eds?\.\)\s+([A-Z][A-Za-z0-9 &\-–—]+\d{4})", reference)
+
+    # LNCS abbreviated: "In: VENUE YEAR. LNCS, vol."
+    m = re.search(r"In:\s+([A-Z][A-Za-z0-9 &\-–—]+\d{4})\.", reference)
+
+    # DOI link — try to extract venue from text before the DOI
+    if re.search(r"https?://doi\.org", reference, re.I):
+        # Try one more LNCS pass on just the pre-DOI portion
+        pre_doi = reference[:reference.lower().find("https://doi")]
+        m = re.search(r"([A-Z][A-Za-z0-9 &\-–—]+\d{4})\.", pre_doi)
+        if m:
+            return m.group(1).strip()
+        return ""  # return empty rather than "web" for DOI refs
 
     # IEEE/ACM short style: "in S&P 2021," or "in CCS 2018,"
     m = re.search(r"\bin\s+([A-Z][A-Za-z0-9 &'\-]{2,40}),?\s*\d{4}", reference)
