@@ -17,6 +17,7 @@ import urllib.request
 import json
 import ssl
 import certifi
+import urllib.error
 
 # -----------------------------
 # Config
@@ -25,13 +26,13 @@ import certifi
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
 # Paths
-ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") # replace with path to local Zotero storage
+ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/") 
 
 SAMPLE_SIZE = 400
 
 
-SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" # find this in the sheets URL should it ever change
-TEST_RANGE = "EuroCrypt" # One conference (sheet) per run
+SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" 
+TEST_RANGE = "Crypto" # One conference (sheet) per run
 
 CRYPTO_KEYWORDS =  [
         "crypto",
@@ -454,13 +455,14 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
 
 def extract_references_section(text: str) -> str:
     """
-    Returns everything after the first occurrence of "References" as a standalone word or heading.
-    Ignores words like "dereferences" that contain "references".
+    Returns everything after the last occurrence of "References" as a standalone heading.
+    Using the last match avoids false hits on table-of-contents entries (e.g. "References ... 42").
     """
-    # Match "References" as a full word, optionally with punctuation, at start of line or after newline
-    m = re.search(r"(?:^|\n)\s*(references|bibliography|references and notes)\b", text, re.I)
-    if not m:
+    # Match "References" as a full word at start of line or after newline
+    matches = list(re.finditer(r"(?:^|\n)\s*(references|bibliography|references and notes)\b", text, re.I))
+    if not matches:
         return ""  # no references section found
+    m = matches[-1]  # use the last match — bibliography is always at end of paper
 
     # slice from the end of the match
     references_text = text[m.end():]
@@ -472,6 +474,12 @@ def extract_references_section(text: str) -> str:
             references_text = references_text[:idx.start()]
 
     return references_text.strip()
+
+def dehyphenate(text: str) -> str:
+    """Collapse soft-hyphen line-break artifacts from two-column PDF extraction.'.
+    """
+    return re.sub(r'(\w)-\s+(\w)', r'\1-\2', text)
+
 
 def looks_like_body_text(text: str) -> bool:
     """
@@ -570,39 +578,28 @@ def classify_reference(reference: str):
 
 
 # -------------------------------------
-# DBLP helper 
+# DBLP helper
 # -------------------------------------
 
-def query_dblp_for_venue(raw_reference: str) -> str:
-    title = ""
+_DBLP_VENUE_MAP = {
+    "corr": "arXiv",
+    "arxiv": "arXiv",
+    "iacr cryptol. eprint arch.": "ePrint",
+    "iacr cryptology eprint archive": "ePrint",
+    "iacr eprint": "ePrint",
+    "iacr trans. cryptogr. hardw. embed. syst.": "TCHES",
+    "j. cryptology": "Journal of Cryptology",
+    "journal of cryptology": "Journal of Cryptology",
+}
 
-    # LNCS style: "Lastname, F.: Title. In: ..."
-    m = re.search(r":\s+([A-Z][^:\.]{10,120})\.\s+In:", raw_reference)
-    if m:
-        title = m.group(1).strip()
 
-    # Author-year style: "Lastname, F., ...: Title. In VENUE" or just "Title. In "
-    m = re.search(r":\s+([A-Z][^:\.]{10,120})\.\s+In\b", raw_reference)
-    if m:
-        title = m.group(1).strip()
+class _DblpRateLimited(Exception):
+    pass
 
-    # Quoted title fallback
-    if not title:
-        m = re.search(r'"([^"]{10,120})"', raw_reference)
-        if m:
-            title = m.group(1).strip()
 
-    # Period-delimited before In/IACR/arXiv fallback
-    if not title:
-        m = re.search(r'\.\s+([A-Z][^\.]{10,120})\.\s+(?:In|IACR|arXiv)', raw_reference)
-        if m:
-            title = m.group(1).strip()
-
-    #print(f"    extracted title: '{title[:60] if title else 'NONE'}'")  # add this
-
-    if not title or len(title) < 10:
-        title = raw_reference  # fallback
-
+def _fetch_dblp_venue(title: str) -> str:
+    """Single DBLP title lookup; returns raw venue string or '' on miss.
+    Raises _DblpRateLimited on HTTP 429 so the caller can bail instead of retrying."""
     try:
         query = urllib.parse.quote(title)
         url = f"https://dblp.org/search/publ/api?q={query}&format=json&h=1"
@@ -613,11 +610,78 @@ def query_dblp_for_venue(raw_reference: str) -> str:
         hits = data.get("result", {}).get("hits", {}).get("hit", [])
         if not hits:
             return ""
-        info = hits[0].get("info", {})
-        venue = info.get("venue", "")
+        venue = hits[0].get("info", {}).get("venue", "")
         return venue.strip() if venue else ""
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            raise _DblpRateLimited()
+        return ""
     except Exception:
         return ""
+
+
+def query_dblp_for_venue(raw_reference: str) -> str:
+    title = ""
+
+    # LNCS / author-year: "...: Title. In ..."
+    m = re.search(r":\s+([A-Z][^:\.]{10,120})\.\s+In\b", raw_reference)
+    if m:
+        title = m.group(1).strip()
+
+    # Numeric style: "Authors. Title. In VENUE" — last sentence before ". In"
+    if not title:
+        m = re.search(r'\.\s+([A-Z][^\.]{15,120})\.\s+(?:In\b|IACR|arXiv|CoRR)', raw_reference)
+        if m:
+            title = m.group(1).strip()
+
+    # Quoted title
+    if not title:
+        m = re.search(r'"([^"]{10,120})"', raw_reference)
+        if m:
+            title = m.group(1).strip()
+
+    # Fallback: strip citation marker, skip past author list (first ". "),
+    # take the remaining text as the title start.
+    if not title:
+        body = re.sub(r'^\[?\d{1,3}\]?\s*|^\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*', '', raw_reference)
+        first_period = body.find('. ')
+        title = body[first_period + 2:] if first_period > 5 else body
+
+    # Strip any trailing ". In VENUE" / ". arXiv" / ". IACR" that leaked into the title
+    title = re.sub(r'\.\s+(?:In\b|arXiv|IACR|CoRR).*$', '', title, flags=re.I).strip()
+
+    # Skip obviously hopeless queries
+    if re.fullmatch(r'(?i)private\s+communication\.?', title.strip()):
+        return ""
+
+    if not title or len(title) < 12:
+        return ""
+
+    # Try progressively shorter prefixes: 10 → 7 → 5 words.
+    # Shorter queries strip garbled suffix tokens while keeping the
+    # distinctive title head that DBLP needs for a confident match.
+    words = title.split()
+    seen: set[str] = set()
+    variants: list[str] = []
+    for n in (10, 7, 5):
+        candidate = " ".join(words[:n]).strip()
+        if len(candidate) >= 12 and candidate not in seen:
+            seen.add(candidate)
+            variants.append(candidate)
+
+    for i, variant in enumerate(variants):
+        print(f"    DBLP query ({len(variant.split())}w): '{variant[:70]}'")
+        try:
+            raw_venue = _fetch_dblp_venue(variant)
+        except _DblpRateLimited:
+            print("    DBLP rate-limited (429) — skipping remaining variants")
+            return ""
+        if raw_venue:
+            return _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
+        if i < len(variants) - 1:
+            time.sleep(1.0)  # match inter-ref cadence; genuine miss, not rate-limit
+
+    return ""
 
 # ---------------------------------
 # Venue extraction helper
@@ -641,17 +705,36 @@ def extract_venue(reference: str) -> str:
     # LNCS abbreviated: "In: VENUE YEAR. LNCS, vol."
     m = re.search(r"In:\s+([A-Z][A-Za-z0-9 &\-–—]+\d{4})\.", reference)
 
-    # DOI link — try to extract venue from text before the DOI
-    if re.search(r"https?://doi\.org", reference, re.I):
-        # Try one more LNCS pass on just the pre-DOI portion
-        pre_doi = reference[:reference.lower().find("https://doi")]
-        m = re.search(r"([A-Z][A-Za-z0-9 &\-–—]+\d{4})\.", pre_doi)
+    # Academic publisher URLs — try to extract venue from pre-URL text, else "" → DBLP.
+    # doi\.\s*org handles soft-wrapped "doi. org" artifacts from two-column PDF extraction.
+    _ACADEMIC_URL_RE = re.compile(
+        r"https?://(?:dx\.)?doi\.\s*org"                          # DOI (incl. soft-wrapped)
+        r"|https?://(?:dl|doi)\.acm\.org"                         # ACM DL
+        r"|https?://ieeexplore\.ieee\.org"                        # IEEE Xplore
+        r"|https?://(?:link\.)?springer\.com"                     # Springer / LNCS
+        r"|https?://drops\.dagstuhl\.de"                          # LIPIcs (Dagstuhl)
+        r"|https?://(?:www\.)?usenix\.org"                        # USENIX proceedings
+        r"|https?://(?:www\.)?ndss-symposium\.org"                # NDSS
+        r"|https?://(?:tches|tosc|iacr)\.iacr\.org"              # IACR journal sites
+        r"|https?://epubs\.siam\.org"                             # SIAM journals
+        r"|https?://(?:www\.)?sciencedirect\.com"                 # Elsevier
+        r"|https?://(?:onlinelibrary\.)?wiley\.com"               # Wiley
+        r"|https?://eccc\.weizmann\.ac\.il"                       # ECCC
+        r"|https?://hal\.(?:science|inria\.fr|archives-ouvertes\.fr)"  # HAL preprints
+        r"|https?://api\.semanticscholar\.org"                    # Semantic Scholar
+        r"|https?://(?:www\.)?eudml\.org",                        # EuDML (math journals)
+        re.I
+    )
+    _url_m = _ACADEMIC_URL_RE.search(reference)
+    if _url_m:
+        pre_url = reference[:_url_m.start()]
+        m = re.search(r"([A-Z][A-Za-z0-9 &\-–—]+\d{4})\.", pre_url)
         if m:
             return m.group(1).strip()
-        return ""  # return empty rather than "web" for DOI refs
+        return ""
 
-    # IEEE/ACM short style: "in S&P 2021," or "in CCS 2018,"
-    m = re.search(r"\bin\s+([A-Z][A-Za-z0-9 &'\-]{2,40}),?\s*\d{4}", reference)
+    # IEEE/ACM short style: "in S&P 2021," / "In CCS 2018," / "In ACM PODC, 2019"
+    m = re.search(r"\bin\s+([A-Z][A-Za-z0-9 &'\-]{2,40}),?\s*\d{4}", reference, re.I)
     if m:
         return m.group(1).strip()
 
@@ -663,7 +746,12 @@ def extract_venue(reference: str) -> str:
     # Journal style: "J. Cryptology" / "SIAM J. Comput." etc.
     m = re.search(r"\b((?:J\.|Journal|Trans\.|IEEE Trans\.|ACM Trans\.)\s+[A-Za-z][A-Za-z0-9 \.]{2,40})", reference)
     if m:
-        return m.group(1).strip()
+        candidate = m.group(1).strip()
+        # "J. Lastname" / "J. B. Lastname" patterns are author initials, not journals.
+        # Real journal abbreviations either contain all-caps words (ACM, SIAM) or
+        # words ending in a period (Cryptol., Comput.). A bare capitalized surname has neither.
+        if not re.match(r'^J\.\s+(?:[A-Z]\.\s+)*[A-Z][a-z]{2,}(?:[\.,](?:\s+[A-Z]|$)|\s+[a-z]|$)', candidate):
+            return candidate
     
     # Short acronym style: "In: ITC (2023)" or "In: 24th ACM STOC"
     m = re.search(r"In:\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z0-9&\- ]{1,30})[,\s]+(?:ACM|IEEE|Springer)?\s*(?:Press\b|,)?\s*\w*\s*\d{4}", reference)
@@ -679,15 +767,15 @@ def extract_venue(reference: str) -> str:
         return "GitHub"
 
 
-    # ePrint / arXiv
-    if re.search(r"eprint\.iacr\.org|Cryptol(?:ogy)?\s+ePrint", reference, re.I):
+    # ePrint / arXiv — ia.cr is the IACR ePrint URL shortener (ia.cr/YYYY/NNN)
+    if re.search(r"eprint\.iacr\.org|https?://ia\.cr/|Cryptol(?:ogy)?\.?\s*ePrint", reference, re.I):
         return "ePrint"
     if re.search(r"arxiv\.org|arXiv", reference, re.I):
         return "arXiv"
     
     # Web/blog/forum references with no venue
     if re.search(r"https?://", reference):
-        if re.search(r"github\.com|gitlab\.com", reference, re.I):
+        if re.search(r"github\.\s*(?:com|io)|gitlab\.\s*com", reference, re.I):
             return "GitHub"
         if re.search(r"ethresear\.ch|vitalik\.ca|bitcointalk", reference, re.I):
             return "web_forum"
@@ -712,18 +800,22 @@ for title, pdf_path in deduped_pdfs.items():
     awareness = app_awareness.get(title)
 
     for ref in parsed_refs:
-        venue = extract_venue(ref)
-        if not venue:
-            print(f"  DBLP query ref: {ref[:80]}")
-            venue = query_dblp_for_venue(ref)
+        ref_clean = dehyphenate(ref)
+        venue = extract_venue(ref_clean)
+        if venue:
+            source = "regex"
+        else:
+            print(f"  DBLP query ref: {ref_clean[:80]}")
+            venue = query_dblp_for_venue(ref_clean)
+            source = "dblp" if venue else "none"
             print(f"  DBLP result: {venue or 'none'}")
-            time.sleep(0.5)
-            
+            time.sleep(1.5)
+
         citation_rows.append({
             "source_paper": title,
             "app_awareness": awareness,
             "venue_raw": venue,
-            "venue_source": "regex" if venue else "dblp" if venue else "none",
+            "venue_source": source,
             "raw_reference": ref,
         })
 
