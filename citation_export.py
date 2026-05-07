@@ -735,7 +735,8 @@ def extract_venue(reference: str) -> str:
 
     # Alpha-key style: venue appears after editors list — "In EDITORS, editors, CRYPTO 2019"
     # Handles apostrophe-year too: "editors, ASIACRYPT'99"
-    m = re.search(r"\beditor(?:s)?,\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Za-z0-9 &'\-–]+?(?:\s+\d{4}|'\d{2}))", reference)
+    # Two leading uppercase letters required to exclude book titles like "Some Title 2019".
+    m = re.search(r"\beditor(?:s)?,\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z][A-Za-z0-9 &'\-–]{1,30}?(?:\s+\d{4}|'\d{2}))", reference)
     if m:
         return m.group(1).strip()
 
