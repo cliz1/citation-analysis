@@ -12,6 +12,7 @@ INPUT_FILES = {
     "EuroCrypt": "EuroCrypt_citations_matched.csv",
     "Oakland":   "Oakland_citations_matched.csv",
     "Crypto":    "Crypto_citations_matched.csv",
+    "USENIX":    "USENIX_citations_matched.csv",
 }
 
 TOP_N = 15  # how many venues to show per chart
