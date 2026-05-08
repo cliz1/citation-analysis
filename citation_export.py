@@ -733,32 +733,10 @@ def extract_venue(reference: str) -> str:
             return m.group(1).strip()
         return ""
 
-    # Alpha-key style: venue appears after editors list — "In EDITORS, editors, CRYPTO 2019"
-    # Handles apostrophe-year too: "editors, ASIACRYPT'99"
-    # Two leading uppercase letters required to exclude book titles like "Some Title 2019".
-    m = re.search(r"\beditor(?:s)?,\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z][A-Za-z0-9 &'\-–]{1,30}?(?:\s+\d{4}|'\d{2}))", reference)
-    if m:
-        return m.group(1).strip()
-
-    # Ordinal conference where year is not adjacent: "editor, 30th SODA, pages"
-    m = re.search(r"\beditor(?:s)?,\s+\d+(?:st|nd|rd|th)\s+([A-Z][A-Za-z0-9&\- ]{1,20})\b", reference)
-    if m:
-        return m.group(1).strip()
-
-    # Slash-joined venue: "In Approx/Random, volume"
-    m = re.search(r"\bIn\s+([A-Z][A-Za-z0-9]+(?:/[A-Za-z0-9]+)+)[,\s]", reference)
-    if m:
-        return m.group(1).strip()
-
     # IEEE/ACM short style: "in S&P 2021," / "In CCS 2018," / "In ACM PODC, 2019"
     m = re.search(r"\bin\s+([A-Z][A-Za-z0-9 &'\-]{2,40}),?\s*\d{4}", reference, re.I)
     if m:
         return m.group(1).strip()
-
-    # Standalone venue without adjacent year: "NeurIPS, 2018." / "In SOSP, page"
-    m = re.search(r"\b(NeurIPS|SOSP|OSDI)(?:[,\s]+\d{4})?", reference)
-    if m:
-        return m.group(0).strip().rstrip(',').strip()
 
     # "In Proceedings of ..." or "In Proc. ..."
     m = re.search(r"\bIn\s+(?:Proceedings\s+of\s+|Proc\.?\s+)([^,\.]+)", reference, re.I)
