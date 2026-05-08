@@ -17,7 +17,6 @@ import urllib.request
 import json
 import ssl
 import certifi
-import urllib.error
 
 # -----------------------------
 # Config
@@ -32,7 +31,7 @@ SAMPLE_SIZE = 400
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" 
-TEST_RANGE = "EuroCrypt" # One conference (sheet) per run
+TEST_RANGE = "Crypto" # One conference (sheet) per run
 
 CRYPTO_KEYWORDS =  [
         "crypto",
@@ -578,47 +577,8 @@ def classify_reference(reference: str):
 
 
 # -------------------------------------
-# DBLP helper
+# DBLP helper 
 # -------------------------------------
-
-_DBLP_VENUE_MAP = {
-    "corr": "arXiv",
-    "arxiv": "arXiv",
-    "iacr cryptol. eprint arch.": "ePrint",
-    "iacr cryptology eprint archive": "ePrint",
-    "iacr eprint": "ePrint",
-    "iacr trans. cryptogr. hardw. embed. syst.": "TCHES",
-    "j. cryptology": "Journal of Cryptology",
-    "journal of cryptology": "Journal of Cryptology",
-}
-
-
-class _DblpRateLimited(Exception):
-    pass
-
-
-def _fetch_dblp_venue(title: str) -> str:
-    """Single DBLP title lookup; returns raw venue string or '' on miss.
-    Raises _DblpRateLimited on HTTP 429 so the caller can bail instead of retrying."""
-    try:
-        query = urllib.parse.quote(title)
-        url = f"https://dblp.org/search/publ/api?q={query}&format=json&h=1"
-        req = urllib.request.Request(url, headers={"User-Agent": "citation-analysis-research/1.0"})
-        context = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(req, timeout=10, context=context) as response:
-            data = json.loads(response.read())
-        hits = data.get("result", {}).get("hits", {}).get("hit", [])
-        if not hits:
-            return ""
-        venue = hits[0].get("info", {}).get("venue", "")
-        return venue.strip() if venue else ""
-    except urllib.error.HTTPError as e:
-        if e.code == 429:
-            raise _DblpRateLimited()
-        return ""
-    except Exception:
-        return ""
-
 
 def query_dblp_for_venue(raw_reference: str) -> str:
     title = ""
@@ -654,34 +614,29 @@ def query_dblp_for_venue(raw_reference: str) -> str:
     if re.fullmatch(r'(?i)private\s+communication\.?', title.strip()):
         return ""
 
+    # Cap to 10 words — robust for truncated or garbled titles
+    title = ' '.join(title.split()[:10]).strip()
+
     if not title or len(title) < 12:
         return ""
 
-    # Try progressively shorter prefixes: 10 → 7 → 5 words.
-    # Shorter queries strip garbled suffix tokens while keeping the
-    # distinctive title head that DBLP needs for a confident match.
-    words = title.split()
-    seen: set[str] = set()
-    variants: list[str] = []
-    for n in (10, 7, 5):
-        candidate = " ".join(words[:n]).strip()
-        if len(candidate) >= 12 and candidate not in seen:
-            seen.add(candidate)
-            variants.append(candidate)
+    print(f"    DBLP title query: '{title[:70]}'")
 
-    for i, variant in enumerate(variants):
-        print(f"    DBLP query ({len(variant.split())}w): '{variant[:70]}'")
-        try:
-            raw_venue = _fetch_dblp_venue(variant)
-        except _DblpRateLimited:
-            print("    DBLP rate-limited (429) — skipping remaining variants")
+    try:
+        query = urllib.parse.quote(title)
+        url = f"https://dblp.org/search/publ/api?q={query}&format=json&h=1"
+        req = urllib.request.Request(url, headers={"User-Agent": "citation-analysis-research/1.0"})
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(req, timeout=10, context=context) as response:
+            data = json.loads(response.read())
+        hits = data.get("result", {}).get("hits", {}).get("hit", [])
+        if not hits:
             return ""
-        if raw_venue:
-            return _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
-        if i < len(variants) - 1:
-            time.sleep(1.0)  # match inter-ref cadence; genuine miss, not rate-limit
-
-    return ""
+        info = hits[0].get("info", {})
+        venue = info.get("venue", "")
+        return venue.strip() if venue else ""
+    except Exception:
+        return ""
 
 # ---------------------------------
 # Venue extraction helper
@@ -705,24 +660,9 @@ def extract_venue(reference: str) -> str:
     # LNCS abbreviated: "In: VENUE YEAR. LNCS, vol."
     m = re.search(r"In:\s+([A-Z][A-Za-z0-9 &\-–—]+\d{4})\.", reference)
 
-    # Academic publisher URLs — try to extract venue from pre-URL text, else "" → DBLP.
-    # doi\.\s*org handles soft-wrapped "doi. org" artifacts from two-column PDF extraction.
+    # Academic publisher URLs (DOI, ACM DL, IEEE Xplore) — try pre-URL venue, else ""
     _ACADEMIC_URL_RE = re.compile(
-        r"https?://(?:dx\.)?doi\.\s*org"                          # DOI (incl. soft-wrapped)
-        r"|https?://(?:dl|doi)\.acm\.org"                         # ACM DL
-        r"|https?://ieeexplore\.ieee\.org"                        # IEEE Xplore
-        r"|https?://(?:link\.)?springer\.com"                     # Springer / LNCS
-        r"|https?://drops\.dagstuhl\.de"                          # LIPIcs (Dagstuhl)
-        r"|https?://(?:www\.)?usenix\.org"                        # USENIX proceedings
-        r"|https?://(?:www\.)?ndss-symposium\.org"                # NDSS
-        r"|https?://(?:tches|tosc|iacr)\.iacr\.org"              # IACR journal sites
-        r"|https?://epubs\.siam\.org"                             # SIAM journals
-        r"|https?://(?:www\.)?sciencedirect\.com"                 # Elsevier
-        r"|https?://(?:onlinelibrary\.)?wiley\.com"               # Wiley
-        r"|https?://eccc\.weizmann\.ac\.il"                       # ECCC
-        r"|https?://hal\.(?:science|inria\.fr|archives-ouvertes\.fr)"  # HAL preprints
-        r"|https?://api\.semanticscholar\.org"                    # Semantic Scholar
-        r"|https?://(?:www\.)?eudml\.org",                        # EuDML (math journals)
+        r"https?://(?:dx\.)?doi\.org|https?://(?:dl|doi)\.acm\.org|https?://ieeexplore\.ieee\.org",
         re.I
     )
     _url_m = _ACADEMIC_URL_RE.search(reference)
@@ -767,15 +707,15 @@ def extract_venue(reference: str) -> str:
         return "GitHub"
 
 
-    # ePrint / arXiv — ia.cr is the IACR ePrint URL shortener (ia.cr/YYYY/NNN)
-    if re.search(r"eprint\.iacr\.org|https?://ia\.cr/|Cryptol(?:ogy)?\.?\s*ePrint", reference, re.I):
+    # ePrint / arXiv
+    if re.search(r"eprint\.iacr\.org|Cryptol(?:ogy)?\.?\s*ePrint", reference, re.I):
         return "ePrint"
     if re.search(r"arxiv\.org|arXiv", reference, re.I):
         return "arXiv"
     
     # Web/blog/forum references with no venue
     if re.search(r"https?://", reference):
-        if re.search(r"github\.\s*(?:com|io)|gitlab\.\s*com", reference, re.I):
+        if re.search(r"github\.com|gitlab\.com", reference, re.I):
             return "GitHub"
         if re.search(r"ethresear\.ch|vitalik\.ca|bitcointalk", reference, re.I):
             return "web_forum"
