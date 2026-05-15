@@ -75,7 +75,7 @@ Takes `csv/<Conference>_citations_raw.csv` and normalizes the raw venue strings 
 
 ### Known matching losses
 
-Overall matching rate: **[TBD per conference]**
+Overall matching rate: EuroCrypt **80.2%**, Crypto **76.7%**, Oakland **65.7%**, USENIX **67.7%**
 
 Citations that remain unmatched after this stage are primarily:
 - Venues not yet in `ABBREV_MAP` (known gaps: NSDI, SOSP, OSDI, EuroSys, ICML — these appear in Oakland's top-15 unmatched list)
