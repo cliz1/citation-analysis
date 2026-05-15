@@ -17,6 +17,7 @@ import urllib.request
 import json
 import ssl
 import certifi
+import urllib.error
 
 # -----------------------------
 # Config
@@ -31,10 +32,10 @@ SAMPLE_SIZE = 400
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" 
-TEST_RANGE = "USENIX" # One conference (sheet) per run
+TEST_RANGE = "Oakland" # One conference (sheet) per run
 
 DBLP_CACHE_FILE = Path(f"{TEST_RANGE}_dblp_cache.json")
-dblp_cache: dict[str, str] = {}
+dblp_cache: dict[str, dict] = {}
 if DBLP_CACHE_FILE.exists():
     with open(DBLP_CACHE_FILE) as _f:
         dblp_cache = json.load(_f)
@@ -584,8 +585,47 @@ def classify_reference(reference: str):
 
 
 # -------------------------------------
-# DBLP helper 
+# DBLP helper
 # -------------------------------------
+
+_DBLP_VENUE_MAP = {
+    "corr": "arXiv",
+    "arxiv": "arXiv",
+    "iacr cryptol. eprint arch.": "ePrint",
+    "iacr cryptology eprint archive": "ePrint",
+    "iacr eprint": "ePrint",
+    "iacr trans. cryptogr. hardw. embed. syst.": "TCHES",
+    "j. cryptology": "Journal of Cryptology",
+    "journal of cryptology": "Journal of Cryptology",
+}
+
+
+class _DblpRateLimited(Exception):
+    pass
+
+
+def _fetch_dblp_venue(title: str) -> dict | None:
+    """Single DBLP title lookup; returns full info dict on hit, None on miss.
+    Raises _DblpRateLimited on HTTP 429 so the caller can bail instead of retrying."""
+    try:
+        query = urllib.parse.quote(title.replace('-', ' '))
+        url = f"https://dblp.org/search/publ/api?q={query}&format=json&h=1"
+        req = urllib.request.Request(url, headers={"User-Agent": "citation-analysis-research/1.0"})
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(req, timeout=10, context=context) as response:
+            data = json.loads(response.read())
+        hits = data.get("result", {}).get("hits", {}).get("hit", [])
+        if not hits:
+            return None
+        info = hits[0].get("info", {})
+        return info if info.get("venue") else None
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            raise _DblpRateLimited()
+        return None
+    except Exception:
+        return None
+
 
 def query_dblp_for_venue(raw_reference: str) -> str:
     title = ""
@@ -607,12 +647,13 @@ def query_dblp_for_venue(raw_reference: str) -> str:
         if m:
             title = m.group(1).strip()
 
-    # Fallback: strip citation marker, skip past author list (first ". "),
-    # take the remaining text as the title start.
+    # Fallback: strip citation marker, skip past author list via ": " separator.
+    # LNCS format always puts the title after "Authors: Title", so colon-space
+    # is more reliable than period-space for finding where the title starts.
     if not title:
-        body = re.sub(r'^\[?\d{1,3}\]?\s*|^\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*', '', raw_reference)
-        first_period = body.find('. ')
-        title = body[first_period + 2:] if first_period > 5 else body
+        body = re.sub(r'^\[?\d{1,3}\]?\.?\s*|^\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*', '', raw_reference)
+        colon_pos = body.find(': ')
+        title = body[colon_pos + 2:] if colon_pos >= 0 else body
 
     # Strip any trailing ". In VENUE" / ". arXiv" / ". IACR" that leaked into the title
     title = re.sub(r'\.\s+(?:In\b|arXiv|IACR|CoRR).*$', '', title, flags=re.I).strip()
@@ -621,44 +662,55 @@ def query_dblp_for_venue(raw_reference: str) -> str:
     if re.fullmatch(r'(?i)private\s+communication\.?', title.strip()):
         return ""
 
-    # Cap to 10 words — robust for truncated or garbled titles
-    title = ' '.join(title.split()[:10]).strip()
-
     if not title or len(title) < 12:
         return ""
 
-    # Return cached hit immediately — no HTTP, no sleep
-    if title in dblp_cache:
-        venue = dblp_cache[title].get("venue", "")
-        print(f"    DBLP cache hit: '{title[:70]}' → {venue}")
-        return venue
+    # Try progressively shorter prefixes: 10 → 7 → 5 words.
+    # Shorter queries strip garbled suffix tokens while keeping the
+    # distinctive title head that DBLP needs for a confident match.
+    words = title.split()
+    seen: set[str] = set()
+    variants: list[str] = []
+    for n in (10, 7, 5):
+        candidate = " ".join(words[:n]).strip()
+        if len(candidate) >= 12 and candidate not in seen:
+            seen.add(candidate)
+            variants.append(candidate)
 
-    print(f"    DBLP title query: '{title[:70]}'")
+    for i, variant in enumerate(variants):
+        # Check cache before hitting DBLP
+        if variant in dblp_cache:
+            raw_venue = dblp_cache[variant].get("venue", "")
+            if isinstance(raw_venue, list):
+                raw_venue = raw_venue[0] if raw_venue else ""
+            venue = _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
+            print(f"    DBLP cache hit ({len(variant.split())}w): '{variant[:70]}' → {venue}")
+            return venue
 
-    try:
-        query = urllib.parse.quote(title)
-        url = f"https://dblp.org/search/publ/api?q={query}&format=json&h=1"
-        req = urllib.request.Request(url, headers={"User-Agent": "citation-analysis-research/1.0"})
-        context = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(req, timeout=10, context=context) as response:
-            data = json.loads(response.read())
-        hits = data.get("result", {}).get("hits", {}).get("hit", [])
-        if not hits:
+        print(f"    DBLP query ({len(variant.split())}w): '{variant[:70]}'")
+        try:
+            info = _fetch_dblp_venue(variant)
+        except _DblpRateLimited:
+            print("    DBLP rate-limited (429) — skipping remaining variants")
             return ""
-        info = hits[0].get("info", {})
-        venue = info.get("venue", "")
-        venue = venue.strip() if venue else ""
-        if venue:
-            dblp_cache[title] = info  # cache full info dict; misses are retried next run
-        return venue
-    except Exception:
-        return ""
+        if info:
+            raw_venue = info.get("venue", "")
+            if isinstance(raw_venue, list):
+                raw_venue = raw_venue[0] if raw_venue else ""
+            dblp_cache[variant] = info  # cache full info dict; misses retried next run
+            return _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
+        if i < len(variants) - 1:
+            time.sleep(1.0)  # match inter-ref cadence; genuine miss, not rate-limit
+
+    return ""
 
 # ---------------------------------
 # Venue extraction helper
 # ---------------------------------
 
 def extract_venue(reference: str) -> str:
+    # Collapse soft-wrapped URLs: "https: //foo.com" → "https://foo.com"
+    reference = re.sub(r"(https?:)\s+(//)", r"\1\2", reference)
 
     # LNCS style: "In: Editors (eds.) VENUE YEAR. LNCS"
     m = re.search(r"In:\s+.{0,80}?\(eds?\.\)\s+([A-Z][A-Za-z0-9 &\-]+\d{4})", reference)
@@ -745,7 +797,7 @@ def extract_venue(reference: str) -> str:
         # words ending in a period (Cryptol., Comput.). A bare capitalized surname has neither.
         if not re.match(r'^J\.\s+(?:[A-Z]\.\s+)*[A-Z][a-z]{2,}(?:[\.,](?:\s+[A-Z]|$)|\s+[a-z]|$)', candidate):
             return candidate
-
+    
     # Short acronym style: "In: ITC (2023)" or "In: 24th ACM STOC"
     m = re.search(r"In:\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z0-9&\- ]{1,30})[,\s]+(?:ACM|IEEE|Springer)?\s*(?:Press\b|,)?\s*\w*\s*\d{4}", reference)
     if m:
@@ -756,12 +808,16 @@ def extract_venue(reference: str) -> str:
     if m:
         return m.group(1).strip()
 
+    if re.search(r"https?:\s*//\s*github\.com", reference, re.I):
+        return "GitHub"
+
+
     # ePrint / arXiv — ia.cr is the IACR ePrint URL shortener (ia.cr/YYYY/NNN)
     if re.search(r"eprint\.iacr\.org|https?://ia\.cr/|Cryptol(?:ogy)?\.?\s*ePrint", reference, re.I):
         return "ePrint"
     if re.search(r"arxiv\.org|arXiv", reference, re.I):
         return "arXiv"
-
+    
     # Web/blog/forum references with no venue
     if re.search(r"https?://", reference):
         if re.search(r"github\.\s*(?:com|io)|gitlab\.\s*com", reference, re.I):

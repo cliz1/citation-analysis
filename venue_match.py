@@ -1,5 +1,6 @@
 import sys
 import csv
+import html
 from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
 import re
@@ -137,29 +138,91 @@ ABBREV_MAP = {
 "Public-Key Cryptography - PKC": "International Conference on Practice and Theory of Public Key Cryptography",
 "Cryptology - EUROCRYPT": "Annual International Conference on the Theory and Applications of Cryptographic Techniques",
 
+    # S&P / SP variants
+    "S&P": "IEEE Symposium on Security and Privacy",
+    "IEEE S&P": "IEEE Symposium on Security and Privacy",
+    "EuroS&P": "IEEE European Symposium on Security and Privacy",
+
+    # Systems venues
+    "SOSP": "ACM Symposium on Operating Systems Principles",
+    "OSDI": "USENIX Symposium on Operating Systems Design and Implementation",
+    "NSDI": "USENIX Symposium on Networked Systems Design and Implementation",
+    "EuroSys": "European Conference on Computer Systems",
+    "ASPLOS": "International Conference on Architectural Support for Programming Languages and Operating Systems",
+    "ICDCS": "IEEE International Conference on Distributed Computing Systems",
+
+    # ML / data venues
+    "ICML": "International Conference on Machine Learning",
+    "NeurIPS": "Annual Conference on Neural Information Processing Systems",
+    "KDD": "ACM SIGKDD Conference on Knowledge Discovery and Data Mining",
+    "WWW": "The Web Conference",
+    "RecSys": "ACM Conference on Recommender Systems",
+
+    # Security venues
+    "CSF": "IEEE Computer Security Foundations Symposium",
+    "Financial Cryptography": "Financial Cryptography and Data Security",
+    "Proceedings of USENIX Security": "USENIX Security Symposium",
+
+    # Theory venues
+    "SODA": "ACM-SIAM Symposium on Discrete Algorithms",
+    "ITC": "Innovations in Theoretical Cryptography",
+    "ISIT": "IEEE International Symposium on Information Theory",
+    "ACM STOC": "ACM Symposium on Theory of Computing",
+    "Electron. Colloquium Comput. Complex.": "Electronic Colloquium on Computational Complexity",
+
+    # Journals
+    "IACR Trans. Symmetric Cryptol.": "IACR Transactions on Symmetric Cryptology",
+    "TCHES": "IACR Transactions on Cryptographic Hardware and Embedded Systems",
+    "Theor. Comput. Sci.": "Theoretical Computer Science",
+    "Comput. Complex.": "Computational Complexity",
+    "Commun. ACM": "Communications of the ACM",
+    "Inf. Process. Lett.": "Information Processing Letters",
+    "IEEE Trans. Inf. Forensics Secur.": "IEEE Transactions on Information Forensics and Security",
+    "IEEE Trans. Computers": "IEEE Transactions on Computers",
+
+    # Verbose / split-column variants
+    "Public Key Cryptography": "International Conference on Practice and Theory of Public Key Cryptography",
+    "Proceedings of the ACM CCS": "ACM Conference on Computer and Communications Security",
+    "EURO-CRYPT": "Annual International Conference on the Theory and Applications of Cryptographic Techniques",
+    "ASI-ACRYPT": "International Conference on the Theory and Application of Cryptology and Information Security",
+
+    # RFCs are IETF documents, not conference papers
+    "RFC": "web",
+
     # Unfixable
-    "August": "",  # this is a month name leaking in, discard
+    "August": "",  # month name leaking in, discard
     "Adv. Comput. Res.": "",  # obscure, leave unmatched
+    "Providing Sound Foundations for Cryptography": "",  # book title, not a venue
 }
 
 def normalize_venue(venue_raw: str) -> str:
-    normalized = venue_raw.strip()
+    raw = venue_raw.strip()
+
+    # Check map on raw value first (catches short-but-valid keys like "SP")
+    if raw in ABBREV_MAP:
+        return ABBREV_MAP[raw]
+
+    # Unescape HTML entities (e.g. EuroS&amp;P → EuroS&P)
+    normalized = html.unescape(raw)
+    if normalized in ABBREV_MAP:
+        return ABBREV_MAP[normalized]
+
     # Strip trailing year with optional letter
     normalized = re.sub(r'\s+\d{4}[a-z]?$', '', normalized)
     # Strip trailing volume/issue numbers
     normalized = re.sub(r'\s+\d+(\(\d+\))?$', '', normalized)
-    # Fix hyphenation artifacts
+    # Fix hyphenation artifacts (hyphen followed by whitespace)
     normalized = re.sub(r'-\s+', '', normalized)
-    # also collapse internal spaces after hyphen removal
+    # Collapse internal spaces after hyphen removal
     normalized = re.sub(r'\s{2,}', ' ', normalized)
     # Strip "Advances in Cryptology - " prefix
     normalized = re.sub(r'^Advances in Cryptology\s*-\s*', '', normalized)
-    # Strip "Information Security and Cryptology - " prefix  
+    # Strip "Information Security and Cryptology - " prefix
     normalized = re.sub(r'^Information Security and Cryptology\s*-\s*', '', normalized)
     # Handle truncated entries - too short to be useful
     if len(normalized) < 3:
         return ""
-    return ABBREV_MAP.get(normalized, ABBREV_MAP.get(venue_raw.strip(), ""))
+    return ABBREV_MAP.get(normalized, ABBREV_MAP.get(raw, ""))
 
 def main():
     if len(sys.argv) < 2:
@@ -177,7 +240,7 @@ def main():
             dblp_venues.append(row[0])
 
     with open(input_file, 'r') as infile, open(output_file, 'w', newline='') as outfile:
-        reader = csv.reader(infile, escapechar='\\')
+        reader = csv.reader((line.replace('\x00', '') for line in infile), escapechar='\\')
         writer = csv.writer(outfile)
 
         header = next(reader)
