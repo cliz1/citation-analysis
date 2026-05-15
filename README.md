@@ -19,10 +19,10 @@ Reads paper metadata from a Google Sheet (one sheet per conference), locates the
 **Venue assignment methods (in priority order):**
 
 1. **Regex** (`extract_venue()`) — pattern-matches known venue strings, journal abbreviations, ePrint identifiers, and DOI-style URLs directly in the reference text.
-2. **DBLP lookup** (`query_dblp_for_venue()`) — if regex finds nothing, extracts a likely title from the reference string and queries the DBLP API. Results are cached per-conference in `<Conference>_dblp_cache.json`.
+2. **DBLP lookup** (`query_dblp_for_venue()`) — if regex finds nothing, extracts a likely title from the reference string and queries the DBLP API. Results are cached per-conference in `json/<Conference>_dblp_cache.json`.
 3. **None** — if both methods fail, venue is recorded as empty.
 
-**Output:** `<Conference>_citations_raw.csv` — one row per citation, with columns including the raw reference text, extracted venue string, and `venue_source` (regex / dblp / none).
+**Output:** `csv/<Conference>_citations_raw.csv` — one row per citation, with columns including the raw reference text, extracted venue string, and `venue_source` (regex / dblp / none).
 
 **Configuration** (top of script):
 
@@ -34,7 +34,7 @@ TEST_RANGE = "USENIX"  # one conference per run
 
 ### Known extraction losses
 
-Overall extraction rate: **[TBD per conference]**
+Overall extraction rate: EuroCrypt **90.2%**, Crypto **87.5%**, Oakland **87.5%**, USENIX **84.5%**
 
 Pipeline leaks at this stage fall into four categories:
 
@@ -45,7 +45,7 @@ Pipeline leaks at this stage fall into four categories:
 | **Author-initial false positive** | Regex matched an author initial (e.g., "J. Loss", "J. Groth") as a journal abbreviation and fell through to DBLP instead of extracting correctly |
 | **Hyphen artifact** | Two-column PDF layout inserts soft hyphens at line breaks, fragmenting venue names; `dehyphenate()` mitigates this but does not fully eliminate it |
 
-Quantified losses by conference (from `diagnose.py`, May 2026):
+Quantified losses by conference (from `diagnose.py`):
 
 | Conference | No venue | Web catch-all | Author-initial FP | Hyphen + no venue |
 |---|---|---|---|---|
@@ -66,12 +66,12 @@ USENIX's 57% no-venue rate is dominated by two-column PDF hyphen artifacts (29% 
 
 ## Stage 2: Venue Matching — `venue_match.py`
 
-Takes `<Conference>_citations_raw.csv` and normalizes the raw venue strings into canonical full names. Uses a two-step process:
+Takes `csv/<Conference>_citations_raw.csv` and normalizes the raw venue strings into canonical full names. Uses a two-step process:
 
 1. **Abbreviation map** (`ABBREV_MAP`) — direct lookup of known short-form venue strings (e.g., `"CCS"` → `"ACM Conference on Computer and Communications Security"`).
 2. **Fuzzy match** — for strings not in the map, runs fuzzy string matching against a list of known venue names.
 
-**Output:** `<Conference>_citations_matched.csv` — same rows as the raw file with an added `matched_venue` column.
+**Output:** `csv/<Conference>_citations_matched.csv` — same rows as the raw file with an added `matched_venue` column.
 
 ### Known matching losses
 
@@ -87,7 +87,7 @@ Citations that remain unmatched after this stage are primarily:
 
 ### `venue_charts.py`
 
-Produces a per-conference bar chart of the top 15 cited venues. Reads all four `*_citations_matched.csv` files and outputs a multi-page PDF (`venue_charts.pdf`).
+Produces a per-conference bar chart of the top 15 cited venues. Reads all four `csv/*_citations_matched.csv` files and outputs a multi-page PDF (`venue_charts.pdf`).
 
 ### `venue_by_awareness.py`
 
@@ -101,9 +101,9 @@ Analyzes the `"web"` catch-all bucket in more detail.
 
 ## Output Files
 
-The pipeline produces two CSV files per conference. File naming follows the pattern `<Conference>_citations_raw.csv` and `<Conference>_citations_matched.csv` (e.g., `EuroCrypt_citations_raw.csv`).
+The pipeline produces two CSV files per conference, stored in `csv/`. File naming follows the pattern `<Conference>_citations_raw.csv` and `<Conference>_citations_matched.csv` (e.g., `csv/EuroCrypt_citations_raw.csv`).
 
-### `<Conference>_citations_raw.csv`
+### `csv/<Conference>_citations_raw.csv`
 
 One row per citation extracted from the conference corpus. Produced by `citation_export.py`.
 
@@ -121,7 +121,7 @@ One row per citation extracted from the conference corpus. Produced by `citation
 
 ---
 
-### `<Conference>_citations_matched.csv`
+### `csv/<Conference>_citations_matched.csv`
 
 Extends the raw file with two additional columns after venue normalization by `venue_match.py`. All rows from the raw file are preserved.
 
@@ -139,7 +139,7 @@ For analysis, `venue_matched` is the primary field to aggregate on. `venue_raw` 
 
 ---
 
-### `<Conference>_dblp_cache.json`
+### `json/<Conference>_dblp_cache.json`
 
 A key-value store mapping extracted reference titles to the DBLP-returned venue string. Produced and read by `citation_export.py` to avoid redundant API calls across runs.
 
@@ -168,7 +168,7 @@ pip install pymupdf pandas matplotlib fuzzywuzzy google-api-python-client google
 python citation_export.py
 
 # Step 2: normalize venue strings
-python venue_match.py <Conference>_citations_raw.csv <Conference>_citations_matched.csv
+python venue_match.py csv/<Conference>_citations_raw.csv csv/<Conference>_citations_matched.csv
 
 # Step 3: generate charts
 python venue_charts.py
