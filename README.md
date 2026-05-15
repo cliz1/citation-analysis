@@ -34,7 +34,7 @@ TEST_RANGE = "USENIX"  # one conference per run
 
 ### Known extraction losses
 
-Overall extraction rate: EuroCrypt **90.2%**, Crypto **87.5%**, Oakland **87.5%**, USENIX **84.5%**
+Overall extraction rate: EuroCrypt **90.2%**, Crypto **87.5%**, Oakland **83.5%**, USENIX **84.5%**
 
 Pipeline leaks at this stage fall into four categories:
 
@@ -49,12 +49,12 @@ Quantified losses by conference (from `diagnose.py`):
 
 | Conference | No venue | Web catch-all | Author-initial FP | Hyphen + no venue |
 |---|---|---|---|---|
-| EuroCrypt | 17% | 13% | 1% | 5% |
-| Crypto | 35% | 10% | 0% | 9% |
-| Oakland | 35% | 16% | 9% | 9% |
-| USENIX | 57% | 9% | 4% | 29% |
+| EuroCrypt | 10% | 4% | 0% | 3% |
+| Crypto | 12% | 4% | 0% | 5% |
+| Oakland | 17% | 14% | 0% | 4% |
+| USENIX | 15% | 9% | 0% | 10% |
 
-USENIX's 57% no-venue rate is dominated by two-column PDF hyphen artifacts (29% of all citations). EuroCrypt fares better because LNCS papers are single-column.
+Oakland's elevated web catch-all rate (14%) reflects its broader mix of systems and applied security papers, which cite more URLs. USENIX's hyphen artifact rate (10%) remains the highest due to its two-column PDF format. EuroCrypt has the lowest losses overall — LNCS single-column format is the most parser-friendly.
 
 **Known parser-level issues (citation boundary errors):**
 
