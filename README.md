@@ -168,7 +168,7 @@ pip install pymupdf pandas matplotlib fuzzywuzzy google-api-python-client google
 python citation_export.py
 
 # Step 2: normalize venue strings
-python venue_match.py csv/<Conference>_citations_raw.csv csv/<Conference>_citations_matched.csv
+python venue_match.py csv/<Conference>_citations_raw.csv
 
 # Step 3: generate charts
 python venue_charts.py
