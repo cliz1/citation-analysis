@@ -41,20 +41,20 @@ Pipeline leaks at this stage fall into four categories:
 | Loss type | Description |
 |---|---|
 | **No venue** | Neither regex nor DBLP found a venue — citation counted but unlabeled |
-| **Web catch-all** | Reference matched a DOI/URL pattern and was labeled `"web"` rather than a specific venue |
-| **Author-initial false positive** | Regex matched an author initial (e.g., "J. Loss", "J. Groth") as a journal abbreviation and fell through to DBLP instead of extracting correctly |
 | **Hyphen artifact** | Two-column PDF layout inserts soft hyphens at line breaks, fragmenting venue names; `dehyphenate()` mitigates this but does not fully eliminate it |
 
 Quantified losses by conference (from `diagnose.py`):
 
-| Conference | No venue | Web catch-all | Author-initial FP | Hyphen + no venue |
-|---|---|---|---|---|
-| EuroCrypt | 10% | 4% | 0% | 3% |
-| Crypto | 12% | 4% | 0% | 5% |
-| Oakland | 17% | 14% | 0% | 4% |
-| USENIX | 15% | 9% | 0% | 10% |
+| Conference | No venue | Hyphen + no venue |
+|---|---|---|
+| EuroCrypt | 10% | 3% |
+| Crypto | 12% | 5% |
+| Oakland | 17% | 4% |
+| USENIX | 15% | 10% |
 
-Oakland's elevated web catch-all rate (14%) reflects its broader mix of systems and applied security papers, which cite more URLs. USENIX's hyphen artifact rate (10%) remains the highest due to its two-column PDF format. EuroCrypt has the lowest losses overall — LNCS single-column format is the most parser-friendly.
+USENIX's hyphen artifact rate (10%) remains the highest due to its two-column PDF format. EuroCrypt has the lowest losses overall — LNCS single-column format is the most parser-friendly.
+
+Note: citations labeled `"web"` (URLs with no associated academic venue) are not a pipeline loss — they are intentionally classified and included in the output as a meaningful citation category.
 
 **Known parser-level issues (citation boundary errors):**
 
@@ -101,7 +101,7 @@ Analyzes the `"web"` catch-all bucket in more detail.
 
 ## Output Files
 
-The pipeline produces two CSV files per conference, stored in `csv/`. File naming follows the pattern `<Conference>_citations_raw.csv` and `<Conference>_citations_matched.csv` (e.g., `csv/EuroCrypt_citations_raw.csv`).
+The pipeline produces two CSV files per conference, stored in `csv/`.
 
 ### `csv/<Conference>_citations_raw.csv`
 
@@ -110,8 +110,8 @@ One row per citation extracted from the conference corpus. Produced by `citation
 | Column | Description |
 |---|---|
 | `source_paper` | Title of the paper that contains this citation, as it appears in the Google Sheet |
-| `app_awareness` | Application awareness score of the source paper (integer 1–4, coded by hand in the spreadsheet) |
-| `venue_raw` | Raw venue string extracted from the reference — the abbreviated or partially cleaned venue name as it appeared in the PDF (e.g., `"FOCS"`, `"J. ACM 45"`, `"Algorithmica"`). Empty string if extraction failed. |
+| `app_awareness` | Application awareness score of the source paper |
+| `venue_raw` | Raw venue string extracted from the reference - the abbreviated or partially cleaned venue name as it appeared in the PDF (e.g., `"FOCS"`, `"J. ACM 45"`, `"Algorithmica"`). Empty string if extraction failed. |
 | `venue_source` | How the venue was determined: `"regex"` (pattern matched directly in the reference text), `"dblp"` (looked up via the DBLP API using an extracted title), or `"none"` (both methods failed) |
 | `raw_reference` | Full reference string as extracted from the PDF, including author list, title, and publication details. This is the raw fitz output after dehyphenation — expect ligature artifacts (e.g., `ﬁ` instead of `fi`) and occasional line-break noise. |
 
