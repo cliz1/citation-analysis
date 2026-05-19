@@ -36,7 +36,7 @@ TEST_RANGE = "USENIX"  # one conference per run
 
 Overall extraction rate: EuroCrypt **90.2%**, Crypto **87.5%**, Oakland **83.5%**, USENIX **84.5%**
 
-Pipeline leaks at this stage fall into four categories:
+Pipeline leaks at this stage fall into two categories:
 
 | Loss type | Description |
 |---|---|
@@ -53,8 +53,6 @@ Quantified losses by conference (from `diagnose.py`):
 | USENIX | 15% | 10% |
 
 USENIX's hyphen artifact rate (10%) remains the highest due to its two-column PDF format. EuroCrypt has the lowest losses overall — LNCS single-column format is the most parser-friendly.
-
-Note: citations labeled `"web"` (URLs with no associated academic venue) are not a pipeline loss — they are intentionally classified and included in the output as a meaningful citation category.
 
 **Known parser-level issues (citation boundary errors):**
 
@@ -117,7 +115,7 @@ One row per citation extracted from the conference corpus. Produced by `citation
 
 **Note on `venue_source = "none"`:** The `venue_raw` column will be an empty string for these rows. The citation is still present in the data; it simply could not be assigned a venue. These rows are the primary source of loss when computing venue distributions.
 
-**Note on `venue_source = "dblp"`:** The DBLP API is queried using a title extracted from the reference string, which is heuristic and occasionally wrong. The returned venue is the DBLP-assigned publication venue for the best-matching paper — treat these with slightly more skepticism than regex-matched venues.
+**Note on `venue_source = "dblp"`:** The DBLP API is queried using a title extracted from the reference string, which is heuristic and occasionally (although rarely) wrong. The returned venue is the DBLP-assigned publication venue for the best-matching paper.
 
 ---
 
