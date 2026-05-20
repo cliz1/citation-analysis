@@ -58,7 +58,7 @@ USENIX's hyphen artifact rate (10%) remains the highest due to its two-column PD
 
 - *Missing final citation before appendix:* if a post-bibliography appendix immediately follows the last reference, the parser may absorb the appendix into the final citation and discard it. This accounts for at most one missed citation per affected paper.
 - *Proof text parsed as a citation:* proof lines beginning with `"1."` can be mistaken for numbered citations. Keyword filters catch most cases; the remainder almost always fall into the `other` catch-all bucket.
-- *Papers missing from Zotero:* roughly 5 papers per conference are coded in the spreadsheet but have no matching PDF in Zotero, causing them to be silently skipped.
+
 
 ---
 

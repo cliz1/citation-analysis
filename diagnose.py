@@ -61,27 +61,39 @@ for conf, path in RAW_CSVS.items():
     rows = read_csv(path)
     total = len(rows)
 
-    no_venue        = [r for r in rows if not r["venue_raw"]]
-    web_catch       = [r for r in rows if r["venue_raw"] == "web"]
-    special         = [r for r in rows if r["venue_raw"] in SPECIAL_VENUES - {"web"}]
-    author_fp       = [r for r in rows if AUTHOR_INITIAL_RE.match(r["venue_raw"])]
-    hyphen_refs     = [r for r in rows if HYPHEN_ARTIFACT_RE.search(r["raw_reference"])]
-    hyphen_no_venue = [r for r in rows if HYPHEN_ARTIFACT_RE.search(r["raw_reference"]) and not r["venue_raw"]]
-    extracted       = [r for r in rows if r["venue_raw"] and r["venue_raw"] not in ("web",)]
+    # Respect the suspected_fp column if present (added after parser fixes in May 2026).
+    # Older CSVs that lack the column treat all rows as real citations.
+    has_fp_col = "suspected_fp" in (rows[0].keys() if rows else {})
+    parse_fps   = [r for r in rows if has_fp_col and r.get("suspected_fp", "").lower() in ("true", "1")]
+    real_rows   = [r for r in rows if not (has_fp_col and r.get("suspected_fp", "").lower() in ("true", "1"))]
+    real_total  = len(real_rows)
 
-    print(f"\n  [{conf}]  total citations: {total}")
-    bar("no venue extracted",           len(no_venue),    total)
-    bar("venue extracted (incl. web)",  len(extracted),   total)
-    bar("  └─ ePrint / arXiv / GitHub", len(special),     total)
-    bar("  └─ 'web' catch-all",         len(web_catch),   total)
-    bar("  └─ author-initial false pos (J. Name)", len(author_fp), total)
-    bar("refs with hyphen artifacts",   len(hyphen_refs), total)
-    bar("  └─ hyphen artifacts + no venue", len(hyphen_no_venue), total)
+    no_venue        = [r for r in real_rows if not r["venue_raw"]]
+    web_catch       = [r for r in real_rows if r["venue_raw"] == "web"]
+    special         = [r for r in real_rows if r["venue_raw"] in SPECIAL_VENUES - {"web"}]
+    author_fp       = [r for r in real_rows if AUTHOR_INITIAL_RE.match(r["venue_raw"])]
+    hyphen_refs     = [r for r in real_rows if HYPHEN_ARTIFACT_RE.search(r["raw_reference"])]
+    hyphen_no_venue = [r for r in real_rows if HYPHEN_ARTIFACT_RE.search(r["raw_reference"]) and not r["venue_raw"]]
+    extracted       = [r for r in real_rows if r["venue_raw"] and r["venue_raw"] not in ("web",)]
+
+    denom = real_total  # extraction rate denominator excludes suspected FPs
+
+    print(f"\n  [{conf}]  total rows: {total}", end="")
+    if parse_fps:
+        print(f"  ({len(parse_fps)} suspected parse artifacts excluded from rates)", end="")
+    print(f"\n         real citations: {real_total}")
+    bar("no venue extracted",           len(no_venue),    denom)
+    bar("venue extracted (incl. web)",  len(extracted),   denom)
+    bar("  └─ ePrint / arXiv / GitHub", len(special),     denom)
+    bar("  └─ 'web' catch-all",         len(web_catch),   denom)
+    bar("  └─ author-initial false pos (J. Name)", len(author_fp), denom)
+    bar("refs with hyphen artifacts",   len(hyphen_refs), denom)
+    bar("  └─ hyphen artifacts + no venue", len(hyphen_no_venue), denom)
 
     raw_summaries[conf] = {
-        "total": total, "no_venue": len(no_venue),
-        "web_catch": len(web_catch), "author_fp": len(author_fp),
-        "hyphen_no_venue": len(hyphen_no_venue),
+        "total": total, "real_total": real_total, "parse_fps": len(parse_fps),
+        "no_venue": len(no_venue), "web_catch": len(web_catch),
+        "author_fp": len(author_fp), "hyphen_no_venue": len(hyphen_no_venue),
     }
 
 # ----------------------------------------------------------------
@@ -154,19 +166,21 @@ for conf, path in RAW_CSVS.items():
 # ----------------------------------------------------------------
 section("SUMMARY — Citation funnel per conference")
 
-print(f"\n  {'Conf':<12} {'Parsed':>7} {'NoVenue':>8} {'WebFP':>7} {'AuthFP':>7} {'HyphenMiss':>11}")
-print(f"  {'-'*12} {'-'*7} {'-'*8} {'-'*7} {'-'*7} {'-'*11}")
+print(f"\n  {'Conf':<12} {'Real':>6} {'ParseFP':>8} {'NoVenue':>8} {'HyphenMiss':>11}")
+print(f"  {'-'*12} {'-'*6} {'-'*8} {'-'*8} {'-'*11}")
 for conf, s in raw_summaries.items():
+    rt = s['real_total'] or 1
+    fp_note = f"{s['parse_fps']:>5} ({100*s['parse_fps']/s['total']:.0f}%)" if s['parse_fps'] else "    — (no fp col)"
     print(
-        f"  {conf:<12} {s['total']:>7} {s['no_venue']:>7} ({100*s['no_venue']/s['total']:.0f}%)"
-        f"  {s['web_catch']:>5} ({100*s['web_catch']/s['total']:.0f}%)"
-        f"  {s['author_fp']:>5} ({100*s['author_fp']/s['total']:.0f}%)"
-        f"  {s['hyphen_no_venue']:>5} ({100*s['hyphen_no_venue']/s['total']:.0f}%)"
+        f"  {conf:<12} {s['real_total']:>6}"
+        f"  {fp_note}"
+        f"  {s['no_venue']:>5} ({100*s['no_venue']/rt:.0f}%)"
+        f"  {s['hyphen_no_venue']:>5} ({100*s['hyphen_no_venue']/rt:.0f}%)"
     )
 
 print()
-print("  Columns: Parsed=total citations extracted from PDFs")
-print("           NoVenue=missed by regex+DBLP")
-print("           WebFP=caught by 'web' catch-all (may be misclassified)")
-print("           AuthFP='J. Name' mistaken for journal abbreviation")
+print("  Real     = citations passing the year/URL heuristic (suspected_fp=False)")
+print("  ParseFP  = suspected parse artifacts (no year and no URL in raw reference)")
+print("  NoVenue  = real citations missed by regex+DBLP (% of Real)")
+print("  HyphenMiss = two-column hyphen artifacts with no venue (% of Real)")
 print("           HyphenMiss=two-column artifacts with no venue extracted")

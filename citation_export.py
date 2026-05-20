@@ -34,7 +34,7 @@ SAMPLE_SIZE = 400
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" 
 TEST_RANGE = "Oakland" # One conference (sheet) per run
 
-DBLP_CACHE_FILE = Path(f"{TEST_RANGE}_dblp_cache.json")
+DBLP_CACHE_FILE = Path(f"json/{TEST_RANGE}_dblp_cache.json")
 dblp_cache: dict[str, dict] = {}
 if DBLP_CACHE_FILE.exists():
     with open(DBLP_CACHE_FILE) as _f:
@@ -505,6 +505,7 @@ def parse_references(text: str, debug=False):
     Parses references handling both:
       - numeric markers: 1. ...  or [1] ...
       - bracketed alphanumeric markers: [ANWW13], [BCG+19a], [BCGI18], etc.
+      - bare alpha markers: ABC+23. (key on its own line, no brackets — some LNCS papers)
     Skips blocks that look like body text.
     """
 
@@ -515,7 +516,7 @@ def parse_references(text: str, debug=False):
     text = re.sub(r"\bpp\.?\s*\d{1,4}\s*[-–]\s*\d{1,4}\.?", "", text)
 
     # Insert newline before reference markers to help splitting
-    marker_lookahead = r"(?=(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*))"
+    marker_lookahead = r"(?=(\d{1,3}\.\s|\[\d{1,3}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*))"
     text = re.sub(r"\s" + marker_lookahead, "\n", text)
 
     # Split into lines and strip whitespace
@@ -523,11 +524,23 @@ def parse_references(text: str, debug=False):
 
     refs = []
     current = None
-    # Regex to detect start-of-reference lines
-    marker_re = re.compile(r"^(\d{1,2}\.\s|\[\d{1,2}\]\s|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*)")
+    # Bare alpha key: e.g. "ABC+23." or "Abe01." — short key ending with 2-digit year, alone on line.
+    # Require trailing $ so it only fires when the key is the entire stripped line.
+    # \[\d{1,2}\]\s* uses \s* (not \s) to also match numeric bracket keys that sit alone on a line
+    # with no trailing space (e.g. Bulletproofs++ PDF style: "[1]" on its own line).
+    marker_re = re.compile(
+        r"^(\d{1,2}\.\s"
+        r"|\[\d{1,3}\]\s*"
+        r"|\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*"
+        r"|[A-Za-z][A-Za-z0-9+\-]{0,13}\d{2}\.\s*$"  # bare alpha: ABC+23.
+        r")"
+    )
+
+    # IEEE bibliography continuation markers — not citation keys, always part of preceding ref
+    ieee_continuation_re = re.compile(r'^\[(Online|Accessed)[^\]]*\]', re.I)
 
     for ln in lines:
-        if marker_re.match(ln):
+        if marker_re.match(ln) and not ieee_continuation_re.match(ln):
             # start a new reference
             if current:
                 # Skip blocks that look like body text or if too short
@@ -829,6 +842,28 @@ def extract_venue(reference: str) -> str:
     return ""
 
 # ---------------------------------
+# Real-citation heuristic
+# ---------------------------------
+
+def is_likely_real_citation(raw_ref: str) -> bool:
+    """
+    Returns False if raw_ref looks like a parser artifact rather than a real citation.
+    A real citation almost always contains a 4-digit publication year or a URL.
+    Known artifact types that fail both tests:
+      - Table rows (e.g. "[82] FA,FE,C10 Trim FedSGD ...")
+      - Proof steps (e.g. "1. The general case follows from ...")
+      - DOI fragments (e.g. "05. doi: 10.1007/978-...")
+    The result is written to the suspected_fp column for auditing purposes only.
+    All rows — including suspected artifacts — go through full venue extraction
+    and are counted in the extraction rate denominator.
+    """
+    return bool(
+        re.search(r'\b(?:19|20)\d{2}\b', raw_ref)
+        or re.search(r'https?:\s*//', raw_ref)  # also catches soft-wrapped "https: //"
+    )
+
+
+# ---------------------------------
 # Main Processing Loop — venue extraction
 # ---------------------------------
 
@@ -862,25 +897,27 @@ for title, pdf_path in deduped_pdfs.items():
             "venue_raw": venue,
             "venue_source": source,
             "raw_reference": ref,
+            "suspected_fp": not is_likely_real_citation(ref_clean),
         })
 
 df_citations = pd.DataFrame(citation_rows)
 df_citations.to_csv(
-    f"{TEST_RANGE}_citations_raw.csv",
+    f"csv/{TEST_RANGE}_citations_raw.csv",
     index=False,
     escapechar="\\",
     quoting=1  # QUOTE_ALL — wraps every field in quotes, sidesteps the issue entirely
 )
-print(f"Saved {len(df_citations)} citation rows to {TEST_RANGE}_citations_raw.csv")
+print(f"Saved {len(df_citations)} citation rows to csv/{TEST_RANGE}_citations_raw.csv")
 
 with open(DBLP_CACHE_FILE, 'w') as _f:
     json.dump(dblp_cache, _f, indent=2)
 print(f"Saved {len(dblp_cache)} DBLP hits to {DBLP_CACHE_FILE}")
 
-# Quick diagnostic: how many references got a venue extracted?
+# Extraction rate over all rows — suspected_fp is for auditing only, not excluded here
 extracted = df_citations[df_citations["venue_raw"] != ""].shape[0]
 total = len(df_citations)
-print(f"Venue extracted: {extracted}/{total} ({100*extracted/total:.1f}%)")
+fp_count = df_citations["suspected_fp"].sum()
+print(f"Venue extracted: {extracted}/{total} ({100*extracted/total:.1f}%)  [{fp_count} rows flagged suspected_fp — kept in denominator]")
 
 # Preview unmatched to tune regex
 unmatched_sample = df_citations[df_citations["venue_raw"] == ""]["raw_reference"].head(20)
