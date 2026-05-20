@@ -32,7 +32,7 @@ SAMPLE_SIZE = 400
 
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE" 
-TEST_RANGE = "Oakland" # One conference (sheet) per run
+TEST_RANGE = "Crypto" # One conference (sheet) per run
 
 DBLP_CACHE_FILE = Path(f"json/{TEST_RANGE}_dblp_cache.json")
 dblp_cache: dict[str, dict] = {}
@@ -670,6 +670,10 @@ def query_dblp_for_venue(raw_reference: str) -> str:
 
     # Strip any trailing ". In VENUE" / ". arXiv" / ". IACR" that leaked into the title
     title = re.sub(r'\.\s+(?:In\b|arXiv|IACR|CoRR).*$', '', title, flags=re.I).strip()
+
+    # Normalize Unicode ligatures from PDF font encoding before sending to DBLP.
+    # e.g. "Eﬃcient" → "Efficient", "diﬀerential" → "differential"
+    title = title.translate(str.maketrans({'ﬀ':'ff','ﬁ':'fi','ﬂ':'fl','ﬃ':'ffi','ﬄ':'ffl','ﬅ':'st','ﬆ':'st'}))
 
     # Skip obviously hopeless queries
     if re.fullmatch(r'(?i)private\s+communication\.?', title.strip()):
