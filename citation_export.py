@@ -721,13 +721,16 @@ for title, pdf_path in deduped_pdfs.items():
         })
 
 df_citations = pd.DataFrame(citation_rows)
-df_citations.to_csv(
-    f"csv/{CONFERENCE}_citations_raw.csv",
-    index=False,
-    escapechar="\\",
-    quoting=1  # QUOTE_ALL — wraps every field in quotes, sidesteps the issue entirely
-)
-print(f"Saved {len(df_citations)} citation rows to csv/{CONFERENCE}_citations_raw.csv")
+is_fp = df_citations["suspected_fp"].astype(str).str.lower().isin(["true", "1"])
+df_real = df_citations[~is_fp]
+df_fps  = df_citations[is_fp]
+
+_csv_opts = dict(index=False, escapechar="\\", quoting=1)
+df_real.to_csv(f"csv/{CONFERENCE}_citations_raw.csv", **_csv_opts)
+df_fps.to_csv(f"csv/{CONFERENCE}_suspected_fps.csv", **_csv_opts)
+
+print(f"Saved {len(df_real)} citation rows to csv/{CONFERENCE}_citations_raw.csv")
+print(f"Saved {len(df_fps)} suspected FPs to csv/{CONFERENCE}_suspected_fps.csv (gitignored — manual audit)")
 
 with open(DBLP_CACHE_FILE, 'w') as _f:
     json.dump(dblp_cache, _f, indent=2)
@@ -755,24 +758,17 @@ print(f"\nDBLP query results ({n_dblp_total} live queries this run):")
 print(f"  hits:   {n_dblp_hits}  ({dblp_rate:.1f}% success rate)")
 print(f"  misses: {n_dblp_misses}  — see {DBLP_MISSES_FILE}")
 
-# Extraction rate over all rows — suspected_fp is for auditing only, not excluded here
-extracted = df_citations[df_citations["venue_raw"] != ""].shape[0]
-total = len(df_citations)
-fp_count = df_citations["suspected_fp"].sum()
+extracted = df_real[df_real["venue_raw"] != ""].shape[0]
+total = len(df_real)
+fp_count = len(df_fps)
 papers_processed = len(deduped_pdfs)
 expected = papers_processed * 60
 print(f"Papers in corpus: {len(paper_titles)} in sheet, {papers_processed} PDFs found and processed")
 print(f"Expected citations (rough): {papers_processed} papers × 60 = {expected}")
-print(f"Citations extracted:        {total}  ({100*total/expected:.1f}% of expected)")
-print(f"Venue extracted: {extracted}/{total} ({100*extracted/total:.1f}%)  [{fp_count} rows flagged suspected_fp — kept in denominator]")
-
-# Preview unmatched to tune regex
-unmatched_sample = df_citations[df_citations["venue_raw"] == ""]["raw_reference"].head(20)
-#print("\nSample of references with no venue extracted:")
-#for r in unmatched_sample:
-    #print(" ", r[:120])
+print(f"Citations extracted:        {total}  ({100*total/expected:.1f}% of expected, {fp_count} suspected FPs excluded)")
+print(f"Venue extracted: {extracted}/{total} ({100*extracted/total:.1f}%)")
 
  # Check venue extraction rate by app_awareness level
 print("\nExtraction rate by awareness level:")
-df_citations["extracted"] = df_citations["venue_raw"] != ""
+df_real["extracted"] = df_real["venue_raw"] != ""
 print(df_citations.groupby("app_awareness")["extracted"].mean().round(3))
