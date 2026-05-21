@@ -627,6 +627,31 @@ def extract_venue(reference: str) -> str:
     return ""
 
 # ---------------------------------
+# Standards / grey-literature matcher
+# ---------------------------------
+
+def match_standards(ref: str) -> str:
+    """Post-DBLP fallback: returns a label like 'RFC 8446' or '' if no pattern fires.
+    Only called on DBLP misses, so there is no risk of shadowing a real venue match."""
+    m = re.search(r'\bRFC\s*(\d{3,4})\b', ref, re.I)
+    if m:
+        return f"RFC {m.group(1)}"
+    m = re.search(r'\bFIPS\s+(?:PUB\s+)?(\d[\d\-]*)', ref, re.I)
+    if m:
+        return f"FIPS {m.group(1)}"
+    m = re.search(r'\bNIST\s+(?:SP|Special\s+Publication)\s+([\d\-A-Za-z]+)', ref, re.I)
+    if m:
+        return f"NIST SP {m.group(1)}"
+    m = re.search(r'\bISO/IEC\s+(\d[\d\-]*)', ref, re.I)
+    if m:
+        return f"ISO/IEC {m.group(1)}"
+    m = re.search(r'\bANSI\s+(X[\d\.]+)', ref, re.I)
+    if m:
+        return f"ANSI {m.group(1)}"
+    return ""
+
+
+# ---------------------------------
 # Real-citation heuristic
 # ---------------------------------
 
@@ -664,8 +689,9 @@ n_empty_refs_text  = 0  # heading found but extracted text was empty after trunc
 # May need to revisit the 1.5s rate-limit delay or add a per-run query cap if
 # DBLP starts returning 429s more frequently.
 parse_totals = {"dropped_too_short": 0, "stray_lines": 0}
-n_dblp_hits   = 0
-n_dblp_misses = 0
+n_dblp_hits      = 0
+n_dblp_misses    = 0
+n_standards_hits = 0
 dblp_miss_refs: list[str] = []
 
 citation_rows = []
@@ -705,9 +731,15 @@ for title, pdf_path in deduped_pdfs.items():
                 source = "dblp"
                 n_dblp_hits += 1
             else:
-                source = "none"
-                n_dblp_misses += 1
-                dblp_miss_refs.append(ref_clean)
+                standards_label = match_standards(ref_clean)
+                if standards_label:
+                    venue = standards_label
+                    source = "standards"
+                    n_standards_hits += 1
+                else:
+                    source = "none"
+                    n_dblp_misses += 1
+                    dblp_miss_refs.append(ref_clean)
             print(f"  DBLP result: {venue or 'none'}")
             time.sleep(1.5)
 
@@ -752,11 +784,12 @@ print(f"\nReference parser fall-throughs (across all papers):")
 print(f"  blocks dropped — too short (<35 chars):    {parse_totals['dropped_too_short']}")
 print(f"  stray lines before first marker (ignored): {parse_totals['stray_lines']}")
 
-n_dblp_total = n_dblp_hits + n_dblp_misses
+n_dblp_total = n_dblp_hits + n_standards_hits + n_dblp_misses
 dblp_rate = 100 * n_dblp_hits / n_dblp_total if n_dblp_total else 0
 print(f"\nDBLP query results ({n_dblp_total} live queries this run):")
-print(f"  hits:   {n_dblp_hits}  ({dblp_rate:.1f}% success rate)")
-print(f"  misses: {n_dblp_misses}  — see {DBLP_MISSES_FILE}")
+print(f"  hits:      {n_dblp_hits}  ({dblp_rate:.1f}% success rate)")
+print(f"  standards: {n_standards_hits}  (RFC/NIST/FIPS/ISO — post-DBLP pattern match)")
+print(f"  misses:    {n_dblp_misses}  — see {DBLP_MISSES_FILE}")
 
 extracted = df_real[df_real["venue_raw"] != ""].shape[0]
 total = len(df_real)
@@ -771,4 +804,4 @@ print(f"Venue extracted: {extracted}/{total} ({100*extracted/total:.1f}%)")
  # Check venue extraction rate by app_awareness level
 print("\nExtraction rate by awareness level:")
 df_real["extracted"] = df_real["venue_raw"] != ""
-print(df_citations.groupby("app_awareness")["extracted"].mean().round(3))
+print(df_real.groupby("app_awareness")["extracted"].mean().round(3))
