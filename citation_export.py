@@ -79,14 +79,24 @@ def get_sheets_service():
 # -----------------------------
 
 def clean_title(raw: str) -> str:
-    # Remove author prefix before colon
+    # Strip HTML sub/superscript blocks including content (e.g. k<sub>1, đots</sub> → k)
+    raw = re.sub(r'<(?:sub|sup)[^>]*>.*?</(?:sub|sup)>', '', raw, flags=re.I | re.S)
+    # Strip remaining HTML tags
+    raw = re.sub(r'<[^>]+>', '', raw)
+
+    # Extract content from LaTeX text commands (\texttt{Anemoi} → Anemoi, \text{X} → X)
+    raw = re.sub(r'\\text\w*\{([^}]+)\}', r'\1', raw)
+    # Remove remaining LaTeX math delimiters and commands
+    raw = re.sub(r'\$+', '', raw)
+    raw = re.sub(r'\\[a-zA-Z]+', '', raw)
+    # Strip residual "tt" prefix from \texttt{} import artifacts (e.g. ttAnemoi → Anemoi)
+    raw = re.sub(r'\btt([A-Z])', r'\1', raw)
+
+    # Remove author prefix before colon (e.g. "Aldo Gunsing: Title")
     raw = re.sub(r"^.*?:\s*", "", raw)
 
     # Remove year in parentheses
     raw = re.sub(r"\(\d{4}\)", "", raw)
-
-    # Remove LaTeX math
-    raw = re.sub(r"\$.*?\$", "", raw)
 
     return raw.strip()
 
@@ -136,6 +146,7 @@ def normalize(text: str) -> str:
     text = "".join(c for c in text if not unicodedata.combining(c))
 
     text = text.lower()
+    text = re.sub(r"-", " ", text)        # hyphens → word separators
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"[^a-z0-9 ]", "", text)
 
@@ -156,7 +167,7 @@ def pdf_matches_title(pdf_path: Path, titles: list[str]):
         title_norm = normalize(title)
         title_tokens = {t for t in title_norm.split() if t not in STOPWORDS}
 
-        if len(title_tokens) < 4:
+        if len(title_tokens) < 2:
             continue
 
         overlap = filename_tokens & title_tokens
@@ -208,7 +219,7 @@ def _pdf_matches_title_relaxed(pdf_path: Path, titles: list[str]):
     for title in titles:
         title_norm = normalize(title)
         title_tokens = {t for t in title_norm.split() if t not in STOPWORDS}
-        if len(title_tokens) < 4:
+        if len(title_tokens) < 2:
             continue
         overlap = filename_tokens & title_tokens
         if len(overlap) / len(title_tokens) >= 0.7:
@@ -236,7 +247,7 @@ if unmatched_titles:
         fname_tokens = {t for t in normalize(pdf.stem).split() if t not in STOPWORDS}
         for title in unmatched_titles:
             title_tokens = {t for t in normalize(title).split() if t not in STOPWORDS}
-            if len(title_tokens) < 4:
+            if len(title_tokens) < 2:
                 continue
             ratio = len(fname_tokens & title_tokens) / len(title_tokens)
             if ratio > title_best_overlap[title]:
@@ -458,12 +469,19 @@ def query_dblp_for_venue(raw_reference: str) -> str:
     # Strip any trailing ". In VENUE" / ". arXiv" / ". IACR" that leaked into the title
     title = re.sub(r'\.\s+(?:In\b|arXiv|IACR|CoRR).*$', '', title, flags=re.I).strip()
 
+    # Strip Chicago/Biblatex back-reference annotations: "(cit. on pp. 3, 4)"
+    title = re.sub(r'\s*\(cit\.\s+on\s+pp?\.\s*[\d,\s]+\)', '', title).strip()
+
     # Normalize Unicode ligatures from PDF font encoding before sending to DBLP.
     # e.g. "Eﬃcient" → "Efficient", "diﬀerential" → "differential"
     title = title.translate(str.maketrans({'ﬀ':'ff','ﬁ':'fi','ﬂ':'fl','ﬃ':'ffi','ﬄ':'ffl','ﬅ':'st','ﬆ':'st'}))
 
     # Skip obviously hopeless queries
     if re.fullmatch(r'(?i)private\s+communication\.?', title.strip()):
+        return ""
+
+    # LNCS continuation lines parsed as citations: "20. LNCS, vol. 11999, Springer..."
+    if re.match(r'^LNCS,\s+vol\.', title.strip(), re.I):
         return ""
 
     if not title or len(title) < 12:
@@ -526,6 +544,21 @@ def extract_venue(reference: str) -> str:
     if m:
         return m.group(1).strip()
 
+    # LNCS short without volume: "In: CRYPTO (2023)" / "In: ASIACRYPT (2023)" / "In: NSPW (1993)"
+    # Character class restricted to uppercase so long mixed-case titles don't fire.
+    m = re.search(r"In:\s+([A-Z][A-Z0-9&\- ]{1,25})\s+\(\d{4}\)", reference)
+    if m:
+        return m.group(1).strip()
+
+    # Journal style: checked before academic URL block so DOI-bearing journal refs
+    # (e.g. "J. Cryptol. 32(2)... https://doi.org/...") are caught here rather than
+    # intercepted by the URL handler and forwarded to DBLP unnecessarily.
+    m = re.search(r"\b((?:J\.|Journal|Trans\.|IEEE Trans\.|ACM Trans\.)\s+[A-Za-z][A-Za-z0-9 \.]{2,40})", reference)
+    if m:
+        candidate = re.sub(r'\s+\d[\d\.]*$', '', m.group(1).strip())  # strip trailing volume number
+        if not re.match(r'^J\.\s+(?:[A-Z]\.\s+)*[A-Z][a-z]{2,}(?:[\.,](?:\s+[A-Z]|$)|\s+[a-z]|$)', candidate):
+            return candidate
+
     # Academic publisher URLs — try to extract venue from pre-URL text, else "" → DBLP.
     # doi\.\s*org handles soft-wrapped "doi. org" artifacts from two-column PDF extraction.
     _ACADEMIC_URL_RE = re.compile(
@@ -557,12 +590,22 @@ def extract_venue(reference: str) -> str:
     # Alpha-key style: venue appears after editors list — "In EDITORS, editors, CRYPTO 2019"
     # Handles apostrophe-year too: "editors, ASIACRYPT'99"
     # Two leading uppercase letters required to exclude book titles like "Some Title 2019".
-    m = re.search(r"\beditor(?:s)?,\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z][A-Za-z0-9 &'\-–]{1,30}?(?:\s+\d{4}|'\d{2}))", reference)
+    m = re.search(r"\bed-?itor(?:s)?,\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z][A-Za-z0-9 &'\-–]{1,30}?(?:\s+\d{2,4}\b|'\d{2}))", reference)
     if m:
         return m.group(1).strip()
 
     # Ordinal conference where year is not adjacent: "editor, 30th SODA, pages"
-    m = re.search(r"\beditor(?:s)?,\s+\d+(?:st|nd|rd|th)\s+([A-Z][A-Za-z0-9&\- ]{1,20})\b", reference)
+    m = re.search(r"\bed-?itor(?:s)?,\s+\d+(?:st|nd|rd|th)\s+([A-Z][A-Za-z0-9&\- ]{1,20})\b", reference)
+    if m:
+        return m.group(1).strip()
+
+    # Ordinal venue without editor prefix: "In: 61st FOCS, IEEE" / "In 19th ACM STOC, ACM Press"
+    m = re.search(r"In:?\s+\d+(?:st|nd|rd|th)\s+([A-Z][A-Za-z0-9&\- ]{1,25})[,\.\s]", reference)
+    if m:
+        return m.group(1).strip()
+
+    # IEEE year-first style: "In 2018 IEEE Symposium on Security and Privacy, pages"
+    m = re.search(r"\bIn\s+\d{4}\s+([A-Z][A-Za-z0-9 &'\-]{3,50})(?:,|\s+pages|\s+vol|\.\s)", reference)
     if m:
         return m.group(1).strip()
 
@@ -581,21 +624,11 @@ def extract_venue(reference: str) -> str:
     if m:
         return m.group(0).strip().rstrip(',').strip()
 
-    # "In Proceedings of ..." or "In Proc. ..."
-    m = re.search(r"\bIn\s+(?:Proceedings\s+of\s+|Proc\.?\s+)([^,\.]+)", reference, re.I)
+    # "In Proceedings of ..." or "In Proc. ..." (with or without colon after In)
+    m = re.search(r"\bIn:?\s+(?:Proceedings\s+of\s+|Proc\.?\s+)([^,\.]+)", reference, re.I)
     if m:
         return m.group(1).strip()
 
-    # Journal style: "J. Cryptology" / "SIAM J. Comput." etc.
-    m = re.search(r"\b((?:J\.|Journal|Trans\.|IEEE Trans\.|ACM Trans\.)\s+[A-Za-z][A-Za-z0-9 \.]{2,40})", reference)
-    if m:
-        candidate = m.group(1).strip()
-        # "J. Lastname" / "J. B. Lastname" patterns are author initials, not journals.
-        # Real journal abbreviations either contain all-caps words (ACM, SIAM) or
-        # words ending in a period (Cryptol., Comput.). A bare capitalized surname has neither.
-        if not re.match(r'^J\.\s+(?:[A-Z]\.\s+)*[A-Z][a-z]{2,}(?:[\.,](?:\s+[A-Z]|$)|\s+[a-z]|$)', candidate):
-            return candidate
-    
     # Short acronym style: "In: ITC (2023)" or "In: 24th ACM STOC"
     m = re.search(r"In:\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z0-9&\- ]{1,30})[,\s]+(?:ACM|IEEE|Springer)?\s*(?:Press\b|,)?\s*\w*\s*\d{4}", reference)
     if m:
@@ -648,6 +681,42 @@ def match_standards(ref: str) -> str:
     m = re.search(r'\bANSI\s+(X[\d\.]+)', ref, re.I)
     if m:
         return f"ANSI {m.group(1)}"
+    m = re.search(r'\bU\.?S\.?\s+Patent\s+([\d,]+)', ref, re.I)
+    if m:
+        return f"U.S. Patent {m.group(1)}"
+    return ""
+
+
+def match_grey_lit(ref: str) -> str:
+    """Post-DBLP fallback for books and technical reports.
+    Returns a specific label (e.g. 'Cambridge University Press', 'Tech. Rep. TR-21-05')
+    or '' if no pattern fires. source='grey_lit' groups both types in analysis."""
+    # PhD theses
+    m = re.search(r'\bPh\.?D\.?\s+[Tt]hesis\b', ref)
+    if m:
+        return "PhD Thesis"
+
+    # Competition submissions (crypto-specific: CAESAR, NIST LWC, etc.)
+    m = re.search(r'\bSubmission\s+to\s+(?:the\s+)?([A-Z][A-Za-z0-9 \-]+[Cc]ompetition)', ref)
+    if m:
+        return m.group(1).strip()
+
+    # Technical reports — distinctive enough to check without guards
+    m = re.search(r'\bTech(?:nical)?\.?\s+Rep(?:ort)?\.?(?:\s+([\w\-/]+))?', ref, re.I)
+    if m:
+        num = (m.group(1) or "").strip()
+        return f"Tech. Rep. {num}".strip() if num else "Tech. Rep."
+
+    # Books — publisher name present, no "In:" (which signals a conference paper)
+    if not re.search(r'\bIn:', ref):
+        m = re.search(
+            r'\b(Cambridge University Press|MIT Press|Oxford University Press'
+            r'|CRC Press|Springer(?:\s+(?:Berlin|Verlag|Heidelberg))?'
+            r'|Wiley|O\'Reilly|Addison-Wesley|Prentice.?Hall)\b',
+            ref, re.I
+        )
+        if m:
+            return m.group(1)
     return ""
 
 
@@ -663,9 +732,9 @@ def is_likely_real_citation(raw_ref: str) -> bool:
       - Table rows (e.g. "[82] FA,FE,C10 Trim FedSGD ...")
       - Proof steps (e.g. "1. The general case follows from ...")
       - DOI fragments (e.g. "05. doi: 10.1007/978-...")
-    The result is written to the suspected_fp column for auditing purposes only.
-    All rows — including suspected artifacts — go through full venue extraction
-    and are counted in the extraction rate denominator.
+    Rows that return False skip venue extraction and DBLP entirely and are written
+    to the FP audit CSV. Confirmed against 893 flagged rows across 4 conferences:
+    0 true positives.
     """
     return bool(
         re.search(r'\b(?:19|20)\d{2}\b', raw_ref)
@@ -692,6 +761,7 @@ parse_totals = {"dropped_too_short": 0, "stray_lines": 0}
 n_dblp_hits      = 0
 n_dblp_misses    = 0
 n_standards_hits = 0
+n_grey_lit_hits  = 0
 dblp_miss_refs: list[str] = []
 
 citation_rows = []
@@ -721,6 +791,18 @@ for title, pdf_path in deduped_pdfs.items():
 
     for ref in parsed_refs:
         ref_clean = dehyphenate(ref)
+
+        if not is_likely_real_citation(ref_clean):
+            citation_rows.append({
+                "source_paper": title,
+                "app_awareness": awareness,
+                "venue_raw": "",
+                "venue_source": "none",
+                "raw_reference": ref,
+                "suspected_fp": True,
+            })
+            continue
+
         venue = extract_venue(ref_clean)
         if venue:
             source = "regex"
@@ -737,9 +819,15 @@ for title, pdf_path in deduped_pdfs.items():
                     source = "standards"
                     n_standards_hits += 1
                 else:
-                    source = "none"
-                    n_dblp_misses += 1
-                    dblp_miss_refs.append(ref_clean)
+                    grey_lit_label = match_grey_lit(ref_clean)
+                    if grey_lit_label:
+                        venue = grey_lit_label
+                        source = "grey_lit"
+                        n_grey_lit_hits += 1
+                    else:
+                        source = "none"
+                        n_dblp_misses += 1
+                        dblp_miss_refs.append(ref_clean)
             print(f"  DBLP result: {venue or 'none'}")
             time.sleep(1.5)
 
@@ -749,7 +837,7 @@ for title, pdf_path in deduped_pdfs.items():
             "venue_raw": venue,
             "venue_source": source,
             "raw_reference": ref,
-            "suspected_fp": not is_likely_real_citation(ref_clean),
+            "suspected_fp": False,
         })
 
 df_citations = pd.DataFrame(citation_rows)
@@ -784,11 +872,12 @@ print(f"\nReference parser fall-throughs (across all papers):")
 print(f"  blocks dropped — too short (<35 chars):    {parse_totals['dropped_too_short']}")
 print(f"  stray lines before first marker (ignored): {parse_totals['stray_lines']}")
 
-n_dblp_total = n_dblp_hits + n_standards_hits + n_dblp_misses
+n_dblp_total = n_dblp_hits + n_standards_hits + n_grey_lit_hits + n_dblp_misses
 dblp_rate = 100 * n_dblp_hits / n_dblp_total if n_dblp_total else 0
 print(f"\nDBLP query results ({n_dblp_total} live queries this run):")
 print(f"  hits:      {n_dblp_hits}  ({dblp_rate:.1f}% success rate)")
 print(f"  standards: {n_standards_hits}  (RFC/NIST/FIPS/ISO — post-DBLP pattern match)")
+print(f"  grey lit:  {n_grey_lit_hits}  (books/tech reports — post-DBLP pattern match)")
 print(f"  misses:    {n_dblp_misses}  — see {DBLP_MISSES_FILE}")
 
 extracted = df_real[df_real["venue_raw"] != ""].shape[0]
