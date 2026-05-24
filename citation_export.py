@@ -585,6 +585,12 @@ def extract_venue(reference: str) -> str:
     if m:
         return m.group(1).strip()
 
+    # "In 2020 IEEE Symposium on Security and Privacy (SP), pages 947" — year-first with
+    # parenthetical acronym between venue name and page range
+    m = re.search(r"\bIn\s+\d{4}\s+([^(]+?)\s*\([A-Z]+\),\s*pages\s+\d", reference)
+    if m:
+        return m.group(1).strip()
+
     # "In STOC. ACM, 1990" — venue before ". Publisher"
     m = re.search(r"\bIn\s+([A-Z][A-Z0-9]{2,10})\.\s+(?:ACM|IEEE|Springer)[,\s]", reference)
     if m:
@@ -619,6 +625,15 @@ def extract_venue(reference: str) -> str:
     if _url_m:
         pre_url = reference[:_url_m.start()]
         m = re.search(r"([A-Z][A-Za-z0-9 &\-–—]+\d{4})\.", pre_url)
+        if m:
+            return m.group(1).strip()
+        m = re.search(r"\bIn:?\s+(?:Pro-?ceedings\s+of\s+|Proc\.?\s+)([^,\.]+)", pre_url, re.I)
+        if m:
+            return m.group(1).strip()
+        m = re.search(r"\bIn\s+(?:\d{4}|\d+(?:st|nd|rd|th))\s+([A-Z][A-Za-z0-9 &\-']{4,45})[,\.\s(]", pre_url, re.I)
+        if m:
+            return m.group(1).strip()
+        m = re.search(r"\bIn\s+([A-Z][A-Za-z ]+?)\s+-\s+\d+\w+\s+International\s+Conference", pre_url, re.I)
         if m:
             return m.group(1).strip()
         return ""
@@ -662,7 +677,9 @@ def extract_venue(reference: str) -> str:
 
     # "In Proceedings of ..." or "In Proc. ..." (with or without colon after In)
     # Pro-?ceedings also handles PDF hyphenation artifact "Pro-ceedings".
-    m = re.search(r"\bIn:?\s+(?:Pro-?ceedings\s+of\s+|Proc\.?\s+)([^,\.]+)", reference, re.I)
+    # "of" is optional to catch "In Proceedings 32nd Annual Symposium of Foundations..."
+    # Ordinal prefix (e.g. "32nd") is optionally consumed so the capture starts at the name.
+    m = re.search(r"\bIn:?\s+(?:Pro-?ceedings(?:\s+of)?\s+(?:\d+\w*\s+)?|Proc\.?\s+)([^,\.]+)", reference, re.I)
     if m:
         return m.group(1).strip()
 
@@ -739,6 +756,10 @@ def match_grey_lit(ref: str) -> str:
     if m:
         return "PhD Thesis"
 
+    # Other thesis types (honors, master's, bachelor's, undergraduate)
+    if re.search(r'\b(?:honors?|master(?:\'s)?|bachelor(?:\'s)?|undergraduate)\s+thesis\b', ref, re.I):
+        return "Thesis"
+
     # Competition submissions (crypto-specific: CAESAR, NIST LWC, etc.)
     m = re.search(r'\bSubmission\s+to\s+(?:the\s+)?([A-Z][A-Za-z0-9 \-]+[Cc]ompetition)', ref)
     if m:
@@ -754,7 +775,8 @@ def match_grey_lit(ref: str) -> str:
     if not re.search(r'\bIn:', ref):
         m = re.search(
             r'\b(Cambridge University Press|MIT Press|Oxford University Press'
-            r'|CRC Press|Springer(?:\s+(?:Berlin|Verlag|Heidelberg))?'
+            r'|CRC Press|Academic Press'
+            r'|Springer(?:\s+(?:Berlin|Verlag|Heidelberg))?'
             r'|Wiley|O\'Reilly|Addison-Wesley|Prentice.?Hall)\b',
             ref, re.I
         )
@@ -834,6 +856,9 @@ for title, pdf_path in deduped_pdfs.items():
 
     for ref in parsed_refs:
         ref_clean = dehyphenate(ref)
+        # Strip IEEE Xplore watermark text that bleeds in from two-column PDF extraction.
+        # Stripping (not rejecting) preserves the legitimate citation content before it.
+        ref_clean = re.sub(r'\s*Authorized licensed use limited to:.*$', '', ref_clean, flags=re.I | re.DOTALL).strip()
 
         if not is_likely_real_citation(ref_clean):
             citation_rows.append({
