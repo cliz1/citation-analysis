@@ -556,8 +556,44 @@ def extract_venue(reference: str) -> str:
     m = re.search(r"\b((?:J\.|Journal|Trans\.|IEEE Trans\.|ACM Trans\.)\s+[A-Za-z][A-Za-z0-9 \.]{2,40})", reference)
     if m:
         candidate = re.sub(r'\s+\d[\d\.]*$', '', m.group(1).strip())  # strip trailing volume number
+        # Bypass guard for known J.-prefixed journal abbreviations that the guard misidentifies
+        # as author initials (e.g. "J. Cryptol." matches the guard's end-of-string branch).
+        if re.match(r'^J\.\s+(?:Cryptol|ACM\b|Comput|Math|Number|Symb\.)', candidate, re.I):
+            return candidate
         if not re.match(r'^J\.\s+(?:[A-Z]\.\s+)*[A-Z][a-z]{2,}(?:[\.,](?:\s+[A-Z]|$)|\s+[a-z]|$)', candidate):
             return candidate
+
+    # (eds.) abbreviation + ordinal: "Boneh, D. (eds.) 45th ACM STOC, ACM Press"
+    # Placed before URL handler so DOI-bearing refs are also caught.
+    m = re.search(r"\(eds?\.\),?\s+\d+(?:st|nd|rd|th)\s+([A-Z][A-Za-z0-9&\- ]{1,25})[,\.]", reference)
+    if m:
+        return m.group(1).strip()
+
+    # (eds.) abbreviation + all-caps acronym/venue: "(ed.) SODA," / "(eds.) ACM CCS 2019"
+    m = re.search(r"\(eds?\.\),?\s+([A-Z][A-Z0-9&\- ]{1,20})(?:[,\.]|\s+\d{4}|\s+\()", reference)
+    if m:
+        return m.group(1).strip()
+
+    # "In: VENUE, pp." — acronym with page range before year: "In: ITCS, pp. 7:1–7:29"
+    m = re.search(r"In:\s+([A-Z][A-Z0-9&\- ]{1,20}),\s*pp\.", reference)
+    if m:
+        return m.group(1).strip()
+
+    # IEEE numeric style (no colon after "In"):
+    # "In ACM CCS, pages 1068–1079, 2014" — venue before ", pages \d"
+    m = re.search(r"\bIn\s+([A-Z][A-Za-z0-9 &'\-]{2,30}),\s*pages\s+\d", reference)
+    if m:
+        return m.group(1).strip()
+
+    # "In STOC. ACM, 1990" — venue before ". Publisher"
+    m = re.search(r"\bIn\s+([A-Z][A-Z0-9]{2,10})\.\s+(?:ACM|IEEE|Springer)[,\s]", reference)
+    if m:
+        return m.group(1).strip()
+
+    # "In CRYPTO (2), pages" — venue with volume number in parens
+    m = re.search(r"\bIn\s+([A-Z][A-Z0-9]{2,10})\s+\(\d{1,2}\)[,\s]", reference)
+    if m:
+        return m.group(1).strip()
 
     # Academic publisher URLs — try to extract venue from pre-URL text, else "" → DBLP.
     # doi\.\s*org handles soft-wrapped "doi. org" artifacts from two-column PDF extraction.
@@ -625,7 +661,8 @@ def extract_venue(reference: str) -> str:
         return m.group(0).strip().rstrip(',').strip()
 
     # "In Proceedings of ..." or "In Proc. ..." (with or without colon after In)
-    m = re.search(r"\bIn:?\s+(?:Proceedings\s+of\s+|Proc\.?\s+)([^,\.]+)", reference, re.I)
+    # Pro-?ceedings also handles PDF hyphenation artifact "Pro-ceedings".
+    m = re.search(r"\bIn:?\s+(?:Pro-?ceedings\s+of\s+|Proc\.?\s+)([^,\.]+)", reference, re.I)
     if m:
         return m.group(1).strip()
 
@@ -634,8 +671,10 @@ def extract_venue(reference: str) -> str:
     if m:
         return m.group(1).strip()
 
-    # Abbreviated journal names ending in volume/issue numbers
-    m = re.search(r"([A-Z][A-Za-z\. ]{3,40})\s+\d+\(\d+\)", reference)
+    # Abbreviated journal names ending in volume/issue numbers.
+    # Each word must start uppercase so the pattern can't span into a paper title.
+    # [\s,]+ handles "Commun. ACM, 24(2)" where comma separates journal from volume.
+    m = re.search(r"([A-Z][A-Za-z\.]{1,12}(?:\s+[A-Z][A-Za-z\.]{1,12}){0,4})[\s,]+\d+\(\d+\)", reference)
     if m:
         return m.group(1).strip()
 
@@ -691,6 +730,10 @@ def match_grey_lit(ref: str) -> str:
     """Post-DBLP fallback for books and technical reports.
     Returns a specific label (e.g. 'Cambridge University Press', 'Tech. Rep. TR-21-05')
     or '' if no pattern fires. source='grey_lit' groups both types in analysis."""
+    # Whitepapers / blog posts explicitly labelled as such
+    if re.search(r'\bwhite\s*paper\b', ref, re.I):
+        return "Whitepaper"
+
     # PhD theses
     m = re.search(r'\bPh\.?D\.?\s+[Tt]hesis\b', ref)
     if m:
