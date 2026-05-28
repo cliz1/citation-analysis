@@ -48,7 +48,7 @@ print(f"Loaded {len(dblp_cache)} cached DBLP hits from {DBLP_CACHE_FILE}")
 
 
 # -----------------------------
-# Google Sheets Helper
+# Corpus loading: Google Sheets
 # -----------------------------
 
 def get_sheets_service():
@@ -74,10 +74,6 @@ def get_sheets_service():
 
     return build("sheets", "v4", credentials=creds)
 
-# -----------------------------
-# Title cleaning helper
-# -----------------------------
-
 def clean_title(raw: str) -> str:
     # Strip HTML sub/superscript blocks including content (e.g. k<sub>1, đots</sub> → k)
     raw = re.sub(r'<(?:sub|sup)[^>]*>.*?</(?:sub|sup)>', '', raw, flags=re.I | re.S)
@@ -100,10 +96,6 @@ def clean_title(raw: str) -> str:
 
     return raw.strip()
 
-
-# ------------------------------------------------------------------------------
-# Collect titles from google sheets AND record app. awareness for later use
-# ------------------------------------------------------------------------------
 
 paper_titles = []
 app_awareness = {}
@@ -129,13 +121,13 @@ else:
                 paper_titles.append(cleaned_title)
                 if row[4] in awareness_values: # for coders who didn't record app. awareness correctly >:(
                     app_awareness[cleaned_title] = row[4]
-        
+
 
 print(f"Loaded {len(paper_titles)} paper titles from google sheets.")
 
-# -----------------------------------------------------------
-# Find pdfs in Zotero that match the titles in our collection
-# -----------------------------------------------------------
+# -----------------------------
+# Corpus loading: PDF matching
+# -----------------------------
 
 # Find all PDFs recursively
 pdf_files = list(ZOTERO_STORAGE.rglob("*.pdf"))
@@ -264,9 +256,11 @@ if unmatched_titles:
 print()
 
 
-# ---------------------------------------------
-# Functions for Parsing and Extracting References
-# ---------------------------------------------
+# ==============================================================================
+# Stage 1 — Citation extraction
+# PDF text → list of raw reference strings
+# ==============================================================================
+
 def extract_text_from_pdf(pdf_path: Path) -> str:
     """
     Input:  Path to a PDF file.
@@ -319,7 +313,6 @@ def dehyphenate(text: str) -> str:
             followed by whitespace.
     """
     return re.sub(r'(\w)-\s+(\w)', r'\1-\2', text)
-
 
 
 def parse_references(text: str, debug=False):
@@ -395,9 +388,33 @@ def parse_references(text: str, debug=False):
     return refs, stats
 
 
-# -------------------------------------
-# DBLP helper
-# -------------------------------------
+def is_likely_real_citation(raw_ref: str) -> bool:
+    """
+    Returns False if raw_ref looks like a parser artifact rather than a real citation.
+    A real citation almost always contains a 4-digit publication year or a URL.
+    Known artifact types that fail both tests:
+      - Table rows (e.g. "[82] FA,FE,C10 Trim FedSGD ...")
+      - Proof steps (e.g. "1. The general case follows from ...")
+      - DOI fragments (e.g. "05. doi: 10.1007/978-...")
+    Rows that return False skip venue extraction and DBLP entirely and are written
+    to the FP audit CSV. Confirmed against 893 flagged rows across 4 conferences:
+    0 true positives.
+    """
+    return bool(
+        re.search(r'\b(?:19|20)\d{2}\b', raw_ref)
+        or re.search(r'https?:\s*//', raw_ref)  # also catches soft-wrapped "https: //"
+    )
+
+
+# ==============================================================================
+# Stage 2 — Venue extraction
+# raw reference string → venue label; three passes in order:
+#   Pass 1: regex patterns (fast, no network)  →  extract_venue()
+#   Pass 2: DBLP title lookup (network fallback)  →  query_dblp_for_venue()
+#   Pass 3: standards / grey-literature patterns (post-DBLP)  →  match_standards() / match_grey_lit()
+# ==============================================================================
+
+# ── Pass 1: regex patterns ────────────────────────────────────────────────────
 
 _DBLP_VENUE_MAP = {
     "corr": "arXiv",
@@ -433,125 +450,6 @@ _CONF_FULL_NAMES: list[tuple[str, str]] = [
     (r"IEEE International Symposium on Information Theory", "ISIT"),
 ]
 
-
-class _DblpRateLimited(Exception):
-    pass
-
-
-def _fetch_dblp_venue(title: str) -> dict | None:
-    """Single DBLP title lookup; returns full info dict on hit, None on miss.
-    Raises _DblpRateLimited on HTTP 429 so the caller can bail instead of retrying."""
-    try:
-        query = urllib.parse.quote(title.replace('-', ' '))
-        url = f"https://dblp.org/search/publ/api?q={query}&format=json&h=1"
-        req = urllib.request.Request(url, headers={"User-Agent": "citation-analysis-research/1.0"})
-        context = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(req, timeout=10, context=context) as response:
-            data = json.loads(response.read())
-        hits = data.get("result", {}).get("hits", {}).get("hit", [])
-        if not hits:
-            return None
-        info = hits[0].get("info", {})
-        return info if info.get("venue") else None
-    except urllib.error.HTTPError as e:
-        if e.code == 429:
-            raise _DblpRateLimited()
-        return None
-    except Exception:
-        return None
-
-
-def query_dblp_for_venue(raw_reference: str) -> str:
-    title = ""
-
-    # LNCS / author-year: "...: Title. In ..."
-    m = re.search(r":\s+([A-Z][^:\.]{10,120})\.\s+In\b", raw_reference)
-    if m:
-        title = m.group(1).strip()
-
-    # Numeric style: "Authors. Title. In VENUE" — last sentence before ". In"
-    if not title:
-        m = re.search(r'\.\s+([A-Z][^\.]{15,120})\.\s+(?:In\b|IACR|arXiv|CoRR)', raw_reference)
-        if m:
-            title = m.group(1).strip()
-
-    # Quoted title
-    if not title:
-        m = re.search(r'"([^"]{10,120})"', raw_reference)
-        if m:
-            title = m.group(1).strip()
-
-    # Fallback: strip citation marker, skip past author list via ": " separator.
-    # LNCS format always puts the title after "Authors: Title", so colon-space
-    # is more reliable than period-space for finding where the title starts.
-    if not title:
-        body = re.sub(r'^\[?\d{1,3}\]?\.?\s*|^\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*', '', raw_reference)
-        colon_pos = body.find(': ')
-        title = body[colon_pos + 2:] if colon_pos >= 0 else body
-
-    # Strip any trailing ". In VENUE" / ". arXiv" / ". IACR" that leaked into the title
-    title = re.sub(r'\.\s+(?:In\b|arXiv|IACR|CoRR).*$', '', title, flags=re.I).strip()
-
-    # Strip Chicago/Biblatex back-reference annotations: "(cit. on pp. 3, 4)"
-    title = re.sub(r'\s*\(cit\.\s+on\s+pp?\.\s*[\d,\s]+\)', '', title).strip()
-
-    # Normalize Unicode ligatures from PDF font encoding before sending to DBLP.
-    # e.g. "Eﬃcient" → "Efficient", "diﬀerential" → "differential"
-    title = title.translate(str.maketrans({'ﬀ':'ff','ﬁ':'fi','ﬂ':'fl','ﬃ':'ffi','ﬄ':'ffl','ﬅ':'st','ﬆ':'st'}))
-
-    # Skip obviously hopeless queries
-    if re.fullmatch(r'(?i)private\s+communication\.?', title.strip()):
-        return ""
-
-    # LNCS continuation lines parsed as citations: "20. LNCS, vol. 11999, Springer..."
-    if re.match(r'^LNCS,\s+vol\.', title.strip(), re.I):
-        return ""
-
-    if not title or len(title) < 12:
-        return ""
-
-    # Try progressively shorter prefixes: 10 → 7 → 5 words.
-    # Shorter queries strip garbled suffix tokens while keeping the
-    # distinctive title head that DBLP needs for a confident match.
-    words = title.split()
-    seen: set[str] = set()
-    variants: list[str] = []
-    for n in (10, 7, 5):
-        candidate = " ".join(words[:n]).strip()
-        if len(candidate) >= 12 and candidate not in seen:
-            seen.add(candidate)
-            variants.append(candidate)
-
-    for i, variant in enumerate(variants):
-        # Check cache before hitting DBLP
-        if variant in dblp_cache:
-            raw_venue = dblp_cache[variant].get("venue", "")
-            if isinstance(raw_venue, list):
-                raw_venue = raw_venue[0] if raw_venue else ""
-            venue = _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
-            print(f"    DBLP cache hit ({len(variant.split())}w): '{variant[:70]}' → {venue}")
-            return venue
-
-        print(f"    DBLP query ({len(variant.split())}w): '{variant[:70]}'")
-        try:
-            info = _fetch_dblp_venue(variant)
-        except _DblpRateLimited:
-            print("    DBLP rate-limited (429) — skipping remaining variants")
-            return ""
-        if info:
-            raw_venue = info.get("venue", "")
-            if isinstance(raw_venue, list):
-                raw_venue = raw_venue[0] if raw_venue else ""
-            dblp_cache[variant] = info  # cache full info dict; misses retried next run
-            return _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
-        if i < len(variants) - 1:
-            time.sleep(1.0)  # match inter-ref cadence; genuine miss, not rate-limit
-
-    return ""
-
-# ---------------------------------
-# Venue extraction helper
-# ---------------------------------
 
 def extract_venue(reference: str) -> str:
     # Collapse soft-wrapped URLs: "https: //foo.com" → "https://foo.com"
@@ -776,7 +674,7 @@ def extract_venue(reference: str) -> str:
         return "ePrint"
     if re.search(r"arxiv\.org|arXiv|\bCoRR\b", reference, re.I):
         return "arXiv"
-    
+
     # Web/blog/forum references with no venue
     if re.search(r"https?://|(?<!\w)www\.[a-zA-Z]", reference):
         if re.search(r"github\.\s*(?:com|io)|gitlab\.\s*com", reference, re.I):
@@ -787,9 +685,126 @@ def extract_venue(reference: str) -> str:
 
     return ""
 
-# ---------------------------------
-# Standards / grey-literature matcher
-# ---------------------------------
+
+# ── Pass 2: DBLP title lookup ─────────────────────────────────────────────────
+
+class _DblpRateLimited(Exception):
+    pass
+
+
+def _fetch_dblp_venue(title: str) -> dict | None:
+    """Single DBLP title lookup; returns full info dict on hit, None on miss.
+    Raises _DblpRateLimited on HTTP 429 so the caller can bail instead of retrying."""
+    try:
+        query = urllib.parse.quote(title.replace('-', ' '))
+        url = f"https://dblp.org/search/publ/api?q={query}&format=json&h=1"
+        req = urllib.request.Request(url, headers={"User-Agent": "citation-analysis-research/1.0"})
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(req, timeout=10, context=context) as response:
+            data = json.loads(response.read())
+        hits = data.get("result", {}).get("hits", {}).get("hit", [])
+        if not hits:
+            return None
+        info = hits[0].get("info", {})
+        return info if info.get("venue") else None
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            raise _DblpRateLimited()
+        return None
+    except Exception:
+        return None
+
+
+def query_dblp_for_venue(raw_reference: str) -> str:
+    title = ""
+
+    # LNCS / author-year: "...: Title. In ..."
+    m = re.search(r":\s+([A-Z][^:\.]{10,120})\.\s+In\b", raw_reference)
+    if m:
+        title = m.group(1).strip()
+
+    # Numeric style: "Authors. Title. In VENUE" — last sentence before ". In"
+    if not title:
+        m = re.search(r'\.\s+([A-Z][^\.]{15,120})\.\s+(?:In\b|IACR|arXiv|CoRR)', raw_reference)
+        if m:
+            title = m.group(1).strip()
+
+    # Quoted title
+    if not title:
+        m = re.search(r'"([^"]{10,120})"', raw_reference)
+        if m:
+            title = m.group(1).strip()
+
+    # Fallback: strip citation marker, skip past author list via ": " separator.
+    # LNCS format always puts the title after "Authors: Title", so colon-space
+    # is more reliable than period-space for finding where the title starts.
+    if not title:
+        body = re.sub(r'^\[?\d{1,3}\]?\.?\s*|^\[[A-Za-z][A-Za-z0-9+\-]{1,30}\]\s*', '', raw_reference)
+        colon_pos = body.find(': ')
+        title = body[colon_pos + 2:] if colon_pos >= 0 else body
+
+    # Strip any trailing ". In VENUE" / ". arXiv" / ". IACR" that leaked into the title
+    title = re.sub(r'\.\s+(?:In\b|arXiv|IACR|CoRR).*$', '', title, flags=re.I).strip()
+
+    # Strip Chicago/Biblatex back-reference annotations: "(cit. on pp. 3, 4)"
+    title = re.sub(r'\s*\(cit\.\s+on\s+pp?\.\s*[\d,\s]+\)', '', title).strip()
+
+    # Normalize Unicode ligatures from PDF font encoding before sending to DBLP.
+    # e.g. "Eﬃcient" → "Efficient", "diﬀerential" → "differential"
+    title = title.translate(str.maketrans({'ﬀ':'ff','ﬁ':'fi','ﬂ':'fl','ﬃ':'ffi','ﬄ':'ffl','ﬅ':'st','ﬆ':'st'}))
+
+    # Skip obviously hopeless queries
+    if re.fullmatch(r'(?i)private\s+communication\.?', title.strip()):
+        return ""
+
+    # LNCS continuation lines parsed as citations: "20. LNCS, vol. 11999, Springer..."
+    if re.match(r'^LNCS,\s+vol\.', title.strip(), re.I):
+        return ""
+
+    if not title or len(title) < 12:
+        return ""
+
+    # Try progressively shorter prefixes: 10 → 7 → 5 words.
+    # Shorter queries strip garbled suffix tokens while keeping the
+    # distinctive title head that DBLP needs for a confident match.
+    words = title.split()
+    seen: set[str] = set()
+    variants: list[str] = []
+    for n in (10, 7, 5):
+        candidate = " ".join(words[:n]).strip()
+        if len(candidate) >= 12 and candidate not in seen:
+            seen.add(candidate)
+            variants.append(candidate)
+
+    for i, variant in enumerate(variants):
+        # Check cache before hitting DBLP
+        if variant in dblp_cache:
+            raw_venue = dblp_cache[variant].get("venue", "")
+            if isinstance(raw_venue, list):
+                raw_venue = raw_venue[0] if raw_venue else ""
+            venue = _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
+            print(f"    DBLP cache hit ({len(variant.split())}w): '{variant[:70]}' → {venue}")
+            return venue
+
+        print(f"    DBLP query ({len(variant.split())}w): '{variant[:70]}'")
+        try:
+            info = _fetch_dblp_venue(variant)
+        except _DblpRateLimited:
+            print("    DBLP rate-limited (429) — skipping remaining variants")
+            return ""
+        if info:
+            raw_venue = info.get("venue", "")
+            if isinstance(raw_venue, list):
+                raw_venue = raw_venue[0] if raw_venue else ""
+            dblp_cache[variant] = info  # cache full info dict; misses retried next run
+            return _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
+        if i < len(variants) - 1:
+            time.sleep(1.0)  # match inter-ref cadence; genuine miss, not rate-limit
+
+    return ""
+
+
+# ── Pass 3: standards and grey-literature fallbacks ───────────────────────────
 
 def match_standards(ref: str) -> str:
     """Post-DBLP fallback: returns a label like 'RFC 8446' or '' if no pattern fires.
@@ -878,34 +893,10 @@ def match_grey_lit(ref: str) -> str:
     return ""
 
 
-# ---------------------------------
-# Real-citation heuristic
-# ---------------------------------
-
-def is_likely_real_citation(raw_ref: str) -> bool:
-    """
-    Returns False if raw_ref looks like a parser artifact rather than a real citation.
-    A real citation almost always contains a 4-digit publication year or a URL.
-    Known artifact types that fail both tests:
-      - Table rows (e.g. "[82] FA,FE,C10 Trim FedSGD ...")
-      - Proof steps (e.g. "1. The general case follows from ...")
-      - DOI fragments (e.g. "05. doi: 10.1007/978-...")
-    Rows that return False skip venue extraction and DBLP entirely and are written
-    to the FP audit CSV. Confirmed against 893 flagged rows across 4 conferences:
-    0 true positives.
-    """
-    return bool(
-        re.search(r'\b(?:19|20)\d{2}\b', raw_ref)
-        or re.search(r'https?:\s*//', raw_ref)  # also catches soft-wrapped "https: //"
-    )
-
-
-# TODO: disentangle citation extraction from venue matching — these should be
-# separate passes so each can be unit-tested independently.
-
-# ---------------------------------
-# Main Processing Loop — venue extraction
-# ---------------------------------
+# ==============================================================================
+# Main pipeline
+# For each paper: extract citations (Stage 1) → label venues (Stage 2) → write CSV
+# ==============================================================================
 
 # Fall-through counters — printed in the summary at the end of the run.
 n_pdf_errors       = 0  # fitz raised an exception opening the PDF
