@@ -410,6 +410,29 @@ _DBLP_VENUE_MAP = {
     "journal of cryptology": "Journal of Cryptology",
 }
 
+# Full conference name → standard acronym; checked in extract_venue() before the URL block.
+_CONF_FULL_NAMES: list[tuple[str, str]] = [
+    (r"Annual International Cryptology Conference", "CRYPTO"),
+    (r"Annual Cryptology Conference", "CRYPTO"),   # Chicago-style, drops "International"
+    (r"Annual International Conference on the Theory and Applications of Cryptographic Techniques", "EUROCRYPT"),
+    (r"International Conference on the Theory and Application of Cryptology and Information Security", "ASIACRYPT"),
+    (r"IACR International (?:Conference|Workshop) on Public.Key Cryptography", "PKC"),
+    (r"ACM (?:SIGSAC )?Conference on Computer and Communications Security", "CCS"),
+    (r"(?:International Conference on\s+)?Applied Cryptography and Network Security", "ACNS"),
+    (r"International Workshop on Fast Software Encryption", "FSE"),
+    (r"International Workshop on Selected Areas in Cryptography", "SAC"),
+    (r"Theory of Cryptography Conference", "TCC"),
+    (r"Innovations in Theoretical Computer Science(?:\s+Conference)?", "ITCS"),
+    (r"(?:International Conference on\s+)?Financial Cryptography and Data Security", "FC"),
+    (r"(?:IEEE\s+)?European Symposium on Security and Privacy", "EuroS&P"),
+    (r"European Symposium on Research in Computer Security", "ESORICS"),
+    (r"Annual Computer Security Applications Conference", "ACSAC"),
+    (r"USENIX Security Symposium|USENIX Security", "USENIX Security"),
+    (r"Proceedings on Privacy Enhancing Technologies", "PoPETs"),
+    (r"IACR Real World Crypto Symposium", "RWC"),
+    (r"IEEE International Symposium on Information Theory", "ISIT"),
+]
+
 
 class _DblpRateLimited(Exception):
     pass
@@ -553,7 +576,7 @@ def extract_venue(reference: str) -> str:
     # Journal style: checked before academic URL block so DOI-bearing journal refs
     # (e.g. "J. Cryptol. 32(2)... https://doi.org/...") are caught here rather than
     # intercepted by the URL handler and forwarded to DBLP unnecessarily.
-    m = re.search(r"\b((?:J\.|Journal|Trans\.|IEEE Trans\.|ACM Trans\.)\s+[A-Za-z][A-Za-z0-9 \.]{2,40})", reference)
+    m = re.search(r"\b((?:J\.|Journal|Trans\.|IEEE Trans(?:actions)?\.?|ACM Trans\.)\s+[A-Za-z][A-Za-z0-9 \.]{2,40})", reference)
     if m:
         candidate = re.sub(r'\s+\d[\d\.]*$', '', m.group(1).strip())  # strip trailing volume number
         # Bypass guard for known J.-prefixed journal abbreviations that the guard misidentifies
@@ -591,13 +614,39 @@ def extract_venue(reference: str) -> str:
     if m:
         return m.group(1).strip()
 
-    # "In STOC. ACM, 1990" — venue before ". Publisher"
-    m = re.search(r"\bIn\s+([A-Z][A-Z0-9]{2,10})\.\s+(?:ACM|IEEE|Springer)[,\s]", reference)
+    # "In STOC. ACM, 1990" / "In NDSS. The Internet Society, 1999" — venue before ". Publisher"
+    m = re.search(r"\bIn\s+([A-Z][A-Z0-9]{2,10})\.\s+(?:ACM|IEEE|Springer|USENIX|The\s+Internet\s+Society)[,\s]", reference, re.I)
     if m:
         return m.group(1).strip()
 
     # "In CRYPTO (2), pages" — venue with volume number in parens
-    m = re.search(r"\bIn\s+([A-Z][A-Z0-9]{2,10})\s+\(\d{1,2}\)[,\s]", reference)
+    m = re.search(r"\bIn\s+([A-Z][A-Z0-9]{2,10})\s+\(\d{1,2}\)[,\s]", reference, re.I)
+    if m:
+        return m.group(1).strip()
+
+    # "in FMCAD, ser. Lecture Notes..." — venue immediately before ", ser."
+    m = re.search(r"\bIn\s+([A-Z][A-Z0-9&\- ]{1,20}),\s*ser\.", reference, re.I)
+    if m:
+        return m.group(1).strip()
+
+    # "ser. SP, 2013" / "ser. Crypto'12, 2012" — terse format with no "In" prefix
+    # Include apostrophe so "Crypto'12" is captured whole rather than cut at the apostrophe.
+    m = re.search(r"\bser\.\s+([A-Z][A-Za-z0-9']{1,15}),?\s+\d{4}", reference)
+    if m:
+        return m.group(1).strip()
+
+    # Full conference name aliases (e.g. "Annual International Cryptology Conference" → "CRYPTO").
+    for _pat, _label in _CONF_FULL_NAMES:
+        if re.search(_pat, reference, re.I):
+            return _label
+
+    # "Advances in Cryptology – CRYPTO 2021" / "Topics in Cryptology – CT-RSA 2020"
+    m = re.search(r"\b(?:Advances|Topics)\s+in\s+Cryptology\s*[–\-]\s*([A-Z][A-Z0-9\-]+)\s+(\d{4})", reference, re.I)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
+
+    # "In ACRONYM, volume X of LIPIcs" — Dagstuhl LIPIcs series with acronym before volume
+    m = re.search(r"\bIn\s+([A-Z][A-Z0-9&\-]{1,15}),\s+volume\s+\d+\s+of\s+LIPIcs\b", reference, re.I)
     if m:
         return m.group(1).strip()
 
@@ -636,6 +685,9 @@ def extract_venue(reference: str) -> str:
         m = re.search(r"\bIn\s+([A-Z][A-Za-z ]+?)\s+-\s+\d+\w+\s+International\s+Conference", pre_url, re.I)
         if m:
             return m.group(1).strip()
+        # "IACR TCHES 2023(3), 164–193" — TCHES DOI refs where vol(issue) blocks the YEAR. pattern
+        if re.search(r"\bIACR\s+TCHES\b", pre_url, re.I):
+            return "TCHES"
         return ""
 
     # Alpha-key style: venue appears after editors list — "In EDITORS, editors, CRYPTO 2019"
@@ -665,8 +717,8 @@ def extract_venue(reference: str) -> str:
     if m:
         return m.group(1).strip()
 
-    # IEEE/ACM short style: "in S&P 2021," / "In CCS 2018," / "In ACM PODC, 2019"
-    m = re.search(r"\bin\s+([A-Z][A-Za-z0-9 &'\-]{2,40}),?\s*\d{4}", reference, re.I)
+    # IEEE/ACM short style: "in S&P 2021," / "In CCS 2018," / "In TCC (2005)" / "In ACM PODC, 2019"
+    m = re.search(r"\bin\s+([A-Z][A-Za-z0-9 &'\-]{2,40}),?\s*\(?\d{4}", reference, re.I)
     if m:
         return m.group(1).strip()
 
@@ -684,7 +736,7 @@ def extract_venue(reference: str) -> str:
         return m.group(1).strip()
 
     # Short acronym style: "In: ITC (2023)" or "In: 24th ACM STOC"
-    m = re.search(r"In:\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z0-9&\- ]{1,30})[,\s]+(?:ACM|IEEE|Springer)?\s*(?:Press\b|,)?\s*\w*\s*\d{4}", reference)
+    m = re.search(r"In:\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z0-9&\- ]{1,30})[,\s]+(?:ACM|IEEE|Springer)?\s*(?:Press\b|,)?\s*\w*\s*\(?\d{4}", reference)
     if m:
         return m.group(1).strip()
 
@@ -695,18 +747,38 @@ def extract_venue(reference: str) -> str:
     if m:
         return m.group(1).strip()
 
+    # Journal names with "vol. X, no. Y" notation: "Int. J. Inf. Sec., vol. 14, no. 6, 2015"
+    # Each word must start uppercase (same guard as above) to prevent spanning paper titles.
+    m = re.search(r"([A-Z][A-Za-z\.]{1,12}(?:\s+[A-Z][A-Za-z\.&]{1,12}){0,4}),?\s+vol\.\s*\d", reference)
+    if m:
+        return m.group(1).strip()
+
+    # Standalone venue names that appear without an "In" prefix.
+    # PoPETS (all-caps) and PoPETs (mixed) both appear in the wild.
+    m = re.search(r"\b(PoPETs?|PoPETS|PVLDB|VLDB|PETS|TCHES)\b", reference)
+    if m:
+        return m.group(1).strip()
+
+    # PoPETs abbreviated as "Proc. Priv. Enh(ancing) Technol." in some citation styles
+    if re.search(r"\bProc\.\s+Priv\.\s+Enh", reference, re.I):
+        return "PoPETs"
+
+    # Black Hat — security conference cited without "In" prefix
+    if re.search(r"\bBlack\s*Hat\b", reference, re.I):
+        return "Black Hat"
+
     if re.search(r"https?:\s*//\s*github\.com", reference, re.I):
         return "GitHub"
 
 
     # ePrint / arXiv — ia.cr is the IACR ePrint URL shortener (ia.cr/YYYY/NNN)
-    if re.search(r"eprint\.iacr\.org|https?://ia\.cr/|Cryptol(?:ogy)?\.?\s*ePrint", reference, re.I):
+    if re.search(r"eprint\.iacr\.org|https?://ia\.cr/|Cryptol(?:ogy)?\.?\s*ePrint|IACR\s+(?:Cryptology\s+)?ePrint", reference, re.I):
         return "ePrint"
-    if re.search(r"arxiv\.org|arXiv", reference, re.I):
+    if re.search(r"arxiv\.org|arXiv|\bCoRR\b", reference, re.I):
         return "arXiv"
     
     # Web/blog/forum references with no venue
-    if re.search(r"https?://", reference):
+    if re.search(r"https?://|(?<!\w)www\.[a-zA-Z]", reference):
         if re.search(r"github\.\s*(?:com|io)|gitlab\.\s*com", reference, re.I):
             return "GitHub"
         if re.search(r"ethresear\.ch|vitalik\.ca|bitcointalk", reference, re.I):
@@ -740,6 +812,9 @@ def match_standards(ref: str) -> str:
     m = re.search(r'\bU\.?S\.?\s+Patent\s+([\d,]+)', ref, re.I)
     if m:
         return f"U.S. Patent {m.group(1)}"
+    m = re.search(r'\bNIST\s+IR\s+([\d\-A-Za-z\.]+)', ref, re.I)
+    if m:
+        return f"NIST IR {m.group(1)}"
     return ""
 
 
@@ -747,6 +822,18 @@ def match_grey_lit(ref: str) -> str:
     """Post-DBLP fallback for books and technical reports.
     Returns a specific label (e.g. 'Cambridge University Press', 'Tech. Rep. TR-21-05')
     or '' if no pattern fires. source='grey_lit' groups both types in analysis."""
+    # Legal case citations: "New York v. Ferber, 458 US 747 (1982)"
+    if re.search(r'\bv\.\s+[A-Z][a-z]', ref) and re.search(r'\b\d+\s+(?:U\.?S\.?|F\.\s*\d[a-z]*|[A-Z][a-z]+\.)\s+\d+', ref):
+        return "Court Case"
+
+    # IETF Internet-Drafts: "draft-ietf-..." or "Internet-Draft"
+    if re.search(r'\bdraft-ietf-\S+|\bInternet[- ]Draft\b', ref, re.I):
+        return "IETF Draft"
+
+    # Congressional legislation: "U.S.C.", "Public Law", "H.R.", "S. \d+ (Congress)"
+    if re.search(r'\bU\.S\.C\.\s*§|\bPublic\s+Law\s+\d|\bH\.R\.\s*\d|\bS\.\s*\d+\s*\(\d+\w+\s+Cong', ref, re.I):
+        return "Legislation"
+
     # Whitepapers / blog posts explicitly labelled as such
     if re.search(r'\bwhite\s*paper\b', ref, re.I):
         return "Whitepaper"
@@ -764,6 +851,12 @@ def match_grey_lit(ref: str) -> str:
     m = re.search(r'\bSubmission\s+to\s+(?:the\s+)?([A-Z][A-Za-z0-9 \-]+[Cc]ompetition)', ref)
     if m:
         return m.group(1).strip()
+
+    # NIST LWC / PQC submissions and workshops: "Submission to NIST Lightweight Cryptography",
+    # "Second Round Submission to NIST", "NIST Lightweight Cryptography Workshop"
+    if re.search(r'\b(?:(?:(?:First|Second|Final|Round\s+\d+)\s+)?Submission\s+to\s+NIST'
+                 r'|NIST\s+Lightweight\s+Cryptography\s+(?:Round|Workshop))', ref, re.I):
+        return "NIST Submission"
 
     # Technical reports — distinctive enough to check without guards
     m = re.search(r'\bTech(?:nical)?\.?\s+Rep(?:ort)?\.?(?:\s+([\w\-/]+))?', ref, re.I)
