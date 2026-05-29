@@ -65,9 +65,9 @@ Takes the raw reference strings from Stage 1 and assigns a venue label to each o
 
 ### Known extraction losses
 
-Overall extraction rate (venue assigned): EuroCrypt **90.2%**, Crypto **87.5%**, Oakland **83.5%**, USENIX **84.5%**
+Overall extraction rate (venue assigned): EuroCrypt **95.1%**, Crypto **96.3%**, Oakland **93.2%**, USENIX **94.0%**
 
-The remaining ~10–17% are unresolved citations where all three passes failed. The breakdown of why falls into three categories.
+The remaining ~4–7% are unresolved citations where all three passes failed. The breakdown of why falls into three categories.
 
 #### Structural limitations (harder to fix, not pursued)
 

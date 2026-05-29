@@ -391,8 +391,7 @@ def parse_references(text: str, debug=False):
 def is_likely_real_citation(raw_ref: str) -> bool:
     """
     Returns False if raw_ref looks like a parser artifact rather than a real citation.
-    A real citation almost always contains a 4-digit publication year or a URL.
-    Known artifact types that fail both tests:
+    Known artifact types that fail all checks below:
       - Table rows (e.g. "[82] FA,FE,C10 Trim FedSGD ...")
       - Proof steps (e.g. "1. The general case follows from ...")
       - DOI fragments (e.g. "05. doi: 10.1007/978-...")
@@ -401,8 +400,13 @@ def is_likely_real_citation(raw_ref: str) -> bool:
     0 true positives.
     """
     return bool(
-        re.search(r'\b(?:19|20)\d{2}\b', raw_ref)
-        or re.search(r'https?:\s*//', raw_ref)  # also catches soft-wrapped "https: //"
+        re.search(r'\b(?:19|20)\d{2}\b', raw_ref)               # 4-digit year
+        or re.search(r'https?:\s*//', raw_ref)                   # https:// URL (also catches soft-wrapped)
+        or re.search(r'\bdoi\s*:\s*10\.\d{4}/', raw_ref, re.I)  # bare DOI without https:// prefix
+        or re.search(r'\bIn:\s+[A-Z]', raw_ref)                 # "In: VENUE" — LNCS citation marker
+        or re.search(r'\bser\.\s+[A-Z]', raw_ref)               # "ser. VENUE'YY" — IEEE citation marker
+        or re.search(r'\bAdvances\s+in\s+Cryptology\b', raw_ref, re.I)  # CRYPTO/EUROCRYPT series name
+        or re.search(r'\bProceedings\b', raw_ref)                        # "in Proceedings of ..."
     )
 
 
