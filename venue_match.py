@@ -193,6 +193,49 @@ ABBREV_MAP = {
     "August": "",  # month name leaking in, discard
     "Adv. Comput. Res.": "",  # obscure, leave unmatched
     "Providing Sound Foundations for Cryptography": "",  # book title, not a venue
+
+    # Privacy venues
+    "PoPETs": "Proceedings on Privacy Enhancing Technologies",
+    "PoPETS": "Proceedings on Privacy Enhancing Technologies",
+    "PETS": "Proceedings on Privacy Enhancing Technologies",
+
+    # Security venues
+    "AsiaCCS": "ACM Asia Conference on Computer and Communications Security",
+    "ACSAC": "Annual Computer Security Applications Conference",
+    "WPES@CCS": "Workshop on Privacy in the Electronic Society",
+
+    # ML / PL / hardware venues
+    "ICLR": "International Conference on Learning Representations",
+    "PLDI": "ACM SIGPLAN Conference on Programming Language Design and Implementation",
+    "CAV": "International Conference on Computer Aided Verification",
+    "DATE": "Design, Automation and Test in Europe",
+    "DAC": "Design Automation Conference",
+
+    # Distributed computing variants
+    "ACM PODC": "ACM Symposium on Principles of Distributed Computing",
+
+    # Journal variants
+    "IEEE Trans. Dependable Secur. Comput.": "IEEE Transactions on Dependable and Secure Computing",
+    "IACR TCHES": "IACR Transactions on Cryptographic Hardware and Embedded Systems",
+    "IACR CRYPTO": "International Cryptology Conference",
+    "IACR Eurocrypt": "Annual International Conference on the Theory and Applications of Cryptographic Techniques",
+    "Commun. Assoc. Comput. Mach.": "Communications of the ACM",
+
+    # Hyphen OCR artifact
+    "IEEE Sym-posium on Security and Privacy": "IEEE Symposium on Security and Privacy",
+
+    # Publishers / non-venues — discard
+    "Springer": "",
+    "Springer Berlin": "",
+    "LNCS": "",
+    "Tech. Rep.": "",
+    "NIST Submission": "",
+    "Cambridge University Press": "",
+    "Annual Symposium on": "",
+    "Annual ACM Symposium on": "",
+    "PhD Thesis": "",
+    "Ed.": "",
+    "ACM": "",
 }
 
 def normalize_venue(venue_raw: str) -> str:
@@ -215,8 +258,8 @@ def normalize_venue(venue_raw: str) -> str:
     normalized = re.sub(r'-\s+', '', normalized)
     # Collapse internal spaces after hyphen removal
     normalized = re.sub(r'\s{2,}', ' ', normalized)
-    # Strip "Advances in Cryptology - " prefix
-    normalized = re.sub(r'^Advances in Cryptology\s*-\s*', '', normalized)
+    # Strip "Advances in Cryptology - " prefix (handles both hyphen and em-dash)
+    normalized = re.sub(r'^Advances in Cryptology\s*[-–]\s*', '', normalized)
     # Strip "Information Security and Cryptology - " prefix
     normalized = re.sub(r'^Information Security and Cryptology\s*-\s*', '', normalized)
     # Handle truncated entries - too short to be useful
@@ -230,7 +273,7 @@ def main():
         sys.exit(1)
 
     input_file = sys.argv[1]
-    output_file = input_file.replace("_raw.csv", "_matched.csv")
+    output_file = input_file.replace("_citations_venues.csv", "_citations_matched.csv")
 
     dblp_venues = []
     with open('dblp-labels.csv', 'r') as infile:

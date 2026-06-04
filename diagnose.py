@@ -7,10 +7,10 @@ from collections import Counter
 from pathlib import Path
 
 RAW_CSVS = {
-    "EuroCrypt": "csv/EuroCrypt_citations_raw.csv",
-    "Crypto":    "csv/Crypto_citations_raw.csv",
-    "Oakland":   "csv/Oakland_citations_raw.csv",
-    "USENIX":    "csv/USENIX_citations_raw.csv",
+    "EuroCrypt": "csv/EuroCrypt_citations_venues.csv",
+    "Crypto":    "csv/Crypto_citations_venues.csv",
+    "Oakland":   "csv/Oakland_citations_venues.csv",
+    "USENIX":    "csv/USENIX_citations_venues.csv",
 }
 
 MATCHED_CSVS = {
@@ -50,7 +50,7 @@ def bar(label: str, n: int, total: int, width: int = 30):
 # ----------------------------------------------------------------
 # Stage 1: raw CSV analysis
 # ----------------------------------------------------------------
-section("STAGE 1 — Venue extraction (citation_export.py output)")
+section("STAGE 1 — Venue extraction (venue_export.py output)")
 
 raw_summaries = {}
 for conf, path in RAW_CSVS.items():

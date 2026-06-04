@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Run citation_export.py for all four conferences with a 10-minute cooldown between
-# runs. DBLP paces queries at 1.5s each (~25-37 min of sustained API use per run);
-# 10 min between runs lets their sliding rate-limit window clear.
+# Run citation_export.py then venue_export.py for all four conferences.
+# citation_export (PDF extraction) runs back-to-back with no cooldown — no DBLP.
+# venue_export hits DBLP at ~1.5s/query (~25-37 min of sustained API use per
+# conference); 10 min between venue_export runs lets their rate-limit window clear.
 
 set -euo pipefail
 
@@ -11,10 +12,16 @@ WAIT_SECONDS=600  # 10 minutes
 for i in "${!CONFERENCES[@]}"; do
     conf="${CONFERENCES[$i]}"
     echo "========================================"
-    echo "Starting run: $conf  ($(date))"
+    echo "Starting citation extraction: $conf  ($(date))"
     echo "========================================"
 
-    python3 citation_export.py --conference "$conf" 2>&1 | tee "logs/${conf}_run.txt"
+    python3 citation_export.py --conference "$conf" 2>&1 | tee "logs/${conf}_citation_run.txt"
+
+    echo ""
+    echo "Starting venue extraction: $conf  ($(date))"
+    echo "========================================"
+
+    python3 venue_export.py --conference "$conf" 2>&1 | tee "logs/${conf}_venue_run.txt"
 
     if [[ $i -lt $(( ${#CONFERENCES[@]} - 1 )) ]]; then
         next="${CONFERENCES[$((i+1))]}"
