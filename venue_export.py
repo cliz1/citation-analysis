@@ -18,7 +18,7 @@ import argparse
 # -----------------------------
 # Config
 # -----------------------------
-
+ 
 _parser = argparse.ArgumentParser(description="Extract venues from raw citation CSV")
 _parser.add_argument("--conference", dest="conference", default="Crypto",
                      choices=["Crypto", "EuroCrypt", "Oakland", "USENIX"],
