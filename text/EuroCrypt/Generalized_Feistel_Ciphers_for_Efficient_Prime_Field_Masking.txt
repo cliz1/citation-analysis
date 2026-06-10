@@ -1,0 +1,1982 @@
+Generalized Feistel Ciphers for Eﬃcient
+Prime Field Masking
+Lorenzo Grassi1(B), Lo¨ıc Masure2, Pierrick M´eaux3, Thorben Moos4,
+and Fran¸cois-Xavier Standaert4
+1 Ruhr University Bochum, Bochum, Germany
+lorenzo.grassi@ruhr-uni-bochum.de
+2 LIRMM, Univ. Montpellier, CNRS, Montpellier, France
+3 Luxembourg University, Esch-sur-Alzette, Luxembourg
+4 Crypto Group, ICTEAM Institute, UCLouvain, Louvain-la-Neuve, Belgium
+Abstract. A recent work from Eurocrypt 2023 suggests that prime-
+ﬁeld masking has excellent potential to improve the eﬃciency vs. secu-
+rity tradeoﬀof masked implementations against side-channel attacks,
+especially in contexts where physical leakages show low noise. We pick
+up on the main open challenge that this seed result leads to, namely the
+design of an optimized prime cipher able to take advantage of this poten-
+tial. Given the interest of tweakable block ciphers with cheap inverses in
+many leakage-resistant designs, we start by describing the FPM (Feistel
+for Prime Masking) family of tweakable block ciphers based on a gen-
+eralized Feistel structure. We then propose a ﬁrst instantiation of FPM,
+which we denote as small-pSquare. It builds on the recent observation
+that the square operation (which is non-linear in Fp) can lead to masked
+gadgets that are more eﬃcient than those for multiplication, and is tai-
+lored for eﬃcient masked implementations in hardware. We analyze the
+mathematical security of the FPM family of ciphers and the small-pSquare
+instance, trying to isolate the parts of our study that can be re-used for
+other instances. We additionally evaluate the implementation features of
+small-pSquare by comparing the eﬃciency vs. security tradeoﬀof masked
+FPGA circuits against those of a state-of-the art binary cipher, namely
+SKINNY, conﬁrming signiﬁcant gains in relevant contexts.
+1
+Introduction
+The design of symmetric cryptographic algorithms is generally oriented towards
+optimizing their eﬃciency vs. security tradeoﬀ. For most general applications,
+this has led researchers to focus primarily on binary ciphers with eﬃcient bit-
+slice implementations, which are generally eﬃcient in software [16] and hard-
+ware [57]. This trend has even been ampliﬁed when considering side-channel
+attacks, in good part due to the emergence of masking as the most popular
+solution to mitigate such attacks. While various types of masking schemes exist
+(e.g., additive [29], multiplicative [43], aﬃne [42], polynomial [74], inner prod-
+uct [4], code-based [89]), the eﬃciency of Boolean masked implementations in
+c
+⃝International Association for Cryptologic Research 2024
+M. Joye and G. Leander (Eds.): EUROCRYPT 2024, LNCS 14653, pp. 188–220, 2024.
+https://doi.org/10.1007/978-3-031-58734-4_7
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+189
+software [44] and hardware [49] make it for now a default solution. As a result,
+ciphers optimized towards low AND complexity, enabling eﬃcient bit-oriented
+implementation (e.g., bitslicing), appeared for a while as the best approach [50].
+This situation is also reﬂected by the recent NIST Ligthweight Cryptography
+standardization eﬀort, where most ciphers designed with leakage in mind (includ-
+ing the winner Ascon [35]) have eﬃcient bitslice representations.1
+While it has been shown that Boolean masking can bring high security at
+limited cost, it is also known to suﬀer from practical limitations. Among others,
+it is only eﬀective in contexts where leakages are suﬃciently noisy [37,38,73],
+a condition that was shown to be challenging to reach without dedicated noise
+generation circuitry, both in software [5,24] and in hardware [69,72]. Building on
+theoretical advances of Dziembowski et al. [41], it has then been observed that
+computing in groups of prime order can signiﬁcantly reduce the noise require-
+ments of masking security proofs while keeping most of the beneﬁts of additive
+encodings, and even providing security gains in the context of noisy leakages
+(that were not covered by theoretical analysis) [67]. More precisely, Masure et al.
+showed at Eurocrypt 2023 that for concretely-relevant leakage functions, prime-
+ﬁeld masking can be quite eﬃcient by re-using simple additions and multipli-
+cation algorithms “`a la ISW” [54], and that the mild performance overheads
+due to operating in prime ﬁelds can be largely compensated by concrete side-
+channel security gains. Informally, these gains can be viewed as the result of a
+decreased “algebraic compatibility” between the leakage functions observed in
+practice (which are typically close to a linear combination of bits [76]) and the
+ﬁeld in which we mask. For example, it is well-known that observing the least
+signiﬁcant bit of Hamming weight leakages obtained from Boolean shares leads
+to information about the secret independent of the number of shares [80]. Mov-
+ing to prime encodings, such an attack is not directly possible anymore because
+partial uncertainty “diﬀuses” better when combining the shares.
+So far, this potential advantage of prime-ﬁeld masking for counteracting side-
+channel attacks was only demonstrated for a toy AES-like cipher. The main
+open challenge that we pick up in this paper is, thus, the design of a dedicated
+lightweight cipher optimized for prime masking to enable fair comparisons with
+binary ciphers which are tailored for cost-eﬃciency when masked.
+Given the interest of Tweakable Block Ciphers (TBCs) with cheap inverse
+for leakage-resistant modes of operation [7,10], we start by describing the FPM
+(Feistel for Prime Masking) family of tweakable block ciphers based on a gener-
+alized Feistel structure [52,71]. Among other advantages, TBCs allow reducing
+the need of idealized assumptions that are hard to justify in physical security
+analyzes and to minimize the side-channel attack surface during tag veriﬁcation
+(which can leak in an unbounded manner thanks to the inverse trick of [11]).
+The FPM family of ciphers allows tweaks of variable size including a version
+without tweak (i.e., a block cipher, in order to enable comparisons with generic
+constructions [88]). It relies on a variant of the TWEAKEY framework [56], tak-
+ing advantage of the fact that for most leakage-resistant modes of operation, the
+1 https://csrc.nist.gov/Projects/lightweight-cryptography.
+
+190
+L. Grassi et al.
+tweak is public information and requires no countermeasures (so we can actually
+use a simple key scheduling algorithm and a more complex, non-linear, tweak
+scheduling algorithm). While moving towards a ﬁrst instantiation of FPM, we
+additionally exploit recent results from CHES 2023 which show how to obtain a
+secure implementation of the square operation (non-linear in Fp) which is more
+eﬃcient than a secure multiplication [27]. This provides natural incentive for
+designing a cipher using the square operation as only source of non-linearity,
+which further motivates the use of Feistel-like structures for FPM TBCs and
+their underlying building blocks, since the square is also non-invertible in Fp.
+What then mostly remains is to choose the prime number deﬁning the ﬁeld in
+which we operate. Following [67], we use a Mersenne prime for eﬃciency rea-
+sons.2 We set this modulus to 27 ´ 1 in order to propose an instance tailored for
+secure hardware implementation, which we denote as small-pSquare.
+Besides deﬁning the FPM family of ciphers and a ﬁrst instance, we provide
+an initial mathematical security analysis in order to select the number of cipher
+rounds of small-pSquare. Doing so, we try to separate the parts of the analysis
+that are generic (and could be re-used for other instances) from the ones that
+are linked to our choice of square S-box and 7-bit prime. Most importantly,
+we then compare masked FPGA implementations of small-pSquare and similar
+implementations of a binary cipher protected with Boolean masking. We use
+SKINNY for this purpose [6], which is a popular family of ciphers with tweak-
+able versions that amongst other applications was used in Romulus, a ﬁnalist to
+NIST lightweight cryptography competition, and for which a rich literature on
+the construction and analysis of state-of-the-art Boolean masked implementa-
+tions exist, both automated [58] and hand-made [85]. Our experiments allow us
+to conﬁrm the excellent performances and signiﬁcantly improved eﬃciency vs.
+(side-channel) security tradeoﬀfor small-pSquare. We show in Sect. 6 that while
+unprotected small-pSquare implementations come with overheads (compared to
+SKINNY), these overheads vanish in the context of masked implementations where
+both algorithms perform similarly. As expected, small-pSquare also has signiﬁ-
+cantly improved performances compared to the toy AES-like cipher considered
+in [67]. Furthermore, we show in Sect. 7 that for similar architectures, small-
+pSquare oﬀers side-channel security levels which exceed those of masked SKINNY
+implementations by (at least) one order of magnitude.
+We conclude the paper by discussing scopes for further research and other
+instances of FPM ciphers. First, considering diﬀerent implementation contexts,
+for example mid-pSquare variants could be relevant to investigate for FPGAs
+with DSP blocks (e.g., with a 17-bit prime) or for ARM Cortex-like devices (e.g.,
+with a 31-bit prime). Second, and more prospectively, big-pSquare variants (with
+larger primes) could be of interest conceptually due to their similarity with the
+diﬀerent prime ciphers developed for other applications (e.g., fully-homomorphic
+encryption, multi-party computation, zero-knowledge proofs), in order to better
+understand the diﬀerences and similarities between the design goals to opti-
+2 Both because such prime numbers allow very eﬃcient modular reductions and
+because the x ÞÑ 2x operation is a rotation of the bits that is free in hardware.
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+191
+(a) τ = 0
+(b) τ = 1
+(c) τ = 2
+Fig. 1. High-level view of FPM (tweakable) ciphers. We use the shortcut notation
+Nr ˆ R to denote the application of the round R Nr times.
+mize for these various applications [1–3,30,36,46], and possibly to oﬀer stronger
+physical security guarantees thanks to the larger ﬁeld computations [40].
+2
+Feistel for Prime Masking
+In this section, we introduce the FPMτ family of TBCs. We start by describing
+the high-level Feistel structure we use in Sect. 2.1. We then detail the internal
+components of this structure in Sects. 2.2 and 2.3. We conclude by summarizing
+the design space that this family of ciphers deﬁnes in Sect. 2.4.
+2.1
+High-Level Structure
+Let p ě 3 be a prime number, and let n “ 2 ¨ n′ ě 4 be an integer. The high-
+level structure of FPMτ TBCs is given in Fig. 1. FPMτ ciphers take as inputs a
+plaintext x P Fn
+p, a key K P Fn
+p and an optional tweak deﬁned as:
+T :“
+
+(T (1), T (2), . . . , T (τ)) P Fτn
+p
+if τ ě 1
+H
+otherwise (τ “ 0) ¨
+
+192
+L. Grassi et al.
+If τ “ 0, then FPM0 ciphers receive no tweak input and correspond to block
+ciphers. FPMτ ciphers are key alternating ciphers, where a tweakey is added
+every r ą 1 rounds. We denote a single round as R, and we denote a group of Nr
+rounds R as a step S. A tweakey addition is performed after every step. If τ “ 0,
+the tweakey is always the master key K. If τ ě 1, the tweakeys are deﬁned as
+K `T0,0, K `T1,0, . . . , K `Tτ´1,0, K `T0,1, K `T1,1, . . . , K `Tτ´1,1, . . . , K `
+T0,i, K ` T1,i, . . . , K ` Tτ´1,i, where the values Tj,i P Fn
+p are produced by a
+tweak scheduling and are independent of the master key. If τ “ 1, we usually
+omit the ﬁrst index for simplicity (i.e., we use Ti instead of T0,i).
+The rounds R : Fn
+p Ñ Fn
+p (and the steps S) are independent of both the
+tweak and of the master key. The number of rounds per step Nr must at least
+guarantee that full diﬀusion is achieved in the steps. Regarding the number of
+steps Ns, we additionally require that if τ ě 1, then Ns ´ 1 must be a multiple
+of τ in order to guarantee that the tweak is absorbed in equal measure.
+Key and Tweak Scheduling Algorithms. Since we do not claim security
+against related-key attacks, we opted for the simplest key scheduling algorithm,
+which consists of having all the subkeys equal to the master key. Note that several
+tweakable lightweight symmetric primitives in the literature are based on similar
+design choices, including SKINNY [6] (which we will use in our comparisons).
+By contrast, our designs make use of a tweak scheduling algorithm. As men-
+tioned in the introduction, this is because in many leakage-resistant modes of
+operation, the tweak is public and therefore does not require any protection
+against leakage. This context calls for operations that are cheap to implement
+without countermeasures (in hardware and software) while providing good cryp-
+tographic properties. Since FPM ciphers operate in prime ﬁelds, a natural candi-
+date for this purpose is to combine a shuﬄing of the Fp-words in each state with
+an invertible mapping of the “bits” in each Fp-word, for example taking advan-
+tage of the fact that linear mappings in F2 are non-linear in Fp. More precisely,
+for each i ě 0 and for each j P {0, 1, . . . , τ ´ 1}, we deﬁne Tj,i as:
+Tj,i :“ Ψ0
+
+T (j)
+Πi(0)
+
+∥Ψ1
+
+T (j)
+Πi(1)
+
+∥. . . ∥Ψn´1
+
+T (j)
+Πi(n´1)
+
+P Fn
+p,
+where:
+– For each l P {0, 1, . . . , n ´ 1}, T (j)
+l
+P Fp denotes the l-th Fp-word of T (j);
+– Π is a shuﬄing of {0, 1, . . . , n ´ 1} Ď N satisfying the following conditions:
+1. Πi (where Πi denotes the application of Π i consecutive times) is diﬀerent
+from the identity for each i ď i′ and a suﬃciently large i′;
+2. Π does not contain ﬁx points and (if possible) two consecutive elements
+before the shuﬄing are not consecutive after it.
+– For each l P {0, 1, . . . , n ´ 1}, Ψl : Fp Ñ Fp is an invertible mapping.
+As we are going to show in the next section, this tweak scheduling algorithm
+allows us to adapt the simple security arguments used in [51] to our scheme.
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+193
+(a) 2
+2
+(b) 2
+4
+(c) 4
+4
+Fig. 2. FPM rounds. Left: b=2, c=2; middle: b=2, c=4,right: b=4, c=4.
+2.2
+Rounds R of FPMτ via Type-II Generalized Feistel
+Let b, c ě 2 be positive integers such that n “ b ¨ c and b “ 2 ¨ b′. The rounds
+R over (Fc
+p)b ” Fn
+p of FPMτ ciphers are based on a Type-II generalized Feistel
+network structure [52,71,90]. They are deﬁned as:
+(x0, x1, . . . , xb´2, xb´1) ÞÑ (F(x0) ` x1, x2, F(x2) ` x3, . . . , F(xb´2) ` xb´1, x0),
+where F : Fc
+p ” Fpc Ñ Fc
+p ” Fpc is discussed in the next subsection. Such
+structures are characterized by two parameters: b “ 2 ¨ b′ ě 2 is the number
+of branches in the generalized Feistel network (where each branch can carry
+several values in Fp), c ě 2 is the number of values in Fp of each branch, that
+the non-linear F function takes as input. Figure 2 illustrates three examples.
+Remark: Achieving Faster Diﬀusion. In this paper, we limit ourselves to
+instances with small b values (up to 4) and to the classical Type-II generalized
+Feistel scheme, in which a shift is applied at the output of the non-linear layer.
+However, several studies have been conducted in literature to ﬁnd better shuﬄes
+of the words that can achieve faster diﬀusion for larger b values (see for exam-
+ple [28,83]), which we suggest to use in place of the shift whenever applicable.
+Besides the minimum number of rounds necessary for achieving full diﬀusion,
+these references also provide the number of active functions F.
+2.3
+Function F of the Type-III Generalized Feistel
+The F functions over Fc
+p are designed to 1) be bijective (since collisions at their
+outputs could make the security analysis harder) and 2) ensure full non-linear
+diﬀusion. This is achieved by combining the following components:
+– A ﬁrst non-linear layer is instantiated via a Type-III generalized Feistel
+network [52,71,90] (without the shift) of the form: (x0, x1, x2, . . . , xc´1) P
+Fc
+p ÞÑ (x0, G0,0(x0) ` x1, G1,0(x1) ` x2, . . . , Gc´2,0(xc´2) ` xc´1) P Fc
+p , where
+G0,0, G1,0, . . . , Gc´2,0 are non-linear operations over Fp.
+
+194
+L. Grassi et al.
+– The non-linear layer is followed by a multiplication with a c ˆ c Maximum
+Distance Separable (MDS) matrix [33,34], typically lightweight [39,60,66].3
+– Finally, a non-linear layer instantiated via a Type-III generalized Feistel net-
+work (with the shift) is applied to the state: (x0, x1, x2, . . . , xc´1) P Fc
+p ÞÑ
+(x0, G0,1(x0) ` x1, G1,1(x1) ` x2, . . . , Gc´2,1(xc´2) ` xc´1) P Fc
+p , where G0,0,
+G1,0, . . . , Gc´2,0 are again non-linear operations over Fp.
+Before the application of each Type-III generalized Feistel network, a round
+constant is added on the ﬁrst element x0. We suggest to generate these constants
+via bit rotations of a mathematical constant as π “ 3.14159 . . . P R rounded to
+a bit size that is large enough to avoid cycles for the number of cipher rounds.
+We note that using a Type-III generalized Feistel network for the F functions
+is motivated by the fact that a potential candidate for the Gi,j functions is the
+square operation which is non-invertible (or other small power maps which are
+non-bijective in the respective ﬁeld). In case the Gi,j functions are themselves
+bijective, a simpler alternative is to directly use SPN rounds.
+We also note that since we use a bijective F, exploiting a Feistel structure for
+the rounds of Sect. 2.2 is not mandatory (e.g., an SPN could work there too).
+However, it has the advantage that the F function can be chosen without any
+regard for the implementation eﬃciency of its inverse (with or without mask-
+ing), which would not be the case when used as an S-box in a typical SPN
+construction. Furthermore, the Feistel strategy directly enables us to obtain
+cheap inverses in the sense that 1) cost of decryption « cost of encryption and
+2) implementing a hardware circuit that can both encrypt and decrypt is not
+(signiﬁcantly) more expensive than one which can only encrypt (in contrast to
+most standard SPN designs). In general, we believe that the high-level structure
+of FPM ciphers is a natural starting point given our goals. SPN-based structures
+would also require an additional linear layer (which may be more expensive) and
+it is unclear whether it would enable a reduction of the number of rounds by
+half (to compensate for the cost of operating on the full state in each round).
+Yet, investigating whether such prime SPN ciphers could potentially improve
+over the proposed FPM designs remains an interesting open problem.
+2.4
+Summary of the FPMτ Design Space
+The size of an FPMτ cipher is determined by the number of tweaks τ, the prime
+integer p, the number of branches of the Type-II generalized Feistel network b and
+the number of input words of the F functions c. We use the notation FPMτ(ρ, b, c)
+for this purpose, where ρ “ ⌈log2(p)⌉. The cipher speciﬁcations additionally
+require to choose the functions Gi,j : Fp Ñ Fp and an MDS matrix, and to
+deﬁne the shuﬄing/mapping of the tweak scheduling algorithm and the round
+constants.4 Next, we ﬁrst provide high-level security arguments that justify the
+3 The branch number B of a matrix over Ft
+p is deﬁned as B(M) “ minxPFtpz{0}{hw(x)`
+hw(M(x))}, where hw(¨) is denoted as the bundle weight in wide trail terminology.
+A matrix M P Ftˆt
+p
+is an MDS matrix if and only if B(M) “ t ` 1.
+4 Variants where the F function uses nearly MDS matrices could be considered.
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+195
+design choices of FPM ciphers in Sect. 3. We then propose a ﬁrst hardware-
+oriented instance in Sect. 4 for which we analyze the mathematical security in
+Sect. 5 and the implementation eﬃciency & security in Sects. 6 and 7.
+3
+High-level Rationale and Security Arguments
+We now provide a high-level rationale and security arguments for FPMτ TBCs.
+3.1
+TWEAKEY Framework and LED-Like Design
+FPMτ ciphers follow the TWEAKEY framework proposed by Jean et al. [56] at
+Asiacrypt’14. In contrast to the majority of the TBCs following this framework
+(including SKINNY), we add the tweakey only every Nr ą 1 rounds, where Nr is
+strictly bigger than 1. This approach is not new in the literature, as it has been
+already exploited in the block cipher LED [51]. Its main advantage is to allow a
+very simple security analysis concerning related-tweak attacks.
+More precisely, since the tweaks are public, the attacker can always control
+them. Similar to a related-key attack [15], in a related-tweak attack the attacker
+encrypts (resp., decrypts) the same or diﬀerent plaintext(s) (resp., ciphertexts)
+under several related tweaks. (Anticipating the detailed analysis of Sect. 5, we
+emphasize that related-tweak attacks are usually based on statistical properties
+and not on algebraic ones.) A possible way to avoid such attacks is to treat the
+tweaks exactly as the plaintexts. That is, not to make any distinction between
+plaintexts and tweaks. This is what is done in a sponge/duplex construction [12,
+13], but it requires a larger state in order to arrange the inner part, which is not
+suitable in our case. Another approach to prevent related-tweak attacks is the
+one proposed in [51] to prevent related-key attacks. That is, adding the tweak
+every Nr ą 1 rounds. The argument for τ “ 1 is relatively simple:
+– A statistical attack as the diﬀerential one [18,19] exploits the probability
+distribution of a non-zero input diﬀerence leading to an output diﬀerence
+after a given number of rounds. The security is achieved if the probability of
+any diﬀerential characteristic is much smaller than the security level;
+– Given T P Fn
+p, assume for simplicity that all the Ti’s P Fn
+p are equal to T;
+– If a diﬀerence is inserted in the tweak, then every sub-tweak Ti will be active;
+– Hence, it is impossible to force two consecutive steps S to be non-active (i.e.,
+with zero input and zero output diﬀerences). That is, for every two consecutive
+steps S of Nr-rounds, at least one of them must be active.
+Indeed, let’s assume that the output diﬀerence of the i-th step S coincide with
+the diﬀerence in Ti. In this case, the next i ` 1-th step S is not active, since its
+input diﬀerence is equal to zero. But the next tweak Ti`1 will introduce again
+the diﬀerence, making the next i`2-th step S active. Using the number of active
+steps Ns (each one composed of Nr rounds), it is therefore possible to provide
+simple security arguments for preventing diﬀerential and other statistical attacks,
+which reduce to the security of the public permutation S (which is independent
+
+196
+L. Grassi et al.
+of the tweaks and the master key). We refer to the full version of this paper [47]
+for an initial analysis (based on published results) regarding the selection of the
+number of steps Ns independently of their internal structure.
+The previous argument can be generalized for a non-trivial tweak scheduling
+T : Fτ¨n
+p
+” (Fn
+p)τ Ñ (Fn
+p)˚, for example if the following properties are satisﬁed:
+1) T is bijective, and 2) Tj,¨ P Fn
+p is active if and only if T (j) P Fn
+p is active.
+Equivalently, this second condition is satisﬁed if there exist τ invertible maps
+T0, T1, . . . , Tτ´1 over Fn
+p such that Tj,i “ Ti`1
+j
+(T (j)) for each i ě 0, where
+Ti`1
+j
+:“ Tj ˝ Tj ˝ . . . ˝ Tj for i times. (We emphasize that this is not a necessary
+condition.) In our case, we achieve this property by deﬁning Tj,¨ via a shuﬄe of
+the Fp-words of T (j). (The mapping of each Fp does not aﬀect this property.) A
+detailed argument will be given for small-pSquare with τ “ 1, 2 in Sect. 5.1.
+We leave the question whether adding the tweakey every round could lead to
+improved (but harder to analyze) security as a scope for further research.
+3.2
+Rationale Behind the Generalized Type-II Feistel Scheme
+The main motivation behind the choice of deﬁning FPMτ ciphers based on a gen-
+eralized Feistel structure relates to the goal of having TBCs with cheap inverses
+that are useful in some leakage-resistant modes of operation [7,10]. This result
+can be achieved via 1) a Feistel or Lai-Massey scheme [45,62,84], 2) an SPN
+scheme with the “reﬂection” property like Prince [14,22,23], or 3) an SPN scheme
+in which every round – without the constant additions – is an involution (that
+is, R “ R´1) like Noekon [32], Khazad [82] or Iceberg [82]. Even if all options are
+valid from a security viewpoint, the ﬁrst one comes with the least constraints on
+its internal components, which is desirable in our setting in order to enable these
+components to be selected primarily for their properties against leakage. After
+discarding Type-I Feistel schemes that require too many rounds for achieving full
+diﬀusion, we opted for Type-II generalized Feistel networks instead of Type-III
+ones. As witnessed by designs like Hight [53] or Cleﬁa [79], they generally oﬀer a
+good security vs. eﬃciency compromise.
+3.3
+Rationale and Construction of the Function F
+As mentioned in Sect. 2.3, the F functions aim to ensure good non-linear diﬀusion
+while remaining bijective (in order to simplify the security analysis). For func-
+tions Gi,j over Fp that are themselves bijective, this could be directly obtained
+with two SPN rounds. Yet, and as mentioned in the introduction, one natural
+candidate Gi,j function is the square power map, which leads to eﬃcient masked
+implementations [27]. As a result, we opted for F functions based on two rounds
+of a generalized Feistel network.5 We selected the Type-III version which is more
+similar to SPNs in terms of their number of non-linear Gi,j functions and replaced
+the middle shift of the Fp-words by an invertible linear layer in order to speed
+up the non-linear diﬀusion, an idea that resembles the one in [8].
+5 For instances relying on invertible Gi,j functions, we suggest using two SPN rounds.
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+197
+Fig. 3. F-function used in small-pSquare.
+Regarding the choice of the linear layer, we opted for an MDS matrix which
+allows to achieve full non-linear diﬀusion over Fc
+p in only two rounds. Examples
+include lightweight candidates [39,60,66] adapted to the prime case (where the
+multiplication per two can be cheap – see Footnote 2). Such MDS matrices could
+be replaced by any invertible matrix with a smaller branch number that allows
+to get full non-linear diﬀusion in two rounds, as the ones in [65].
+Finally, the round constant additions aim to (i) diﬀerentiate the rounds (e.g.,
+for preventing slide attacks [20,21]), (ii) break any ﬁxed points, and (iii) break
+any invariant subspace [48,63,64]. Since x ÞÑ x2 has only two ﬁxed points
+(namely, 0 and 1) and since Fp does not have any non-trivial subspace (as
+opposed to F2t ” Ft
+2), we believe that one Fp-constant addition before each
+non-linear Type-III generalized Feistel layer is suﬃcient. As an extra condition
+when using Mersenne primes, we require that the round constants do not belong
+to any subspace of Fρ
+2 (where p “ 2ρ ´ 1). The choice to generate them via a
+bit rotation of a ﬁxed mathematical constant like π is for eﬃcient (hardware)
+implementation purposes. The mathematical constant must be chosen such that
+all the rotations are in {0, 1, . . . , p ´ 1} where p is the prime that deﬁnes Fp.
+4
+small-pSquare: a Hardware-oriented Instance
+In this section, we provide the speciﬁcations of a ﬁrst instance of an FPMτ
+cipher. As mentioned in the introduction, its high-level rationale follows two main
+guidelines. First, we aim to exploit the recently proposed secure squaring gadgets
+from [27], which were shown to be more eﬃcient than secure multiplications
+in Fp. As a result, we use the square as power map for the Gi,j functions of
+Sect. 2.3. Second, we aim to enable eﬃcient hardware implementations. As a
+result, we use a small Mersenne prime p “ 27 ´ 1. We then propose to use the
+rounds depicted in the right part of Fig. 2, leading to a FPMτ(7, 4, 4) cipher that
+provides « 7 ˆ 4 ˆ 4 “ 112 bits of security and we denote as small-pSquare.
+We ﬁrst detail the diﬀerent components of the function F (depicted in Fig. 3),
+then ﬁnalize the speciﬁcation of the tweak scheduling algorithm and conclude
+with the suggested number of rounds per steps and steps.
+
+198
+L. Grassi et al.
+Non-Linear Layer. The non-linear layer of small-pSquare is instantiated with
+the following F4
+27´1 Ñ F4
+27´1 mapping:
+(x0, x1, x2, x3) ÞÑ
+
+x0 ` x2
+1, x1 ` x2
+2, x2 ` (x3 ` ci,j)2, x3 ` ci,j
+
+,
+where ci,j is a round constant speciﬁed thereafter.
+Linear Layer. The linear layer of small-pSquare is instantiated with the invert-
+ible matrix M P F4ˆ4
+27´1 deﬁned as:
+M “
+⎡
+⎢⎢⎣
+3 2 1 1
+7 6 5 1
+1 1 3 2
+5 1 7 6
+⎤
+⎥⎥⎦.
+This matrix has been introduced by Duval et al. [39] and is MDS over F27´1.
+It can be implemented as a Type-II Feistel-like construction as shown in Fig. 3,
+with only 8 additions and a depth of 4 (which is optimal for 8 additions). We
+recall that the doubling operation (i.e., x ÞÑ 2 ¨ x) modulo a Mersenne prime is
+just a bit rotation, hence free in hardware and cheap in software.
+Round Constants. The ﬁrst 64 bits of the binary sequence of π are (in hex-
+adecimal): πbin64 “ 0xC90FDAA22168C234. Let us denote the bit-wise rotation
+left via Î. Then, the left F-function at round i uses the round constants:
+– ci,0 “ (πbin64 Î i) mod 27,
+– ci,1 “ (πbin64 Î (i ` 16)) mod 27,
+while the right F-function at round i uses the round constants:
+– ci,2 “ (πbin64 Î (i ` 32)) mod 27,
+– ci,3 “ (πbin64 Î (i ` 48)) mod 27.
+As no sequence of 7 consecutive 1 s exists in πbin64, all ci,0, ci,1, ci,2, ci,3’s P F27´1.
+Tweak Scheduling (τ ě 1 Only). Let Π16 be the shuﬄe of the 16 F27´1–words
+in the tweak schedule sub-tweak word permutation deﬁned as:
+Π16(x0∥x1∥. . . ∥x15) “ x9∥x5∥x13∥x15∥x12∥x7∥x14∥x2∥x4∥x6∥x8∥x3∥x10∥x1∥x11∥x0.
+Π16 has a cycle period of 140 which is the largest we found for 16-element shuﬄes
+(and more than suﬃcient for our envisioned step numbers). On each F27´1-word,
+we then apply a bit-shuﬄe Ψl deﬁned as
+@l P {0, 1, . . . , 15} :
+Ψl(x) “ ψ7(2l ¨ x mod 27) ,
+where the multiplication with 2l corresponds to a shift of the bits of l positions
+(when working over F7
+2), and where ψ7 is deﬁned as:
+ψ7
+
+x “
+6
+
+i“0
+xi ¨ 2i
+
+“ x0 ¨25 `x1 ¨23 `x2 ¨20 `x3 ¨24 `x4 ¨21 `x5 ¨26 `x6 ¨22,
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+199
+for each x P F27´1 where x0, x1, . . . , x6 P {0, 1}. The cycle period of ψ7 is 12 (i.e.,
+the maximum possible for a permutation over 7 bits). Moreover, the polynomial
+corresponding to ψ7 over F27´1 is of degree 125 (i.e., the maximum possible) and
+contains 46 out of the 127 monomials possible. We refer to the full version of
+this paper [47] for details on ψ7, where we also prove that the polynomial over
+F2ρ´1 corresponding to any bit shuﬄing only contains monomials of odd degree.
+Number of Rounds. For a security level of 112 bits and the aforementioned
+parameters (p “ 27 ´ 1; b “ 4, c “ 4), we use Nr “ 4 rounds per step and we use
+Ns “ 9 steps for τ “ 0, Ns “ 16 steps for τ “ 1 and Ns “ 21 steps for τ “ 2.
+The security analysis that supports these choices is given in the next section.
+5
+Mathematical Security Analysis of small-pSquare
+We now evaluate the security of small-pSquare against standard attack vectors,
+including classical and truncated diﬀerential attacks and algebraic attacks (based
+on interpolation, linearization, higher-order diﬀerentials and Gr¨obner bases). We
+describe the attacks having a larger impact on small-pSquare’s number of rounds
+in the paper. Details of further attacks are presented in the full version [47].
+Overview of the Attacks. As we are going to show, the main attack vector
+against small-pSquare is diﬀerential cryptanalysis [18,19], which we present in
+detail in Sect. 5.1 for the case τ “ 0 and the case τ ě 1 (for which we consider
+related-tweak diﬀerential attacks). In this last case, we exploit the strategy intro-
+duced by the LED designers and recalled in Sect. 3.1 for guaranteeing security
+against related tweaks. Truncated [59] and impossible diﬀerential [17] crypt-
+analysis as well as other statistical attacks including linear cryptanalysis [68]
+and boomerang attacks [87] are detailed in the full version [47]. Contrary to
+MPC-/FHE-/ZK-friendly schemes deﬁned over prime ﬁelds, and similar to clas-
+sical/traditional symmetric primitives, algebraic attacks are not the main threat
+against small-pSquare in our analysis, essentially due to the small size of the
+prime p “ 27 ´ 1 and the high number of variables n “ 16. For this reason, we
+discuss the degree and density of the polynomial representation of small-pSquare
+in Sect. 5.2, limit ourselves to linearization attacks [31] in Sect. 5.3, while we
+defer the description of interpolation [55], higher-order diﬀerential [59,61] and
+Gr¨obner bases based attacks to the full version of the paper [47].
+We mention that in all these cases, we tried to identify concrete strategies on
+how to speed up the attacks by making use of related tweaks. In particular, we
+propose concrete ways to use related tweaks for speeding up algebraic attacks
+which, to the best of our knowledge, has not been thoroughly studied yet in the
+
+200
+L. Grassi et al.
+open literature.6 Besides, the non-linear tweak scheduling algorithm of small-
+pSquare is also aimed to frustrate such improved cryptanalysis attempts.
+5.1
+Diﬀerential Cryptanalysis
+Given pairs of inputs with some ﬁxed input diﬀerences, diﬀerential cryptanal-
+ysis [18,19] considers the probability distribution of the corresponding output
+diﬀerences produced by the cryptographic primitive. Let ΔI, ΔO P Fn
+p be respec-
+tively the input and the output diﬀerences through a permutation P over Fn
+p.
+The Diﬀerential Probability (DP) of having a certain output diﬀerence ΔO given
+a particular input diﬀerence ΔI is equal to:
+ProbP(ΔI Ñ ΔO) “ |{x P Fn
+p | P(x ` ΔI) ´ P(x) “ ΔO}|
+pn
+¨
+In the case of iterated schemes, a cryptanalyst searches for ordered sequences
+of diﬀerences over any number of rounds that are called diﬀerential character-
+istics/trails. Assuming the independence of the rounds, the DP of a diﬀerential
+trail is the product of the DPs of its one-round diﬀerences.
+Diﬀerential property of F. As ﬁrst step, we compute the maximum diﬀerential
+probability of F. Since x ÞÑ x2 is a quadratic map, DPmax(x ÞÑ x2) “ p´1 « 2´7.
+For our goal, we just need to compute the minimum number of active square
+maps in F. We can check that it corresponds to 2. Indeed, let (x0, x1, x2, x3) ÞÑ
+(x0, x2
+0 ` x1, x2
+1 ` x2, x2
+2 ` x3) be the Feistel layer, and keep in mind that the
+branch of the MDS matrix M is 5. Then:
+– If no square map is active in the ﬁrst Feistel layer of F (hence, x3 is the only
+active component), then only one output is active at its output. After the
+multiplication with the MDS matrix, all inputs of the second Feistel layer
+are active, which implies the result. A similar result holds if only one square
+map is active in the ﬁrst Feistel layer, which corresponds to the case in which
+only one among {x0, x1, x2} is active. In such a case, two outputs of the ﬁrst
+Feistel layer are active, which implies that at least 3 inputs of the second
+Feistel layer are active and at least 3 square maps are active for each F;
+– If two inputs are active, the best scenario for the attacker occurs when the
+active inputs are either {x0, x3} or {x1, x3}. In this case, exactly one square
+map is active in the ﬁrst Feistel layer (due to the fact that x3 does not activate
+any square map), and three outputs of the Feistel layer are active (due to the
+fact that x0, x1 and x3 are not consecutive). Since the matrix is MDS, then
+at least two inputs are active for the second Feistel layer, which implies that
+at least one square map is active in the second Feistel layer. As a result, at
+least 2 square maps are active for each F;
+6 Binary schemes like AES or SHA-3/Keccak have been shown vulnerable to statistical
+attacks mainly, while algebraic attacks gain more popularity recently due to the
+raising of symmetric schemes designed for applications as MPC, FHE, and ZK. Still,
+symmetric schemes designed for such applications are not tweakable designs.
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+201
+– If 3 or 4 inputs are active, at least two square maps are active for each F.
+Overall, it directly follows that DPmax(x ÞÑ F(x)) “ p´2 « 2´14.
+Diﬀerential property of S. As shown in [28,83], at least four consecutive
+rounds of Type-II generalized Feistel network are necessary to reach full diﬀusion
+(i.e., Nr ě 4). Over 4 consecutive rounds, at least 3 functions F are active (as
+visually illustrated in the full version [47]). As a result, by setting Nr “ 4, it
+directly follows that DPmax(x ÞÑ S(x)) ď DPmax(x ÞÑ S(x))3 ď p´6 « 2´42.
+Number of Steps for Security. Finally, we compute the minimum number
+of steps Ns for guaranteeing security. Due to clustering eﬀect (that is, due to the
+fact that several diﬀerential characteristics can be used together for setting up
+the attack) and due to the possibility to exploit a Meet-in-the-Middle approach
+for setting up the attack, we claim that the scheme is secure if every diﬀerential
+characteristic has probability smaller than 2´2.5¨κ « 2´280 for an arbitrary factor
+2.5,7 where κ “ 112 “ 7 ¨ 16 is our target security level. Moreover, we conjecture
+that the attacker cannot skip more than 2 steps S by a simple partial key-
+guessing, since one step S is suﬃcient for achieving full diﬀusion.
+Case: τ “ 0. By simple computation, we have Ns ě ⌈280{42⌉` 2 “ 7 ` 2 “ 9
+where 2 steps S are added for preventing partial key-guessing strategies.
+Case: τ “ 1. Following the argument proposed by LED’s designers in [51, Sect. 3]
+and recalled in Sect. 3.1, the attacker can choose related tweaks such that only
+one out of two consecutive steps S is active. As a result, it is suﬃcient to double
+the number of steps S obtained for τ “ 0 to guarantee security. That is, Ns ě
+2 ¨ 7 ` 2 “ 16, where we again add 2 steps S for preventing partial key-guessing.
+Case: τ “ 2. In this case, the attacker has more freedom in the choice of the
+related tweaks. Still, we can adapt the previous security argument as follows.
+Let us consider separately the next two cases: (i) both T (0) and T (1) are active
+(hence, T0,i and T1,i are both active for each i ě 0 due to the deﬁnition of the
+tweak schedule), and (ii) only one among T (0) and T (1) is active (hence, only
+one among T0,i and T1,i is active for each i ě 0 due to the deﬁnition of the
+tweak schedule). In the ﬁrst case, the analysis proposed for τ “ 1 applies, which
+implies that at least one among two consecutive steps S is active. In the second
+case, w.l.o.g., we assume that T (0) is active and T (1) is inactive. We introduce a
+“super-step” S2 :“ S˝S as the application of two consecutive steps S. By working
+as before, we can deduce at least one among two consecutive super-steps S2 is
+active. Moreover, if a super-step is active, then the two steps S that compose
+it are active. Indeed, the fact that S2 is active implies that T0,i introduces the
+diﬀerence in the ﬁrst S. Its output diﬀerence cannot be canceled by T1,i, which
+is inactive due to the tweak schedule and due to the assumption. Hence, both
+steps of S2 are active. The same result applies if T (1) is active and T (0) is active.
+This reasoning implies that Ns ě 14 is a necessary condition for security. Yet,
+we have to keep in mind that the attacker can potentially skip one super-step S2
+7 We take inspiration on the AES-128, which has 10 “ 2.5 ¨ 4 rounds, where 4 is the
+minimum number of rounds for preventing classical diﬀerential attacks.
+
+202
+L. Grassi et al.
+at each side of the cipher by working with input (respectively, output) diﬀerences
+in the plaintexts (resp., ciphertexts) that cancel out with the ones in the tweaks,
+leading S2 to be inactive. As a result, we require that Ns ě 2 ¨ 7 ` 4 ` 2 “ 20,
+where we again add 2 steps S for preventing partial key-guessing.
+5.2
+Degree and Density of the Polynomial Representation
+In general, algebraic attacks try to take advantage of the “simple” algebraic
+description of a scheme for breaking it, where the simplicity can relate (among
+other properties) to the low degree of the encryption/decryption function, the
+sparsity of the polynomial representation of such functions, or a particular struc-
+ture of the algebraic system generated by the cipher. The main ingredient for pre-
+venting these attacks is the minimal number of rounds such that the polynomial
+representations of the cipher have a suﬃcient degree and too many monomials for
+the attacks to apply with a complexity lower than 2κ. In this section, we there-
+fore study these two characteristics, pointing out that the encryption function of
+small-pSquare with a ﬁxed key and tweak could be analyzed as a mapping over
+Fp16 for p “ 27´1. Nevertheless, since all the operations of F are at the basis ﬁeld
+level (squaring in Fp), the ﬁeld we consider for the cryptanalyses is Fp, and the
+polynomials built by an adversary belong to Fp[x0, . . . , x15]{(xp
+0 ´1, . . . , xp
+15 ´1).
+Note that similar results hold in the context of related tweaks, for which the
+adversary can consider the same polynomials but with more variables.
+Growth of the Degree. We ﬁrst focus on the minimal degree that a polynomial
+in this representation can have, and the number of diﬀerent monomials that
+appear in an algebraic system obtainable, after r rounds. Note that the degree
+in one variable is at most p ´ 1, the total degree is then at most 16(p ´ 1),
+and the total number of monomials is p16. The degree of F is deg(F) “ 4. More
+precisely, it is 4 in three components and 2 in the last one. The degree of its
+inverse is deg(F´1) “ 82 “ 26. Indeed, note that the inverse of the internal
+function given by (y0, y1, y2, y3) “ (x0 ` x2
+1, x1 ` x2
+2, x2 ` x2
+3, x3) is given by
+(x0, x1, x2, x3) “ (y0 ´ (y1 ´ (y2 ´ y2
+3)2)2, y1 ´ (y2 ´ y2
+3)2, y2 ´ y2
+3, y3).
+In both cases (F and F´1), we emphasize that one component of the internal
+function of F and F´1 has degree one only. Moreover, in the second case, we
+emphasize that the degree is diﬀerent for each output variable, and that only
+one of them has actually maximum degree 8, and therefore 64 for F´1. It follows
+that the degree of a step of r consecutive rounds S is deg(S) “ deg(F)r “ 22¨r,
+where we point out that half of the components have degree 1 at the end of the
+ﬁrst round due to the Feistel structure. Accordingly, at round r two blocks have
+degree deg(Fr´1) “ 22¨r´2. Therefore the minimal degree a polynomial can have
+after r rounds is 22¨r´3 until it reaches the maximum degree. Since the degree
+of the inverse of a Type-II Feistel scheme is equal to the degree of the Type-II
+Feistel scheme itself, the same bound applies for r consecutive steps S´1.
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+203
+Density of the Polynomial Representation. While the degree’s growth
+is an important indicator in order to prevent algebraic attacks, another factor
+that plays a crucial role is the density of the polynomial representation. Indeed,
+various algebraic attacks depend on the number of monomials that appear in
+the polynomials, which implies that a scheme that admits a sparse polynomial
+is in general not secure against algebraic attacks even if it is of high degree.
+Experimentally, we can verify the number of monomials we obtain in each
+of the 16 polynomials of a round, but even with simpler versions with a prime
+smaller than 127 it becomes too complex in practice after a few rounds. For
+example, even for p “ 3, we observed by practical tests that we already get
+more than 216 diﬀerent monomials in some of the polynomials at the end of the
+third round. Since these experiments are quickly getting impractical, we decided
+instead to determine the number of rounds for which we expect each polynomial
+to be dense by considering the following approach. First, we determine rm deﬁned
+as the minimal number of rounds such that at least one complete monomial is
+present in each one of the 16 polynomials. We denote as complete monomial one
+monomial xe “ 15
+i“0 xei
+i such that for each i P [0, 15] it holds that 0 ă ei ď p´1
+(i.e., xe depends on all the variables). Then, we add the number of rounds such
+that all possible degrees in one variable can be taken, in other words we add the
+number of rounds suﬃcient to wrap over p (note that the degree in xi inside a
+monomial is always between 0 and p ´ 1 since xp
+i “ xi over Fp).
+We next determine a bound on rm. First, due to the Type-II Feistel structure,
+after 3 rounds not every input has an impact on the 16 outputs, which implies
+rm ą 3. Then, we get an upper bound on rm based on our experiments (the
+real value could be smaller, taking the upper bound is conservative). With p “ 3
+we obtain monomials depending on 10 variables in the polynomials in position
+1, 2 and 3 and in positions 9, 10 and 11 by symmetry of the Type-II Feistel
+structure. These monomials contain all the variables from x0 to x7 and x8 to
+x15 respectively. Calling X and Y monomials of this shape, we get that at round
+5 there are terms of shape X+Y in the polynomials in positions 0, 1, 2, 3, 8,
+9, 10 and 11, therefore giving complete monomials after passing through F due
+to the square operations. Since only half of the input goes through F at each
+round, one more round is needed to obtain these complete monomials in each
+position, therefore rm ď 7. When moving to p “ 27 ´ 1 we can only observe
+more monomials (since all the ones with a coeﬃcient multiple of 127 rather than
+3 are canceled). Combined with the fact that the degree is at least 22r´3 as
+shown before, we conclude that 5 extra rounds are suﬃcient to wrap around
+p and reach any degree in one variable. This gives us a bound of 12 rounds
+(equivalently, three steps S) to expect dense polynomials in the 16 positions.
+5.3
+Linearization Attack
+Given a system of polynomial equations, one possible way to solve it is via the
+linearization technique which works by turning it into a system of linear equa-
+tions and adding new variables that replace all the monomials in the system
+of degree larger than 1. The resulting linear system of equations can be solved
+
+204
+L. Grassi et al.
+using linear algebra if there are suﬃciently many equations. Consider a sys-
+tem in x unknowns of degree limited by D, where the number of monomials
+N(D, x) is given by N(D, x) “
+D`x
+D
+
+when D ă p. The attack has a computa-
+tional cost of O(N(D, x)ω) operations (for 2 ă ω ď 3), and a memory cost of
+O(N(D, x)2) to store the linear equations. Depending on parameters’ choices,
+the hybrid approach which combines exhaustive search with this resolution may
+lead to a reduced cost. Guessing l ă x variables leads to a complexity of:
+O
+
+pl ¨ N(D, x ´ l)ω
+.
+Case: τ “ 0 (no tweak). Since the key is composed of 16 F27´1-words, for any
+l P [0, 15] we computed that pl ¨ N(D, x ´ l)ω ą 2112 occurs already for D “ 69
+(taking the conservative value of ω “ 2). Since the minimal degree follows 22r´3
+as shown previously (where 22r´3 ą 27 ´ 1 for r ě 5), and based on the density
+analysis just given, we can conclude that 3 steps S (equivalently, 12 rounds) are
+suﬃcient to prevent algebraic attacks based on linearization.
+Case: τ ě 1 (related tweaks). The freedom of choosing the tweak(s) can be
+exploited to cancel some monomials whose coeﬃcients depend on the tweak(s)
+or part of them. Similarly, the diﬀerence of two polynomials under related tweaks
+can be exploited to cancel monomials whose coeﬃcients are independent of the
+tweaks. Moreover, the linear combinations of more polynomials under properly
+chosen related tweaks can be exploited to cancel monomials whose coeﬃcients
+depend on the tweaks or part of them. In this last case, the attacker has to (i)
+set up a system of equations in which the linear combinations of the coeﬃcients
+of some monomials is set to zero, and (ii) solve it (e.g., via linearization or using
+Gr¨obner bases) to ﬁnd the related tweaks that satisfy such conditions.
+Obviously, this procedure is not free, since one has to solve equations in the
+tweak variables that are dense and of high (e.g., maximum) degree. Moreover,
+the non-linear tweak scheduling must be taken into account as well. Based on the
+analysis just given (and on the results presented in the full version for attacks
+based on Gr¨obner bases [47]), it would be infeasible for the attacker to solve a
+system of equations (in the tweaks instead of the plaintexts) that cover more than
+12 rounds (or equivalently 3 steps) of the cipher once the tweak is fully absorbed
+(where we remind that 12 is the minimum number of rounds for achieving full
+diﬀusion in the interpolation polynomial). For this reason, we conjecture that
+12`4¨(τ ´1) “ 8`4¨τ extra rounds (or 2`τ, extra steps, which means 3 or 4 for
+τ P {1, 2}) are suﬃcient for preventing related-tweak algebraic attacks. We note
+that this conjecture does not have to be tight for the security of small-pSquare
+to hold, since we need a larger number of extra steps to prevent related-tweak
+statistical attacks (respectively, 9 and 12 for τ P {1, 2}).
+Note on Gr¨obner Bases Attacks. We recall that Gr¨obner bases based attacks
+reduce to linearization attacks when (i) the attacker aims to solve equations
+linking the plaintexts (and the tweaks) to the ciphertexts only, with the key
+as only variable, and (ii) the attacker can collect enough data for linearizing
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+205
+the system (i.e., the best scenario for the attacker). Hence, when analyzing the
+security of our scheme against such attacks in the full version [47], we only
+consider the case in which the system of equations is set up at round level.
+6
+Hardware Performance Evaluation of small-pSquare
+In this section we evaluate the hardware cost and performance of the small-
+pSquare instance in comparison to respective implementations of the SKINNY
+lightweight tweakable block cipher [6]. Due to its simple and eﬃcient design,
+SKINNY has gained remarkable popularity in recent years, both in academia and
+industry, and was selected as part of the ISO/IEC 18033-7:2022 standard for
+tweakable block ciphers. It has been designed with eﬃcient application of side-
+channel countermeasures in mind, in particular masking, and is therefore ideally
+suited for our comparison [6]. Naturally, the general design strategy as well as the
+individual operations employed by the two ciphers (small-pSquare vs. SKINNY) are
+vastly diﬀerent. At ﬁrst sight, comparing two primitives with more diﬀerences
+than similarities may appear suboptimal to gain meaningful insights. However,
+in order to achieve a high level of cost-eﬃciency, lightweight TBCs necessarily
+need to be tailored to the amenities of their particular mathematical foundation.
+Hence, the stark diﬀerences between these primitives are a direct manifestation
+of their specialization to the ﬁnite ﬁelds they operate in. Only such a comparison
+can answer the question which mathematical setting (e.g., binary ﬁeld vs. prime
+ﬁeld masking) is preferable for constructing dedicated instances to maximize the
+eﬃciency vs. security tradeoﬀof protected TBC implementations.
+Table 1. Cost and performance of round-based unprotected SKINNY-128 and small-
+pSquare hardware implementations evaluated in TSMC 65 nm technology at typical
+operating conditions for 100 MHz and 250 MHz clock.
+Cipher
+Block Size Key Size Tweak Size
+Freq.
+Crit. Path
+Area
+Power
+Latency
+[MHz]
+[ns]
+[GE]
+[mW]
+[cyc/enc]
+SKINNY
+128
+128
+0
+100|250
+1.877155
+2450.75 0.3915
+40
+128
+100|250
+1.812617
+3396.00 0.5613
+48
+256
+100|250
+1.905185
+4353.00 0.7304
+56
+small-pSquare
+112
+112
+0
+100
+9.777720
+9684.75 1.3547
+36
+112
+100
+9.970046 10798.75 1.5424
+64
+224
+100
+9.937350 11989.50 1.6745
+84
+0
+250
+3.945602 12407.75 1.7942
+36
+112
+250
+3.971674 14716.50 2.1160
+64
+224
+250
+3.972123 16034.00 2.2392
+84
+small-pSquare has been designed to oﬀer competitive performances to com-
+mon binary lightweight block ciphers when masking is applied. Nevertheless, we
+begin by comparing its critical path delay, area, power consumption (at 100 MHz
+
+206
+L. Grassi et al.
+operation) and encryption latency to SKINNY-128 when both are implemented as
+unmasked round-based hardware circuits in Table 1. All values are post-synthesis
+results obtained using Synopsys Design Compiler Version O-2018.06-SP4 as a
+synthesis tool together with the TSMC 65 nm standard cell library at typical
+operating conditions for two diﬀerent clock frequencies, 100 MHz and 250 MHz.
+The results show that regardless of the tweak size, unmasked SKINNY-128 is
+signiﬁcantly more eﬃcient in terms of critical path delay, area footprint and
+power consumption when compared to unmasked small-pSquare. The encryption
+latency, which directly corresponds to the number of rounds, is slightly smaller
+for small-pSquare without tweak compared to SKINNY-128 without tweak. How-
+ever, for the tweakable variants it is larger in case of small-pSquare. We conclude
+that when unprotected, and hence for implementation settings where physical
+attacks are not a concern, small-pSquare is not fully competitive with binary
+lightweight ciphers in hardware. Yet, as mentioned before, this was not the
+primary goal of our design eﬀort. Signiﬁcantly better eﬃciency in unprotected
+hardware would have commanded diﬀerent design choices that, in part, directly
+oppose to eﬃciency in masked representation.
+We now focus on the more relevant comparison of secure higher-order masked
+hardware circuits. We have chosen to compare the small-pSquare version with
+τ “ 1 with SKINNY-128-256 for 2 up to 4 shares (i.e., ﬁrst- to third-order secure
+designs). SKINNY-128-256 is the denotation of the SKINNY variant which receives
+a 128-bit plaintext, 128-bit key and 128-bit tweak (i.e., a 256-bit tweakey) as
+inputs and computes 48 cipher rounds for one encryption or decryption. We
+recall that small-pSquare with τ “ 1 receives a 112-bit plaintext, 112-bit key
+and 112-bit tweak as inputs and computes 64 cipher rounds for one encryption
+or decryption. To put the diﬀerence of round numbers in perspective, remember
+that small-pSquare is a Type-II generalized Feistel design, i.e., each round updates
+only half of the state. We will see in the next results that with all other factors
+being equal, masked small-pSquare implementations generally require fewer clock
+cycles per encryption (sometimes signiﬁcantly) than masked SKINNY-128-256
+implementations, despite the larger number of rounds of the former design.
+We have scanned the literature for publicly available securely masked
+SKINNY- 128-256 implementations, with moderate success. The only higher-
+order masked hardware implementations of tweakable SKINNY-128 we could ﬁnd
+have been published in conjunction with [78,85] as part of a study of the leak-
+age resistance of Romulus and other Authenticated Encryption with Associated
+Data (AEAD) schemes that made it into the ﬁnals of NIST’s Lightweight Crypto
+Competition. The concrete implementation is hence of the SKINNY-128-384+
+variant which is used in Romulus and publicly available on GitHub.8 Please
+note that the authors have not veriﬁed its security properties experimentally.
+However, it is based on the trivially composable HPC2 masking scheme [26]
+which eases the extension of gadget security to full-implementation security. We
+have modiﬁed this implementation slightly to make it compute SKINNY-128-256
+instead of SKINNY-128-384+, which commanded small changes to the round
+8 https://github.com/uclcrypto/aead modes leveled hw.
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+207
+Table 2. Cost and performance comparison of masked SKINNY-128-256 and small-
+pSquare (τ “ 1) hardware implementations evaluated in TSMC 65 nm technology at
+typical operating conditions for 100 MHz and 250 MHz clock.
+Cipher
+Ref.
+Par.
+Frequ
+d Pip. Crit. Path
+Area
+Power
+Latency Random
+[MHz]
+[ns]
+[GE]
+[mW] [cyc/enc] [bit/cyc]
+SKINNY-128-256
+[58]
+128
+100|250
+2
+1.519177
+19026.75
+2.8547
+432/1
+128
+3
+1.763878
+38828.75
+6.2545
+432/1
+384
+4
+1.839592
+65502.00
+8.9225
+432/1
+768
+2
+✓
+1.566238
+58475.50 13.6144
+432/9
+128
+3
+✓
+1.801272
+94611.50 21.6698
+432/9
+384
+4
+✓
+1.882408 137625.50 30.8983
+432/9
+768
+32
+100|250
+2
+1.743940
+9274.50
+1.0755
+2160/1
+32
+3
+1.903482
+15999.00
+2.0608
+2160/1
+96
+4
+1.823993
+24442.00
+8.2697
+2160/1
+192
+2
+✓
+1.885406
+39016.25
+9.1220
+2160/9
+32
+3
+✓
+1.943746
+57757.00 13.4186
+2160/9
+96
+4
+✓
+1.909085
+78243.00 17.9452
+2160/9
+192
+[85]
+128
+100|250
+2
+3.715469
+18035.75
+2.5276
+288/1
+32
+3
+3.232731
+28740.75
+4.1347
+288/1
+96
+4
+3.849724
+41136.75
+5.9918
+288/1
+192
+small-pSquare
+[this]
+112
+100
+2
+9.845555
+21714.50
+2.9370
+128/1
+84
+3
+9.854049
+41982.50
+5.6533
+128/1
+210
+4
+9.852280
+62587.75
+8.4822
+128/1
+504
+2
+✓
+9.852014
+30730.25
+4.4491
+128/2
+168
+3
+✓
+9.854022
+65273.00
+9.2764
+128/2
+420
+4
+✓
+9.853921 101168.00 14.3426
+128/2
+1008
+250
+2
+3.857306
+29438.50
+3.7809
+128/1
+84
+3
+3.861372
+52073.50
+6.9574
+128/1
+210
+4
+3.907730
+78441.00 10.5274
+128/1
+504
+2
+✓
+3.852503
+40414.75
+5.5467
+128/2
+168
+3
+✓
+3.857475
+77556.50 11.0357
+128/2
+420
+4
+✓
+3.859051 121589.25 17.4111
+128/2
+1008
+56
+100
+2
+9.847473
+15332.25
+1.9296
+256/1
+42
+3
+9.851035
+27215.75
+3.4077
+256/1
+105
+4
+9.852068
+39237.50
+4.9897
+256/1
+252
+2
+✓
+9.848985
+20735.75
+2.8794
+256/2
+84
+3
+✓
+9.941982
+39958.75
+5.5274
+256/2
+210
+4
+✓
+9.851659
+59404.75
+8.2398
+256/2
+504
+250
+2
+3.855009
+20471.00
+2.4330
+256/1
+42
+3
+3.858206
+34485.25
+4.2527
+256/1
+105
+4
+3.859086
+48511.25
+6.1763
+256/1
+252
+2
+✓
+3.858980
+26823.25
+3.5092
+256/2
+84
+3
+✓
+3.858999
+48147.50
+6.5390
+256/2
+210
+4
+✓
+3.857775
+72245.00
+9.9639
+256/2
+504
+Cipher = Evaluation target, either SKINNY-128-256 or small-pSquare (τ “ 1).
+Ref. = Reference, i.e., related publication, AGEMA is cited for automatically generated circuits.
+Par. = Parallelism, i.e., size of the state that is operated on in parallel measured in bits.
+Freq. = Synthesis frequency measured in Megahertz (MHz).
+d = Number of shares, resulting in security order d ´ 1.
+Pip. = Design is pipelined (✓) or not ( ).
+Crit. Path = Critical path of the synthesized circuit measured in nanoseconds (ns).
+Area = Area consumption of the synthesized circuit measured in gate equivalents (GE).
+Power = Power consumption of the synthesized circuit measured in milliwatts (mW).
+Latency = Latency of the synthesized circuit measured in clock cycles per encryption(s).
+Random = Fresh randomness consumption measured in bits per clock cycle.
+
+208
+L. Grassi et al.
+numbers and tweak schedule. Since this concrete implementation uses a speciﬁc
+implementation of the SKINNY 8-bit S-box that is tailored towards a certain set
+of optimization goals, we also wanted to include other, more general, masked
+SKINNY-128 implementations in our comparison. To this end we have employed
+the Automated Generation of Masked Hardware (AGEMA) tool published at
+TCHES 2022 [58] which is able to turn unprotected hardware implementations
+of cryptographic primitives automatically into securely masked equivalents. We
+have utilized the tool to autonomously generate masked implementations of
+SKINNY-128-256 from the source code for unprotected hardware circuits pro-
+vided by the SKINNY authors on its website as source material.9 In particular,
+we translated both, round-based and 32-bit serialized implementations into their
+masked equivalents based on the HPC2 masking scheme using the Naive pro-
+cessing method (see [58]), as it led to the most suitable results for a comparison.
+We further generated both pipelined and non-pipelined masked circuits. Given
+this collection of securely masked SKINNY-128-256 circuits we are now equipped
+for an in-depth cost and performance comparison to our prime-ﬁeld TBC.
+Analogously to the selected implementations of SKINNY, we created round-
+based and half-round-based masked hardware circuits of small-pSquare. While
+these implementations operate on the full state (112 bits) and half the state (56
+bits) in parallel, respectively, non-linear operations are only applied to 56 and 28
+bits in parallel respectively due to the Feistel structure. Hence, the half-round-
+based implementations compute only one F-function on a 28-bit input at a time,
+resulting in a similar serialization level (28 vs. 32) compared to the SKINNY equiv-
+alent. The circuits are based on the secure and composable prime-ﬁeld squaring
+gadgets introduced in [27]. In fact, we even optimized the 4-share gadget in a way
+that it only needs a single register stage, using similar optimization strategies as
+for the 2-share and 3-share case presented by the authors of [27]. The pseudo-
+code for the gadget is included in the full version of this paper [47]. The resulting
+comparison is presented in Table 2. All results are based on post-synthesis esti-
+mations obtained using Synopsys Design Compiler and TSMC 65 nm technol-
+ogy at typical operating conditions for two diﬀerent frequencies, 100 MHz and
+250 MHz. The resulting ﬁgures for the SKINNY-128-256 circuits are identical for
+both frequencies due to the short critical path length. The full version of this
+paper additionally considers the more extreme cases of 500 MHz and 1000 MHz
+operation [47].10 Based on this collection of cost and performance results, we
+conclude that small-pSquare is indeed able to compete with SKINNY-128-256
+when masked in hardware, especially at lower frequencies. The automatically
+generated hardware circuits of SKINNY need a rather large amount of cycles per
+9 https://sites.google.com/site/skinnycipher/implementation.
+10 More “extreme”, because cryptographic co-processors manufactured in 65 nm tech-
+nology are rarely clocked at such high frequencies. This is evident for example in
+research ASICs manufactured in such technology nodes, as reported in http://asic.
+ethz.ch/technologies/65.html. Furthermore, the vast majority of common criteria
+certiﬁed co-processors protected against side-channel attacks do not exceed 200-
+300 MHz operation (https://www.commoncriteriaportal.org/products).
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+209
+round (regardless of the frequency) and are costly when pipelined. At the target
+frequencies considered in the table (ď 250 MHz) SKINNY-128-256 is only consis-
+tently cheaper in terms of area when non-pipelined serialized implementations
+are compared. Yet, this advantage in area footprint comes at a steep price, as
+the encryption latency is larger by a considerable factor. Overall, considering the
+area/power consumption and the latency together, small-pSquare often appears
+preferable. This changes when very high operating frequencies are needed. Then
+SKINNY becomes preferable, as shown in the full version [47]. In summary, our
+results show that small-pSquare is indeed capable of providing competitive cost
+and performance results in the envisioned application settings, and even outper-
+forms its competitor consistently when the frequency is suﬃciently low.
+Decryption.
+Our comparison focuses on encryption-only circuits. However,
+adding capability for decryption is trivial for small-pSquare due to the Feistel
+structure. The additional cost for multiplexing between addition and subtrac-
+tion of F-function results for the encryption and decryption process falls in the
+range of a few percent (depending on masking order and parallelization). Adding
+decryption capability to the SKINNY circuits typically requires twice the area.
+Comparison to AES-prime . We note that small-pSquare is also signiﬁcantly more
+eﬃcient in hardware compared to AES-prime which has been introduced at Euro-
+crypt 2023 as the ﬁrst example of a dedicated cipher for prime-ﬁeld masking [67].
+It shares the same block and key size as small-pSquare, but is not tweakable. Com-
+pared to AES-prime our unmasked small-pSquare with τ “ 0 is at least 3 times
+smaller. More importantly, masked small-pSquare with τ “ 1 is on average (over
+the number of shares) 5 times smaller compared to masked AES-prime despite
+the additional tweak input [67]. This implies that masked small-pSquare with
+τ “ 0 requires a more than 5 times smaller area footprint while also execut-
+ing in fewer clock cycles under the same frequency, constituting a very notable
+improvement over the state of the art. In addition, we recall that all variants of
+small-pSquare enable eﬃcient decryption, while AES-prime does not.
+Area and Power Consumption. It is clear that the comparison of the area and
+power consumption in Table 2 is aﬀected by the diﬀerent block, key and tweak
+sizes of the analyzed primitives. Since all those size parameters are smaller for
+the chosen prime-ﬁeld design, this fact may tilt the comparison of the imple-
+mentation size to small-pSquare’s advantage. However, we argue that even if
+normalizing all area and power ﬁgures related to small-pSquare artiﬁcially by, for
+example, multiplying them with the corresponding size diﬀerence factor, namely
+128
+112 “ 8
+7, our conclusions would not change drastically. In order to avoid any con-
+fusion we have not applied any artiﬁcial normalization of our results. We would
+also like to mention that for cases where 112 bits of security are insuﬃcient,
+increasing the security level of small-pSquare at low additional cost is possible
+using the trick employed by the PRINCE block cipher with whitening keys [22].
+Latency vs. Frequency. small-pSquare naturally allows to trade latency in cycles
+for frequency in Megahertz and vice versa. The considered masked SKINNY-128-
+
+210
+L. Grassi et al.
+256 implementations oﬀer less ﬂexibility. They always have a very short critical
+path but require a larger number of cycles due to the type of masked gadgets
+that are used. In fact, bit-wise masking, where each binary two-input non-linear
+gate (e.g., AND, OR, NAND, NOR) is individually replaced by a masked gadget
+equivalent, enables high frequency operation but requires many register stages
+to uphold masking security. This is because any secure masked hardware gadget
+computing a non-linear operation requires at least one register stage (attempts
+to improve this are usually based on additional specialized hardware assump-
+tions [70,75]). Introducing a register stage for each atomic bit-level gate entails
+a high overhead in latency of the implementation, but also in area. While this
+makes masked SKINNY-128-256 well-suited for high frequency operation, it lim-
+its its performance in lower frequency and low-latency applications.
+Mild Additional Constraints. We note that small-pSquare comes with a few addi-
+tional constraints due to the fact that it operates in a prime ﬁeld while data is
+usually encoded in a binary manner. It is however pretty simple to convert a
+vector of prime ﬁeld elements into a sequence of bits, by just viewing it as a
+representation of an integer in basis p. For small-pSquare, the maximum value
+is worth 12716 ´ 1 which can represent 111-bit values (yielding a one-bit loss
+in the conversion). Similarly, masking small-pSquare requires to generate uni-
+formly random prime numbers. Rejection sampling is a viable method (with
+probability 1/127 to reject a value). Using a PRNG that natively operates in
+Fp is an alternative. Eventually, small-pSquare would be best integrated in a
+leakage-resistant mode of operation, which should not raise speciﬁc problems
+since TBC-based constructions like [9] or [78] are ﬁeld-agnostic. Overall, none of
+these minor caveats is expected to bring signiﬁcant overheads.
+7
+Side-Channel Security Assessment of small-pSquare
+Finally, we evaluate the security of our masked implementations. In particu-
+lar, we experimentally assess and compare the side-channel resistance of masked
+small-pSquare (τ “ 1) and SKINNY-128-256 implementations by measuring their
+power consumption on an FPGA device and trying to infer the secret key from
+their side-channel leakage. We focus on pipelined implementations of small-
+pSquare and SKINNY-128-256 for 2, 3 and 4 shares. The serialized circuits con-
+stitute a scenario with lower noise, while the parallel ones help to show the
+diﬀerences at slightly higher noise levels, although their side-channel Signal-to-
+Noise Ratios (SNRs) are not drastically diﬀerent. The full version of this paper
+additionally contains the evaluation results for the small-pSquare versions with
+extra register stages to enable larger maximum frequencies [47].
+Setup. For our experiments we use a SAKURA-G FPGA board which houses
+two Spartan-6 FPGAs serving as controller and device under test, respectively.
+All designs are operated at 6 MHz clock frequency (for low noise) and their power
+consumption is measured using a PicoScope 5244D digital sampling oscilloscope
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+211
+at 250 MS/s sampling rate with 12-bit vertical resolution through a Tektronix
+CT-1 current probe (bandwidth of up to 1 GHz) placed in the power supply path
+of the target FPGA. Xilinx ISE Version 14.7 is used to synthesize the circuits,
+with default parameters except the -keep hierarchy attribute set to yes.
+Table 3. Comparative side-channel evaluation of pipelined masked SKINNY-128-256
+and small-pSquare hardware implementations.
+Cipher
+Par. CPR
+d
+mean SNR median SNR TVLA det. compl. SASCA compl.
+SKINNY-128-256
+128
+9
+2
+0.0023
+0.0021
+71 000
+25 000
+3
+0.0015
+0.0019
+811 000
+362 000
+4
+0.0013
+0.0010
+57 000 000
+29 832 000
+32
+45
+2
+0.0064
+0.0048
+52 000
+6 000
+3
+0.0026
+0.0028
+680 000
+157 000
+4
+0.0020
+0.0016
+48 000 000
+17 169 000
+small-pSquare
+112
+2
+2
+0.0021
+0.0019
+321 000
+213 000
+3
+0.0032
+0.0013
+8 040 000
+4 002 000
+4
+0.0016
+0.0011
+ą 100 000 000
+ą 100 000 000
+56
+4
+2
+0.0073
+0.0031
+238 000
+45 000
+3
+0.0030
+0.0025
+7 040 000
+1 754 000
+4
+0.0018
+0.0020
+ą 100 000 000
+ą 100 000 000
+Cipher = Evaluation target, either SKINNY-128-256 or small-pSquare (τ “ 1).
+Par. = Parallelism, i.e., size of the state that is operated on in parallel measured in bits.
+CPR = Cycles per round, i.e., latency of one round function computation measured in cycles.
+d = Number of shares, resulting in security order d ´ 1.
+mean SNR = Mean maximum SNR of all S-box/Squaring input shares in the first round.
+median SNR = Median maximum SNR of all S-box/Squaring input shares in the first round.
+TVLA det. compl. = Minimum number of traces to surpass the TVLA detection threshold.
+SASCA compl. = Minimum number of traces to achieve key rank 1 in a SASCA key recovery.
+Table 3 summarizes the evaluation results collected for the 12 diﬀerent
+masked implementations, 6 ˆ SKINNY-128-256 and 6 ˆ small-pSquare. It is
+apparent from the mean and median side-channel SNRs computed over all
+ﬁrst-round 8-bit S-box (SKINNY-128-256) input shares or 7-bit Squaring (small-
+pSquare) input shares, that the quality of observations an adversary can make of
+individual words processed in the circuits is quite similar in both cases (binary-
+ﬁeld or prime-ﬁeld cipher). Thus, the noise levels are not expected to signiﬁ-
+cantly impact the following investigation. We have plotted one set of evaluation
+results in Fig. 4 for the concrete example of serialized pipelined implementations
+with 3 shares. For all 2-, 3- and 4-share implementations respectively, we have
+ﬁrst measured 1 million, 10 million and 100 million traces, in a randomly inter-
+leaved sequence of measurements for ﬁxed and for random inputs, according to
+the Test Vector Leakage Assessment (TVLA) methodology [77]. The resulting
+non-speciﬁc t-test results are illustrated in the third row of Fig. 4. The imple-
+mentations satisfy the expected statistical security order in the experiments,
+as the smallest moment where leakage is detected is equal to the number of
+shares. The same holds for all evaluated circuits in Table 3. As a next step we
+performed exemplary key recovery attacks on the most leaking (highest SNR)
+
+212
+L. Grassi et al.
+0
+100
+200
+300
+400
+500
+Time Samples
+Power Cons.
+0
+100
+200
+300
+400
+500
+Time Samples
+Power Cons.
+0
+100
+200
+300
+400
+500
+Time Samples
+0
+0.01
+SNR
+0
+100
+200
+300
+400
+500
+Time Samples
+0
+0.01
+SNR
+0  
+0.5
+1  
+No. of Traces 
+ 107
+0
+5
+10
+15
+t-statistics
+3rd order
+1st to 2nd order
+0  
+0.5
+1  
+No. of Traces 
+ 107
+0
+5
+10
+15
+t-statistics
+3rd order
+1st to 2nd order
+100
+101
+102
+103
+104
+105
+106
+107
+No. of Traces
+20
+28
+Key Rank
+100
+101
+102
+103
+104
+105
+106
+107
+No. of Traces
+20
+27
+Key Rank
+Fig. 4. Exemplary SCA results of serialized second-order masked SKINNY-128-256
+(left) and small-pSquare (right) hardware implementations. From top to bottom: Sam-
+ple traces, SNRs (1M traces), Fixed-vs-random t-tests (10 M traces), Proﬁled SASCA
+(1 M proﬁling, 10 M attack traces).
+8-bit or 7-bit word respectively of the state. In order to extract the most infor-
+mation from the traces and reduce the eﬀective noise level we have employed a
+proﬁled horizontal Soft-Analytical Side-Channel Attack (SASCA) [86]. In a ﬁrst
+step all relevant intermediate values are proﬁled over multiple clock cycles to
+obtain multivariate templates. Next, a Linear Discriminant Analysis (LDA) is
+used to perform a linear dimensionality reduction which maximizes class sepa-
+ration on the proﬁling traces (always 1M) [81]. Finally, on the distinct attack
+trace set, likelihoods for all intermediate values and corresponding templates are
+collected separately, before a discrete probability distribution of the secret value
+is derived using belief propagation inside a SASCA tree graph that contains mul-
+tiple intermediate computation stages of the masked S-box or squaring. These
+procedures are readily implemented in the publicly available SCALib library [25].
+We then estimate the average rank of the correct key (over 1 000 iterations) with
+the probabilities obtained from all the attack traces. The results of that proce-
+dure plotted over the number of attack traces are shown in the bottom row of
+Fig. 4. In both the TVLA and the SASCA results it is apparent that, despite
+similar SNR values, successful leakage detection and key recovery require con-
+sistently signiﬁcantly more traces (higher data complexity) on the small-pSquare
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+213
+compared to the SKINNY circuits, regardless of the concrete implementation cho-
+sen. This advantage of prime-ﬁeld masking can be attributed to the “algebraic
+incompatibility” between physical leakage and recombination function to com-
+pute the secret from its shares. It can be observed that in case of attacks on 3-
+and 4-share implementations the advantage of small-pSquare is around or above
+one order of magnitude (slightly less in case of 2 shares). Furthermore no leakage
+detection or sophisticated key recovery attack succeeded on any of the 4-share
+implementations of small-pSquare using 100 million traces. Despite their empir-
+ical nature, we believe these results clearly emphasize the interest of eﬃcient
+TBCs dedicated for prime-ﬁeld masking based on established design principles
+(e.g., Feistel structures) while also tailoring the design to speciﬁc advantages
+that a given mathematical structure can lead to (e.g., using squaring as source
+of non-linearity in prime ﬁelds to exploit their eﬃcient masked gadgets).
+8
+Summary and Open Problems
+In this paper, we proposed both the FPM family of ciphers that leverages a
+generalized Feistel structure for prime masking and easy integration in leakage-
+resistant modes of operation, and the small-pSquare instance that is tailored for
+hardware implementations (due to its small prime) and exploits recent advances
+for masked squaring gadgets. Combining a hardware performance evaluation
+with an initial side-channel security assessment allows us to put forward the
+interest of this approach. small-pSquare protected with prime masking shows sig-
+niﬁcantly improved (side-channel) security vs. performance tradeoﬀs compared
+to SKINNY protected with Boolean masking. Besides their concrete interest, we
+believe our investigations uncover new design principles for side-channel resistant
+implementations, leading to new challenges for further research.
+Starting from more speciﬁc questions, the mathematical and physical secu-
+rity evaluation of small-pSquare is, as usual for new ciphers, a natural direction
+for deeper analyzes. Given the breadth of the FPM family, investigating other
+instances would be interesting as well. For example, a mid-pSquare instance with
+p “ 231 ´ 1 would be particularly well-suited for software implementations for
+which masking is known to be diﬃcult to implement due to a lack of noise [5,24].
+Such an instance could for example be based on the high-level structure depicted
+in the left part of Fig. 2 combined with the candidate F function given in Fig. 5.
+For modes of operation where having eﬃcient inverses is not critical, it could
+also be possible to replace the generalized Feistel structure of Sect. 2.2 by an
+SPN one. More generally, the use of prime masking raises important theoreti-
+cal questions regarding security proofs. For example, while the seed results of
+Dziembowski et al. provide a rationale for prime masking [41], the understand-
+ing of this approach is still far from the one of Boolean masking. Typical open
+problems in this respect are to improve the tightness of the security proofs and
+to better formalize the intuition of “algebraic incompatibility” that makes prime
+computations less sensitive to a lack of noise than Boolean masking.
+The source code for all our small-pSquare implementations is publicly avail-
+able here: https://github.com/uclcrypto/small-pSquare
+
+214
+L. Grassi et al.
+Fig. 5. Candidate F-function for a mid-pSquare instance.
+Acknowledgments. Lorenzo Grassi was supported by the German Research Founda-
+tion (DFG) within the framework of the Excellence Strategy of the Federal Government
+and the States – EXC 2092 CaSa – 39078197. Pierrick M´eaux was supported by the
+ERC Advanced Grant 787390. Fran¸cois-Xavier Standaert is a senior research associate
+of the Belgian Fund for Scientiﬁc Research (FNRS-F.R.S.). This work has been funded
+in parts by the ERC Advanced Grant 101096871. Views and opinions expressed are
+those of the authors only and do not necessarily reﬂect those of the European Union or
+the ERC. Neither the European Union nor the granting authority can be held respon-
+sible for them.
+References
+1. Albrecht, M.R., et al.: Feistel structures for MPC, and more. In: Sako, K., Schnei-
+der, S., Ryan, P.Y.A. (eds.) ESORICS 2019. LNCS, vol. 11736, pp. 151–171.
+Springer, Cham (2019). https://doi.org/10.1007/978-3-030-29962-0 8
+2. Albrecht, M., Grassi, L., Rechberger, C., Roy, A., Tiessen, T.: MiMC: eﬃcient
+encryption and cryptographic hashing with minimal multiplicative complexity. In:
+Cheon, J.H., Takagi, T. (eds.) ASIACRYPT 2016. LNCS, vol. 10031, pp. 191–219.
+Springer, Heidelberg (2016). https://doi.org/10.1007/978-3-662-53887-6 7
+3. Aly, A., Ashur, T., Ben-Sasson, E., Dhooghe, S., Szepieniec, A.: Design of
+symmetric-key primitives for advanced cryptographic protocols. IACR Trans. Sym-
+metric Cryptol. 2020(3), 1–45 (2020)
+4. Balasch, J., Faust, S., Gierlichs, B., Verbauwhede, I.: Theory and practice of a
+leakage resilient masking scheme. In: Wang, X., Sako, K. (eds.) ASIACRYPT 2012.
+LNCS, vol. 7658, pp. 758–775. Springer, Heidelberg (2012). https://doi.org/10.
+1007/978-3-642-34961-4 45
+5. Battistello, A., Coron, J.-S., Prouﬀ, E., Zeitoun, R.: Horizontal side-channel attacks
+and countermeasures on the ISW masking scheme. In: Gierlichs, B., Poschmann,
+A.Y. (eds.) CHES 2016. LNCS, vol. 9813, pp. 23–39. Springer, Heidelberg (2016).
+https://doi.org/10.1007/978-3-662-53140-2 2
+6. Beierle, C., et al.: The SKINNY family of block ciphers and its low-latency variant
+MANTIS. In: Robshaw, M., Katz, J. (eds.) CRYPTO 2016. LNCS, vol. 9815, pp.
+123–153. Springer, Heidelberg (2016). https://doi.org/10.1007/978-3-662-53008-
+5 5
+7. Bellizia, D., et al.: Mode-Level vs. implementation-level physical security in sym-
+metric cryptography. In: Micciancio, D., Ristenpart, T. (eds.) CRYPTO 2020.
+LNCS, vol. 12170, pp. 369–400. Springer, Cham (2020). https://doi.org/10.1007/
+978-3-030-56784-2 13
+8. Berger, T.P., Minier, M., Thomas, G.: Extended generalized Feistel networks using
+matrix representation. In: Lange, T., Lauter, K., Lisonˇek, P. (eds.) SAC 2013.
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+215
+LNCS, vol. 8282, pp. 289–305. Springer, Heidelberg (2014). https://doi.org/10.
+1007/978-3-662-43414-7 15
+9. Berti, F., Guo, C., Pereira, O., Peters, T., Standaert, F.-X.: TEDT, a leakage-
+resist AEAD mode for high physical security applications. IACR Trans. Cryptogr.
+Hardw. Embed. Syst. 2020(1), 256–320 (2020)
+10. Berti, F., Guo, C., Peters, T., Standaert, F.-X.: Eﬃcient leakage-resilient MACs
+without idealized assumptions. In: Tibouchi, M., Wang, H. (eds.) ASIACRYPT
+2021. LNCS, vol. 13091, pp. 95–123. Springer, Cham (2021). https://doi.org/10.
+1007/978-3-030-92075-3 4
+11. Berti, F., Pereira, O., Peters, T., Standaert, F.-X.: On leakage-resilient authen-
+ticated encryption with decryption leakages. IACR Trans. Symmetric Cryptol.
+2017(3), 271–293 (2017)
+12. Bertoni, G., Daemen, J., Peeters, M., Van Assche, G.: On the indiﬀerentiability
+of the sponge construction. In: Smart, N. (ed.) EUROCRYPT 2008. LNCS, vol.
+4965, pp. 181–197. Springer, Heidelberg (2008). https://doi.org/10.1007/978-3-
+540-78967-3 11
+13. Bertoni, G., Daemen, J., Peeters, M., Van Assche, G.: Duplexing the sponge:
+single-pass authenticated encryption and other applications. In: Miri, A., Vau-
+denay, S. (eds.) SAC 2011. LNCS, vol. 7118, pp. 320–337. Springer, Heidelberg
+(2012). https://doi.org/10.1007/978-3-642-28496-0 19
+14. Beyne, T., Chen,Y.L.: Provably Secure Reﬂection Ciphers. In: Dodis, Y., Shrimp-
+ton, T. (eds.) CRYPTO, vol. 13510. Springer, Cham (2022). https://doi.org/10.
+1007/978-3-031-15985-5 9
+15. Biham, E.: New types of cryptanalytic attacks using related keys. J. Cryptol. 7(4),
+229–246 (1994). https://doi.org/10.1007/BF00203965
+16. Biham, E.: A fast new DES implementation in software. In: Biham, E. (ed.) FSE
+1997. LNCS, vol. 1267, pp. 260–272. Springer, Heidelberg (1997). https://doi.org/
+10.1007/BFb0052352
+17. Biham, E., Biryukov, A., Shamir, A.: Cryptanalysis of skipjack reduced to 31
+rounds using impossible diﬀerentials. In: Stern, J. (ed.) EUROCRYPT 1999. LNCS,
+vol. 1592, pp. 12–23. Springer, Heidelberg (1999). https://doi.org/10.1007/3-540-
+48910-X 2
+18. Biham, E., Shamir, A.: Diﬀerential cryptanalysis of DES-like cryptosystems. J.
+Cryptol. 4(1), 3–72 (1991). https://doi.org/10.1007/BF00630563
+19. Biham, E., Shamir, A.: Diﬀerential Cryptanalysis of the Data Encryption Standard.
+Springer (1993). https://doi.org/10.1007/978-1-4613-9314-6
+20. Biryukov, A., Wagner, D.: Slide attacks. In: Knudsen, L. (ed.) FSE 1999. LNCS,
+vol. 1636, pp. 245–259. Springer, Heidelberg (1999). https://doi.org/10.1007/3-
+540-48519-8 18
+21. Biryukov, A., Wagner, D.: Advanced slide attacks. In: Preneel, B. (ed.) EURO-
+CRYPT 2000. LNCS, vol. 1807, pp. 589–606. Springer, Heidelberg (2000). https://
+doi.org/10.1007/3-540-45539-6 41
+22. Borghoﬀ, J., et al.: PRINCE – a low-latency block cipher for pervasive computing
+applications. In: Wang, X., Sako, K. (eds.) ASIACRYPT 2012. LNCS, vol. 7658, pp.
+208–225. Springer, Heidelberg (2012). https://doi.org/10.1007/978-3-642-34961-
+4 14
+23. Boˇzilov, D., et al.: PRINCEv2. In: Dunkelman, O., Jacobson, Jr., M.J., O’Flynn, C.
+(eds.) SAC 2020. LNCS, vol. 12804, pp. 483–511. Springer, Cham (2021). https://
+doi.org/10.1007/978-3-030-81652-0 19
+
+216
+L. Grassi et al.
+24. Bronchain, O., Standaert, F.-X.: Breaking masked implementations with many
+shares on 32-bit software platforms or when the security order does not matter.
+IACR Trans. Cryptogr. Hardw. Embed. Syst. 2021(3), 202–234 (2021)
+25. Cassiers, G., Bronchain, O.: Scalib: a side-channel analysis library. J. Open Source
+Softw. 8(86), 5196 (2023)
+26. Cassiers, G., Gr´egoire, B., Levi, I., Standaert, F.-X.: Hardware private circuits:
+from trivial composition to full veriﬁcation. IEEE Trans. Comput. 70(10) (2021)
+27. Cassiers, G., Masure, L., Momin, C., Moos, T., Standaert, F.-X.: Prime-Field mask-
+ing in hardware and its soundness against low-noise SCA attacks. IACR Trans.
+Cryptogr. Hardw. Embed. Syst. 2023(2), 482–518 (2023)
+28. Cauchois, V., Gomez, C., Thomas, G.: General diﬀusion analysis: how to ﬁnd opti-
+mal permutations for generalized Type-II Feistel schemes. IACR Trans. Symmetric
+Cryptol. 2019(1)
+29. Chari, S., Jutla, C.S., Rao, J.R., Rohatgi, P.: Towards sound approaches to counter-
+act power-analysis attacks. In: Wiener, M. (ed.) CRYPTO 1999. LNCS, vol. 1666,
+pp. 398–412. Springer, Heidelberg (1999). https://doi.org/10.1007/3-540-48405-
+1 26
+30. Cho, J., et al.: Transciphering framework for approximate homomorphic encryp-
+tion. In: Tibouchi, M., Wang, H. (eds.) ASIACRYPT 2021. LNCS, vol. 13092, pp.
+640–669. Springer, Cham (2021). https://doi.org/10.1007/978-3-030-92078-4 22
+31. Courtois, N., Klimov, A., Patarin, J., Shamir, A.: Eﬃcient algorithms for solving
+overdeﬁned systems of multivariate polynomial equations. In: Preneel, B. (ed.)
+EUROCRYPT 2000. LNCS, vol. 1807, pp. 392–407. Springer, Heidelberg (2000).
+https://doi.org/10.1007/3-540-45539-6 27
+32. Daemen, J., Peeters, M., Van Assche, G., Rijmen, V.: Nessie Proposal: NOEKEON.
+In: First Open NESSIE Workshop (2000)
+33. Daemen, J., Rijmen, V.: The wide trail design strategy. In: Honary, B. (ed.) Cryp-
+tography and Coding 2001. LNCS, vol. 2260, pp. 222–238. Springer, Heidelberg
+(2001). https://doi.org/10.1007/3-540-45325-3 20
+34. Daemen, J., Rijmen, V.: Security of a wide trail design. In: Menezes, A., Sarkar, P.
+(eds.) INDOCRYPT 2002. LNCS, vol. 2551, pp. 1–11. Springer, Heidelberg (2002).
+https://doi.org/10.1007/3-540-36231-2 1
+35. Dobraunig, C., Eichlseder, M., Mendel, F., Schl¨aﬀer, M.: Ascon v1.2: lightweight
+authenticated encryption and hashing. J. Cryptol. 34(3), 1–42 (2021). https://doi.
+org/10.1007/s00145-021-09398-9
+36. Dobraunig, C., Grassi, L., Guinet, A., Kuijsters, D.: Ciminion: symmetric encryp-
+tion based on Toﬀoli-gates over large ﬁnite ﬁelds. In: Canteaut, A., Standaert, F.-X.
+(eds.) EUROCRYPT 2021. LNCS, vol. 12697, pp. 3–34. Springer, Cham (2021).
+https://doi.org/10.1007/978-3-030-77886-6 1
+37. Duc, A., Dziembowski, S., Faust, S.: Unifying leakage models: from probing attacks
+to noisy leakage. In: Nguyen, P.Q., Oswald, E. (eds.) EUROCRYPT 2014. LNCS,
+vol. 8441, pp. 423–440. Springer, Heidelberg (2014). https://doi.org/10.1007/978-
+3-642-55220-5 24
+38. Duc, A., Faust, S., Standaert, F.-X.: Making masking security proofs concrete. In:
+Oswald, E., Fischlin, M. (eds.) EUROCRYPT 2015. LNCS, vol. 9056, pp. 401–429.
+Springer, Heidelberg (2015). https://doi.org/10.1007/978-3-662-46800-5 16
+39. Duval, S., Leurent, G.: MDS matrices with lightweight Circuits. IACR Trans. Sym-
+metric Cryptol. 2018(2), 48–78 (2018)
+40. Dziembowski, S., Faust, S.: Leakage-resilient cryptography from the inner-product
+extractor. In: Lee, D.H., Wang, X. (eds.) ASIACRYPT 2011. LNCS, vol. 7073, pp.
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+217
+702–721. Springer, Heidelberg (2011). https://doi.org/10.1007/978-3-642-25385-
+0 38
+41. Dziembowski, S., Faust, S., Sk´orski, M.: Optimal ampliﬁcation of noisy leakages.
+In: Kushilevitz, E., Malkin, T. (eds.) TCC 2016. LNCS, vol. 9563, pp. 291–318.
+Springer, Heidelberg (2016). https://doi.org/10.1007/978-3-662-49099-0 11
+42. Fumaroli, G., Martinelli, A., Prouﬀ, E., Rivain, M.: Aﬃne masking against higher-
+order side channel analysis. In: Biryukov, A., Gong, G., Stinson, D.R. (eds.) SAC
+2010. LNCS, vol. 6544, pp. 262–280. Springer, Heidelberg (2011). https://doi.org/
+10.1007/978-3-642-19574-7 18
+43. Goli´c, J.D., Tymen, C.: Multiplicative masking and power analysis of AES. In:
+Kaliski, B.S., Ko¸c, K., Paar, C. (eds.) CHES 2002. LNCS, vol. 2523, pp. 198–212.
+Springer, Heidelberg (2003). https://doi.org/10.1007/3-540-36400-5 16
+44. Goudarzi, D., Rivain, M.: How fast can higher-order masking be in software? In:
+Coron, J.-S., Nielsen, J.B. (eds.) EUROCRYPT 2017. LNCS, vol. 10210, pp. 567–
+597. Springer, Cham (2017). https://doi.org/10.1007/978-3-319-56620-7 20
+45. Grassi, L.: On generalizations of the Lai-Massey scheme. Cryptology ePrint
+Archive, Paper 2022/1245 (2022). https://eprint.iacr.org/2022/1245
+46. Keller, N., Rosemarin, A.: Mind the middle layer: the HADES design strategy
+revisited. In: Canteaut, A., Standaert, F.-X. (eds.) EUROCRYPT 2021. LNCS,
+vol. 12697, pp. 35–63. Springer, Cham (2021). https://doi.org/10.1007/978-3-030-
+77886-6 2
+47. Grassi, L., Masure, L., M´eaux, P., Moos, T., Standaert, F.-X.: Generalized feistel
+ciphers for eﬃcient prime ﬁeld masking - full version. Cryptology ePrint Archive
+(2024)
+48. Grassi, L., Rechberger, C., Rønjom, S.: Subspace trail cryptanalysis and its appli-
+cations to AES. IACR Trans. Symmetric Cryptol. 2016(2)
+49. Gross, H., Mangard, S., Korak, T.: An eﬃcient side-channel protected AES imple-
+mentation with arbitrary protection order. In: Handschuh, H. (ed.) CT-RSA 2017.
+LNCS, vol. 10159, pp. 95–112. Springer, Cham (2017). https://doi.org/10.1007/
+978-3-319-52153-4 6
+50. Grosso, V., Leurent, G., Standaert, F.-X., Varıcı, K.: LS-Designs: Bitslice encryp-
+tion for eﬃcient masked software implementations. In: Cid, C., Rechberger, C.
+(eds.) FSE 2014. LNCS, vol. 8540, pp. 18–37. Springer, Heidelberg (2015). https://
+doi.org/10.1007/978-3-662-46706-0 2
+51. Guo, J., Peyrin, T., Poschmann, A., Robshaw, M.: The LED block cipher. In:
+Preneel, B., Takagi, T. (eds.) CHES 2011. LNCS, vol. 6917, pp. 326–341. Springer,
+Heidelberg (2011). https://doi.org/10.1007/978-3-642-23951-9 22
+52. Hoang, V.T., Rogaway, P.: On generalized Feistel networks. In: Rabin, T. (ed.)
+CRYPTO 2010. LNCS, vol. 6223, pp. 613–630. Springer, Heidelberg (2010).
+https://doi.org/10.1007/978-3-642-14623-7 33
+53. Hong, D., et al.: HIGHT: a new block cipher suitable for low-resource device. In:
+Goubin, L., Matsui, M. (eds.) CHES 2006. LNCS, vol. 4249, pp. 46–59. Springer,
+Heidelberg (2006). https://doi.org/10.1007/11894063 4
+54. Ishai, Y., Sahai, A., Wagner, D.: Private circuits: securing hardware against prob-
+ing attacks. In: Boneh, D. (ed.) CRYPTO 2003. LNCS, vol. 2729, pp. 463–481.
+Springer, Heidelberg (2003). https://doi.org/10.1007/978-3-540-45146-4 27
+55. Jakobsen, T., Knudsen, L.R.: The interpolation attack on block ciphers. In: Biham,
+E. (ed.) FSE 1997. LNCS, vol. 1267, pp. 28–40. Springer, Heidelberg (1997).
+https://doi.org/10.1007/BFb0052332
+
+218
+L. Grassi et al.
+56. Jean, J., Nikoli´c, I., Peyrin, T.: Tweaks and keys for block ciphers: the TWEAKEY
+framework. In: Sarkar, P., Iwata, T. (eds.) ASIACRYPT 2014. LNCS, vol. 8874, pp.
+274–288. Springer, Heidelberg (2014). https://doi.org/10.1007/978-3-662-45608-
+8 15
+57. Kerckhof, S., Durvaux, F., Hocquet, C., Bol, D., Standaert, F.-X.: Towards green
+cryptography: a comparison of lightweight ciphers from the energy viewpoint.
+In: Prouﬀ, E., Schaumont, P. (eds.) CHES 2012. LNCS, vol. 7428, pp. 390–407.
+Springer, Heidelberg (2012). https://doi.org/10.1007/978-3-642-33027-8 23
+58. Knichel, D., Moradi, A., M¨uller, N., Sasdrich, P.: Automated generation of masked
+hardware. IACR Trans. Cryptogr. Hardw. Embed. Syst. 2022(1)
+59. Knudsen, L.R.: Truncated and higher order diﬀerentials. In: Preneel, B. (ed.) FSE
+1994. LNCS, vol. 1008, pp. 196–211. Springer, Heidelberg (1995). https://doi.org/
+10.1007/3-540-60590-8 16
+60. Kranz, T., Leander, G., Stoﬀelen, K., Wiemer, F.: Shorter Linear Straight-Line
+Programs for MDS Matrices. IACR Trans. Symmetric Cryptol. 2017(4), 188–211
+(2017)
+61. Lai, X.: Higher Order Derivatives and Diﬀerential Cryptanalysis. In: Blahut, R.E.,
+Costello, D.J., Maurer, U., Mittelholzer, T. (eds.) Two Sides of One Tapestry,
+Communications and Cryptography, vol. 276. Springer, Boston, (1994). https://
+doi.org/10.1007/978-1-4615-2694-0 23
+62. Lai, X., Massey, J.L.: A proposal for a new block encryption standard. In: Damg˚ard,
+I.B. (ed.) EUROCRYPT 1990. LNCS, vol. 473, pp. 389–404. Springer, Heidelberg
+(1991). https://doi.org/10.1007/3-540-46877-3 35
+63. Leander, G., Abdelraheem, M.A., AlKhzaimi, H., Zenner, E.: A cryptanalysis of
+PRINTcipher: the invariant subspace attack. In: Rogaway, P. (ed.) CRYPTO
+2011. LNCS, vol. 6841, pp. 206–221. Springer, Heidelberg (2011). https://doi.org/
+10.1007/978-3-642-22792-9 12
+64. Leander, G., Minaud, B., Rønjom, S.: A generic approach to invariant subspace
+attacks: cryptanalysis of robin, iSCREAM and Zorro. In: Oswald, E., Fischlin, M.
+(eds.) EUROCRYPT 2015. LNCS, vol. 9056, pp. 254–283. Springer, Heidelberg
+(2015). https://doi.org/10.1007/978-3-662-46800-5 11
+65. Li, C., Wang, Q.: Design of lightweight linear diﬀusion layers from near-MDS
+matrices. IACR Trans. Symmetric Cryptol. 2017(1)
+66. Liu, M., Sim, S.M.: Lightweight MDS generalized circulant matrices. In: Peyrin,
+T. (ed.) FSE 2016. LNCS, vol. 9783, pp. 101–120. Springer, Heidelberg (2016).
+https://doi.org/10.1007/978-3-662-52993-5 6
+67. Masure, L., M´eaux, P., Moos, T., Standaert, F.-X.: Eﬀective and eﬃcient masking
+with low noise using small-mersenne-prime ciphers. In: Hazay, C., Stam, M. (eds.)
+EUROCRYPT,vol. 14007. Springer, Cham (2023). https://doi.org/10.1007/978-3-
+031-30634-1 20
+68. Matsui, M.: Linear cryptanalysis method for DES cipher. In: Helleseth, T. (ed.)
+EUROCRYPT 1993. LNCS, vol. 765, pp. 386–397. Springer, Heidelberg (1994).
+https://doi.org/10.1007/3-540-48285-7 33
+69. Moos, T., Moradi, A., Richter, B.: Static power side-channel analysis of a threshold
+implementation prototype chip. In: Design, Automation & Test in Europe Confer-
+ence & Exhibition (DATE), 2017 (2017)
+70. Nagpal, R., Gigerl, B., Primas, R., Mangard, S.: Riding the waves towards generic
+single-cycle masking in hardware. IACR Trans. Cryptogr. Hardw. Embed. Syst.
+4(2022)
+
+Generalized Feistel Ciphers for Eﬃcient Prime Field Masking
+219
+71. Nyberg, K.: Generalized feistel networks. In: Kim, K., Matsumoto, T. (eds.) ASI-
+ACRYPT 1996. LNCS, vol. 1163, pp. 91–104. Springer, Heidelberg (1996). https://
+doi.org/10.1007/BFb0034838
+72. Del Pozo, S.M., Standaert, F.-X., Kamel, D., Moradi, A.: Side-channel attacks
+from static power: when should we care?. In: DATE (2015)
+73. Prouﬀ, E., Rivain, M.: Masking against side-channel attacks: a formal security
+proof. In: Johansson, T., Nguyen, P.Q. (eds.) EUROCRYPT 2013. LNCS, vol.
+7881, pp. 142–159. Springer, Heidelberg (2013). https://doi.org/10.1007/978-3-
+642-38348-9 9
+74. Roche, T., Prouﬀ, E.: Higher-order glitch free implementation of the AES using
+secure multi-party computation protocols - extended version. J. Cryptogr. Eng.
+2(2), 111–127 (2012). https://doi.org/10.1007/s13389-012-0033-3
+75. Sasdrich, P., Bilgin, B., Hutter, M., Marson, M.E.: Low-latency hardware masking
+with application to AES. IACR Trans. Cryptogr. Hardw. Embed. Syst. 2020(2),
+300–326 (2020)
+76. Schindler, W., Lemke, K., Paar, C.: A stochastic model for diﬀerential side channel
+cryptanalysis. In: Rao, J.R., Sunar, B. (eds.) CHES 2005. LNCS, vol. 3659, pp.
+30–46. Springer, Heidelberg (2005). https://doi.org/10.1007/11545262 3
+77. Schneider, T., Moradi, A.: Leakage assessment methodology. In: G¨uneysu, T.,
+Handschuh, H. (eds.) CHES 2015. LNCS, vol. 9293, pp. 495–513. Springer, Heidel-
+berg (2015). https://doi.org/10.1007/978-3-662-48324-4 25
+78. Shen, Y., Peters, T., Standaert, F.-X., Cassiers, G., Verhamme, C.: Triplex: an
+eﬃcient and one-pass leakage-resistant mode of operation. IACR Trans. Cryptogr.
+Hardw. Embed. Syst. 2022(4), 135–162 (2022)
+79. Shirai, T., Shibutani, K., Akishita, T., Moriai, S., Iwata, T.: The 128-Bit Block-
+cipher CLEFIA (extended abstract). In: Biryukov, A. (ed.) FSE 2007. LNCS, vol.
+4593, pp. 181–195. Springer, Heidelberg (2007). https://doi.org/10.1007/978-3-
+540-74619-5 12
+80. Standaert, F.-X.: How (not) to use Welch’s T-Test in side-channel security evalu-
+ations. In: Bilgin, B., Fischer, J.-B. (eds.) CARDIS 2018. LNCS, vol. 11389, pp.
+65–79. Springer, Cham (2019). https://doi.org/10.1007/978-3-030-15462-2 5
+81. Standaert, F.-X., Archambeau, C.: Using subspace-based template attacks to com-
+pare and combine power and electromagnetic information leakages. In: Oswald, E.,
+Rohatgi, P. (eds.) CHES 2008. LNCS, vol. 5154, pp. 411–425. Springer, Heidelberg
+(2008). https://doi.org/10.1007/978-3-540-85053-3 26
+82. Standaert, F.-X., Piret, G., Rouvroy, G., Quisquater, J.-J.: FPGA implementations
+of the ICEBERG block cipher. Integration 40(1), 20–27 (2007)
+83. Suzaki, T., Minematsu, K.: Improving the generalized feistel. In: Hong, S., Iwata,
+T. (eds.) FSE 2010. LNCS, vol. 6147, pp. 19–39. Springer, Heidelberg (2010).
+https://doi.org/10.1007/978-3-642-13858-4 2
+84. Vaudenay, S.: On the Lai-Massey scheme. In: Lam, K.-Y., Okamoto, E., Xing, C.
+(eds.) ASIACRYPT 1999. LNCS, vol. 1716, pp. 8–19. Springer, Heidelberg (1999).
+https://doi.org/10.1007/978-3-540-48000-6 2
+85. Verhamme, C., Cassiers, G., Standaert, F.X.: In: Buhan, I., Schneider, T. (eds.)
+Analyzing the Leakage Resistance of the NIST’s Lightweight Crypto Competition’s
+Finalists. CARDIS,vol. 13820. Springer, Cham (2022). https://doi.org/10.1007/
+978-3-031-25319-5 15
+86. Veyrat-Charvillon, N., G´erard, B., Standaert, F.-X.: Soft analytical side-channel
+attacks. In: Sarkar, P., Iwata, T. (eds.) ASIACRYPT 2014. LNCS, vol. 8873, pp.
+282–296. Springer, Heidelberg (2014). https://doi.org/10.1007/978-3-662-45611-
+8 15
+
+220
+L. Grassi et al.
+87. Wagner, D.: The boomerang attack. In: Knudsen, L. (ed.) FSE 1999. LNCS, vol.
+1636, pp. 156–170. Springer, Heidelberg (1999). https://doi.org/10.1007/3-540-
+48519-8 12
+88. Wang, L., Guo, J., Zhang, G., Zhao, J., Gu, D.: How to build fully secure tweak-
+able Blockciphers from classical Blockciphers. In: Cheon, J.H., Takagi, T. (eds.)
+ASIACRYPT 2016. LNCS, vol. 10031, pp. 455–483. Springer, Heidelberg (2016).
+https://doi.org/10.1007/978-3-662-53887-6 17
+89. Wang, W., M´eaux, P., Cassiers, G., Standaert, F.-X.: Eﬃcient and private com-
+putations with code-based masking. IACR Trans. Cryptogr. Hardw. Embed. Syst.
+2020(2), 128–171 (2020)
+90. Zheng, Y., Matsumoto, T., Imai, H.: On the construction of block ciphers prov-
+ably secure and not relying on any unproved hypotheses. In: Brassard, G. (ed.)
+CRYPTO 1989. LNCS, vol. 435, pp. 461–480. Springer, New York (1990). https://
+doi.org/10.1007/0-387-34805-0 42
+

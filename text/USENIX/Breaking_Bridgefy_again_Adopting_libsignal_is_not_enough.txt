@@ -1,0 +1,2096 @@
+This paper is included in the Proceedings of the 
+31st USENIX Security Symposium.
+August 10–12, 2022 • Boston, MA, USA
+978-1-939133-31-1
+Open access to the Proceedings of the 
+31st USENIX Security Symposium is 
+sponsored by USENIX.
+Breaking Bridgefy, again: 
+Adopting libsignal is not enough
+Martin R. Albrecht, Information Security Group, Royal Holloway, 
+University of London; Raphael Eikenberg and Kenneth G. Paterson, 
+Applied Cryptography Group, ETH Zurich
+https://www.usenix.org/conference/usenixsecurity22/presentation/albrecht
+
+Breaking Bridgefy, again:
+Adopting libsignal is not enough
+Martin R. Albrecht
+Information Security Group,
+Royal Holloway, University of London
+Raphael Eikenberg
+Applied Cryptography Group,
+ETH Zurich
+Kenneth G. Paterson
+Applied Cryptography Group,
+ETH Zurich
+Abstract
+Bridgefy is a messaging application that uses Bluetooth-based
+mesh networking. Its developers and others have advertised
+it for use in areas witnessing large-scale protests involving
+confrontations between protesters and state agents. In August
+2020, a security analysis reported severe vulnerabilities that
+invalidated Bridgefy’s claims of conﬁdentiality, authentica-
+tion, and resilience. In response, the developers adopted the
+Signal protocol and then continued to advertise their applica-
+tion as being suitable for use by higher-risk users.
+In this work, we analyse the security of the revised Bridgefy
+messenger and SDK and invalidate its security claims. One
+attack (targeting the messenger) enables an adversary to com-
+promise the conﬁdentiality of private messages by exploiting a
+time-of-check to time-of-use (TOCTOU) issue, side-stepping
+Signal’s guarantees. The other attack (targeting the SDK)
+allows an adversary to recover broadcast messages without
+knowing the network-wide shared encryption key.
+We also found that the changes deployed in response to the
+August 2020 analysis failed to remedy the previously reported
+vulnerabilities. In particular, we show that (i) the protocol
+persisted to be susceptible to an active attacker-in-the-middle,
+(ii) an adversary continued to be able to impersonate other
+users in the broadcast channel of the Bridgefy messenger,
+(iii) the DoS attack using a decompression bomb was still
+applicable, albeit in a limited form, and that (iv) the privacy
+issues of Bridgefy remained largely unresolved.
+1
+Introduction
+The messaging space has witnessed a rapid transformation
+since the Snowden revelations in 2013. Since then, almost
+all major messaging services enabled at least some form of
+(optional) end-to-end encryption. In particular, many such
+offerings, e.g. the Signal app itself, WhatsApp, Google’s Allo,
+Skype – adopted the Signal protocol [18]. This move, to
+strengthen privacy in light of reports of state surveillance,
+expresses a general ethos in the messaging app community to
+provide tools that can be relied upon and enable higher-risk
+users, such as human rights activists [23]. However, the same
+work [23] and follow up works [2, 37] also indicate a discon-
+nect between what messaging app designers design for and
+the needs of higher-risk users.
+A visible expression of this disconnect is Bridgefy, a mobile
+application and software development kit (SDK) that provides
+communication capabilities over Bluetooth. It allows users to
+form a mesh network to exchange messages without requiring
+a connection to the Internet. Its primary target applications
+are large events such as sports events where existing Internet
+infrastructure may not be able to cope with demand. Yet, its
+developers and others both report on the uptake of the ap-
+plication and also actively promote the application for use
+in protests and other situations of social unrest, where mo-
+bile telecommunications and Internet connections may be
+unreliable: during the 2019 Hong Kong protests [41, 57],
+during protests in Iran, Lebanon and Zimbabwe [32, 59], for
+Black Lives Matter protests in the US [58], after the military
+coup in Myanmar [13, 63, 64], during farmers’ protests in
+India [62], for anti-lockdown protests in the US [60], after
+the Taliban retook Afghanistan [67]. According to the de-
+velopers, the mobile application has been downloaded more
+than 6.5 million times [61], often from areas witnessing con-
+frontations between protesters and agents of the state.
+While the actual adoption of Bridgefy by protesters and
+activists seems to be somewhat limited [2], the spikes in down-
+loads from areas witnessing conﬂicts suggest a need or desire
+for robust peer-to-peer ofﬂine communication; a need not
+catered to by more mainstream messaging platforms.1
+On the other hand, the security track record of the Bridgefy
+app – so heavily advertised to higher-risk users – is less than
+stellar. In particular, in August 2020, a security analysis [1]
+demonstrated: (i) An adversary could track Bridgefy users,
+and produce a social graph of the mesh network, (ii) mes-
+sages of users could be spoofed due to the lack of authentica-
+tion mechanisms, (iii) an active attacker in the middle could
+1Bridgefy is the market leader in the space of end-user mesh mes-
+saging [1].
+USENIX Association
+31st USENIX Security Symposium    269
+
+impersonate two users to each other and eavesdrop on the
+communication, (iv) private messages were susceptible to a
+padding oracle attack, and (v) a carefully crafted message
+could either take down the entire network or prevent two par-
+ticular users from communicating. In response, in October
+2020, Bridgefy announced an overhaul of their security archi-
+tecture [10] to address all these ﬁndings. The key technical
+change implemented by Bridgefy was the adoption of the Sig-
+nal protocol [27]. In addition, all trafﬁc – including metadata
+– is now also encrypted with a network-wide symmetric key
+using AES in ECB mode. Since then, no public independ-
+ent security assessment of the Bridgefy application has been
+conducted, but Bridgefy started advertising their application
+again for higher-risk scenarios [11].
+It is thus a natural and pressing question to ask whether
+these upgrades – adopting the Signal protocol and adding a
+layer of deterministic encryption – succeed in establishing
+a secure communication system. Indeed, we may ask more
+generally if ‘we use Signal’ is a sufﬁcient, well, signal to
+indicate the security of applications produced by development
+teams inexperienced in defensive coding.
+Contributions. In this work, we report severe, practically ex-
+ploitable vulnerabilities in the Bridgefy messenger in version
+3.1.3 and the SDK in version 2.0.2, i.e. versions featuring the
+above mentioned security enhancements.
+In Section 3, we give an overview of the inner workings
+of Bridgefy in version 3.1.3. We provide an outline of the
+application architecture and the Bridgefy protocol.
+For completeness, in Section 4 we ﬁrst re-evaluate the vul-
+nerabilities previously reported in [1] and ﬁnd that they re-
+main mostly entirely or insufﬁciently ﬁxed. Speciﬁcally, for
+Bridgefy 3.1.3 we show: (1) The protocol persisted to be
+susceptible to an attacker in the middle. While the attack is
+now limited to the ﬁrst exchange between a pair of users –
+it abuses the ‘trust on ﬁrst use’ (TOFU) assumption – we
+note that Bridgefy offers users no option to verify the public
+keys of their contacts. (2) Broadcast messages continued to
+be unauthenticated; an adversary can exploit this to mount
+impersonation attacks. (3) The Denial of Service (DoS) attack
+remained applicable, albeit in a limited form. (4) Bridgefy
+users could still be tracked.
+We then present two new attacks on Bridgefy. Our attack
+in Section 5 breaks the conﬁdentiality of Bridgefy’s Signal-
+secured private chats by associating an attacker’s public key
+with the session between two targets. It exploits a difference
+in time that arises between queuing a message and fetching
+the encryption key and, as such, is a time-of-check to time-
+of-use (TOCTOU) vulnerability. We stress that our attack
+does not threaten the security of the Signal protocol itself but
+exclusively the way that libsignal is integrated into Bridgefy.
+Our attack in Section 6 gives an adversary the ability to
+recover broadcast messages from a small set of possible plain-
+texts in the setting where the network-wide shared key is
+unknown to the adversary. While in case of the Bridgefy ap-
+plication itself we may assume the attacker knows this key,
+this assumption would not hold for a third party application
+utilising the Bridgefy SDK. It works because compression pre-
+cedes encryption of packets. While it is well-known that this
+choice can leak some information about plaintexts [40, 47], it
+is non-trivial to exploit the leakage in the context of Bridgefy
+and to perform plaintext recovery.
+In Section 7, we discuss our results. In particular, we dis-
+cuss how our work highlights that secure ofﬂine messaging is
+still unsolved in practice.
+Disclosure. We notiﬁed the Bridgefy developers about our
+ﬁndings from Section 4 and the attack from Section 5 on
+2021-05-21. The developers conﬁrmed receipt some days
+later and described their plans to remediate the vulnerabilities.
+On 2021-07-21, the developers informed us they would not
+publicly disclose the problems we reported, explaining they
+feared putting their users’ safety at risk if they did. However,
+they promised to remove the term ‘end-to-end’ from all of
+their social media and blog posts.
+In version 3.1.7 of the Bridgefy messenger, released on
+2021-08-14, our exploit for the TOCTOU attack stopped work-
+ing. Up until this point in time, the attack still worked as de-
+scribed here. We found that Bridgefy also deployed changes
+regarding the DoS attack from Section 4.3. The Bridgefy
+SDK was not updated at all throughout the course of our re-
+search, and continues to be vulnerable to the attacks described
+herein. However, a note was added to its website some time
+in 2021 indicating that the SDK was deprecated, contained
+‘notable security vulnerabilities’ and was due to be replaced
+by December 2021 [12].
+We disclosed the attacks on Bridgefy’s broadcast encryp-
+tion mechanism on 2021-09-07. On 2021-09-09, the de-
+velopers informed us that they were aware of the vulnerability
+and were actively working on ﬁxing it. They did not inform
+us of how they planned to do so.
+We asked the developers to comment on the remediation
+progress on 2022-02-04. At the time of ﬁnalising this paper,
+two weeks later, the state of the remediation remained unclear.
+2
+Preliminaries
+In this section, we introduce the concepts and technologies
+that the following sections build on. We also give an overview
+of related work in the broader context.
+Terminology. We ﬁrst brieﬂy introduce non-standard terms
+we use consistently in this paper.
+• Messages and packets. When a user types a string s and
+sends it to another user over the mesh network, the string
+passes by multiple nodes, i.e. it is transmitted over multiple
+hops. Obviously, s does not change over these hops but the
+bytes transmitted between the nodes on the way change be-
+cause the metadata of the packets differ. In other words, the
+270    31st USENIX Security Symposium
+USENIX Association
+
+user triggers a single message, which propagates in the net-
+work with the help of multiple packets.
+• Payload content. When a user types a string s and sends it
+to another user, we call s the payload content of the message
+(and of the packets). This is to avoid confusion with the ter-
+minology used by Bridgefy: a payload in Bridgefy is a map of
+key-value pairs within a packet. The details of packet layouts
+are discussed in Section 3.5.
+• Simulation and attack samples. In the broadcast message
+recovery attack, we have a simulation phase and an attack
+phase. Both require us to gather packet lengths to form a
+sample. The respective outputs will be a simulation sample
+and an attack sample.
+Bluetooth Low Energy (BLE). Bluetooth Low Energy is a
+widely adopted wireless technology used in mobile and In-
+ternet of Things (IoT) devices. Ryan [48] conducted an early
+analysis of BLE security, demonstrating packet injection and
+breaking the key exchange as part of the encryption. Sivak-
+umaran and Blasco [53] showed that pairing protected BLE
+data needs to be secured on the application layer in Android to
+prevent co-located applications on the device from accessing
+it. Wu, Nan, Kumar, Tian, Bianchi, Payer, and Xu [68] found
+a weakness in the BLE speciﬁcation that enabled an attacker
+to impersonate a device to another. Zhang, Weng, Dey, Jin,
+Lin, and Fu [69] reported practically exploitable downgrade
+attacks on BLE.
+Mesh Networks. A mesh network is based on a network topo-
+logy where devices connect without following a hierarchical
+structure [17]: ‘In mesh topologies, network nodes are dir-
+ectly and dynamically connected in a non-hierarchical way
+[. .. ]. Moreover, mesh networks do not require an infrastruc-
+ture, since they dynamically self-organise and conﬁgure them-
+selves.’ A mesh topology is especially useful when the goal
+is to build a decentralised network: devices route incoming
+trafﬁc to their neighbours, such that each packet eventually
+reaches its destination. Popular protocols that use a mesh to-
+pology are Bluetooth Mesh [50], Zigbee [3], and Thread [36].
+Note that Bluetooth Mesh is a dedicated technology that is
+not to be confused with mesh networks where the links are
+normal Bluetooth LE connections.
+Signal and libsignal. Signal [52] is a messaging applica-
+tion that enables end-to-end encrypted communication. Its
+security guarantees stem from the Signal cryptographic pro-
+tocol, which was developed progressively as part of the Signal
+application. The protocol was subject to an extensive study
+by Cohn-Gordon, Cremers, Dowling, Garratt, and Stebila [18],
+who analysed the key agreement and the ratcheting mechan-
+ism of Signal. Their analysis revealed no signiﬁcant ﬂaws in
+its design.
+The Signal protocol is available as an ofﬁcial implement-
+ation in Java called libsignal-protocol-java [51] under
+the GNU General Public License v3.0. The library can be
+used to provide end-to-end encrypted communication for ap-
+plications other than Signal.
+In the interface of the library, endpoints are identiﬁed by
+a SignalProtocolAddress. This type is a combination of a
+name that identiﬁes the user and a deviceId that is unique
+for each device a user owns. Before two endpoints can com-
+municate, one party needs to retrieve a ‘prekey bundle’ (PKB)
+of the other and use it to send an initial message. Here we
+may assume that the PKB acts like a public key: it contains
+all information to establish a secure session between the two
+parties, but it needs to be authentic. If an adversary was able to
+change the PKB for their own, the session would not be secure.
+In the Signal messenger, the server is hence trusted until the
+two communicating parties manually verify the authenticity
+of their session.
+Time-of-Check to Time-of-Use (TOCTOU). Time-of-Check
+to Time-of-Use vulnerabilities [65, pg. 157] exploit a change
+in state between when a certain property is checked and
+used [56]. Bishop and Dilger [6] were among the ﬁrst to
+describe this class of vulnerabilities and studied them in the
+context of ﬁle systems.
+MessagePack. MessagePack [24] is a data format for object
+serialisation, similar to JSON, YAML, and TOML [8, 22, 44].
+It supports various primitive types like integers, booleans,
+ﬂoats, strings, arrays, and maps. A key difference between
+MessagePack and its counterparts is that the format is binary,
+allowing for more compactness.
+The speciﬁcation of MessagePack is available on Git-
+Hub [30]. In general, an object is converted by sequentially
+lining up the respective formats for all values of an object.
+For example, given an object made of two boolean values, the
+serialised form is a concatenation of the formats for these two
+boolean values.
+The format of a value is deﬁned in the speciﬁcation. For
+instance, the boolean values false and true convert to the
+ﬁxed bytes 0xc2 and 0xc3 respectively. Values with variable
+length convert into formats that contain not just the value
+but also their size. A string with a length of up to 31 bytes
+converts into a leading byte b, followed by the ASCII en-
+coding of the string. b is a composition of form 101XXXXX,
+where the placeholder XXXXX refers to the size of the string.
+For example, the string ‘id’ converts to the bytes 0xa2 0x69
+0x64. Here b = a216 = 101000102, followed by the ASCII
+representations of ‘i’ and ‘d’.
+Maps – which map from keys to values – work similar to
+strings. They also start with a byte b, for maps with up to 15
+elements of form 1000XXXX, where XXXX now refers to the
+number n of key-value pairs. b is followed by 2n formats: odd
+elements are keys, and even elements are the value for the
+preceding key.
+USENIX Association
+31st USENIX Security Symposium    271
+
+Magic Bytes
+(2B)
+Flags
+(1B)
+Modification Time (4B)
+Extra
+Flags
+(1B)
+OS
+(1B)
+CRC-32 (4B)
+Uncompressed Size (4B)
+DEFLATE data (variable size)
+Compression
+Method (1B)
+Figure 1: The ﬁle format of gzip. The ‘Flags’ ﬁeld has inﬂu-
+ence over the structure of the ﬁle format after the ‘Operating
+System’ ﬁeld. Here we assume that no ﬂags are set.
+Compression in Cryptography. The use of compression in
+combination with an encryption scheme was shown to be able
+to affect the security of that system through a side-channel
+in Kelsey [40]. Later Rizzo and Duong [47] showed with
+the CRIME attack that an attacker could recover secret web
+cookies based on a chosen-plaintext attack together with in-
+formation leakage caused by compression in SPDY and TLS.
+Similarly, the BREACH attack, reported by Prado, Harris, and
+Gluck [43], demonstrated that the idea of CRIME was also
+applicable to compression in HTTP, which was not considered
+in the efforts to mitigate CRIME. Vanhoef and Van Goethem
+[66] showed with the HEIST attack that despite all efforts
+to mitigate CRIME and BREACH, an attacker-in-the-middle
+could still derive the length of the plaintext of a response and
+use the leakage of the compression to mount a plaintext recov-
+ery attack. Around the same time, Garman, Green, Kaptchuk,
+Miers, and Rushanan [26] reported an attack against Apple
+iMessage that exploits certain properties of DEFLATE com-
+pressed data.
+Gzip [20] is a ﬁle format for lossless compressed data. In es-
+sence, it wraps DEFLATE [19] compressed data and attaches
+metadata ﬁelds around it. Figure 1 illustrates the high-level
+ﬁle format of gzip. The ﬁrst two bytes are of the ﬁxed values
+0x1f and 0x8b. Then follows a ﬁeld to indicate the algorithm
+used for compression: since only DEFLATE is deﬁned in
+gzip, this is always a byte of value 0x08. The other values of
+the header are commonly set to zero. The trailer consists of a
+CRC-32 value computed over the uncompressed data and the
+length of that data.
+DEFLATE is based on LZ77 [70] and Huffman coding [38].
+Overall, the algorithm replaces any repeating block of data
+with a reference to a previous occurrence. At the same time,
+it ranks bytes and references by occurrence and assigns them
+a code word accordingly. The compression effect, therefore,
+comes down to data deduplication at both byte and bit level.
+The DEFLATE-compressed data can consist of several
+blocks. Each block starts with a header: the ﬁrst three bits
+determine the type of the block and indicate if the block is
+the ﬁnal block of the compressed data. Depending on the
+type, blocks can either be uncompressed or use ﬁxed or dy-
+namic Huffman codes. In this work, we focus on blocks with
+dynamic Huffman codes, for which the block then contains
+information about the Huffman table used for compression.
+The rest of the data in the block is the actual compressed data
+in the form of Huffman code words.
+How this data is encoded is well-described in RFC
+1951 [19]: ‘[.. .] encoded data blocks in the “deﬂate” format
+consist of sequences of symbols drawn from three conceptu-
+ally distinct alphabets: either literal bytes, from the alphabet
+of byte values (0..255), or <length, backward distance> pairs,
+where the length is drawn from (3..258) and the distance is
+drawn from (1..32,768). In fact, the literal and length alpha-
+bets are merged into a single alphabet (0..285), where values
+0..255 represent literal bytes, the value 256 indicates end-of-
+block, and values 257..285 represent length codes (possibly in
+conjunction with extra bits following the symbol code) [. .. ]’
+As described above, a block always ends with the code
+word that represents the value 256. Since code words are
+bits of variable length, a block is not necessarily byte-aligned.
+Still, the gzip trailer must be byte-aligned, which is why the
+block is padded to the next full byte.
+Maximum Likelihood Estimation (MLE). Maximum Likeli-
+hood Estimation is a method to derive the parameter that is
+most likely to underlie the probability distribution of observed
+data. MLE has been used, e.g. by Bricout, Murphy, Paterson,
+and van der Merwe [9] and Garman, Paterson, and van der
+Merwe [25].
+We give a brief introduction to MLE. We are given a ran-
+dom sample x = (x1,x2,...,xn) where xi ∼Xi for some ran-
+dom variable Xi. We assume that the joint probability distribu-
+tion of x depends on the unknown parameter θ ∈Θ. We can
+make a ‘best guess’ ˆθ for θ based on the observation x:
+ˆθ = argmax
+θ∈Θ
+L(θ|x)
+where the likelihood L(θ|x) is deﬁned as
+L(θ|x) := Pr(x|θ) = Pr(x1 x2 ...xn|θ).
+Assuming that Xi,Xj with 1 ≤i, j ≤n and i ̸= j are pairwise
+independent, we can simplify this expression to
+L(θ|x) = Pr(x|θ) =
+n
+∏
+i=1
+Pr(xi|θ).
+Equivalently, we write:
+ˆθ = argmax
+θ∈Θ
+logL(θ|x) = argmax
+θ∈Θ
+n
+∑
+i=1
+logPr(xi|θ).
+272    31st USENIX Security Symposium
+USENIX Association
+
+Instead of determining only one best guess, we can create
+a sequence ˆΘ =
+ ˆθ1, ˆθ2,..., ˆθn
+
+of candidates, ordered by
+decreasing (log) likelihood.
+2.1
+Methodology
+We analysed the Android application in version 3.1.3 and
+the SDK in version 2.0.2, dated 2021-04-27 and 2021-02-09.
+Since both the messaging application and the SDK are closed-
+source software, it was necessary to reverse engineer them.
+We retrieved the APK by installing the Bridgefy messenger
+from Google Play [33] on our Android phone and fetching
+the ﬁle via adb [45]. While the SDK is compiled into the mes-
+saging application, it is also available separately in a public
+Maven repository [15] as an AAR ﬁle.
+Static Analysis. We decompiled Bridgefy to reconstruct Java
+source code for better readability. The APK ﬁle was directly
+decompiled using Jadx [54], but also converted into a JAR
+ﬁle using enjarify [34] for further processing. The AAR ﬁle
+was extracted to retrieve a JAR ﬁle. Both JAR ﬁles were
+then decompiled to Java source, leveraging multiple Java
+decompilers: CFR [5], Fernﬂower [39], Krakatau [35], and
+Procyon [55]. While the output was obfuscated, Bridgefy’s
+code sometimes references class and method names in debug
+messages.
+Dynamic Analysis. After manually inspecting the Java code,
+we instrumented the Bridgefy messenger with Frida [46] and
+objection [49]. This allowed us to hook into existing functions
+of the app, and thereby monitor method calls and change
+method behaviour. In particular, we could observe packets
+as they were being encrypted and decrypted. As part of this
+work, we produced several Frida scripts to extract information
+and modify the behaviour of Bridgefy. The source code of
+these scripts will be published in our public repository.2
+Simulation. Our simulations in Section 6 were performed
+on several machines. In total, these were equipped with four
+Intel(R) Xeon(R) Gold 6252 CPUs, two Intel(R) Xeon(R)
+Gold 6138 CPUs, two Intel(R) Xeon(R) E5-2690 v4 CPUs,
+and two Intel(R) Xeon(R) E5-2667 v2 CPUs.
+3
+Bridgefy Architecture
+In this section, we explain how the protocol underlying the
+Bridgefy application and SDK works, with a focus on its
+conﬁdentiality and authenticity mechanisms.
+3.1
+Overview
+Users that run an application using the Bridgefy SDK (such
+as the Bridgefy application itself) become part of a Bluetooth
+network that relays messages, i.e. they become a peer of the
+mesh network.
+2https://github.com/eikendev/breaking-bridgefy-again
+Bridgefy supports Bluetooth Low Energy (BLE) and Clas-
+sic Bluetooth, with BLE being the default mode of operation.
+Under certain conditions, messages can also be transmitted
+over the Internet, however, if a device is ofﬂine, it will natur-
+ally only communicate over Bluetooth. In this work, we focus
+exclusively on BLE-based communication.
+Messages can either be sent publicly to everyone nearby or
+to a speciﬁc user. Public messages are sent in the broadcast
+room, while private messages are sent in a private chat. A
+private chat can only be instantiated with users whose device
+has previously been within Bluetooth reach. This is done by
+clicking on the name of another user in the broadcast room.
+For private chats, the application will indicate visually
+when the other user is within Bluetooth reach. If this is the
+case, then the messages to that user will not be relayed over
+the mesh network, but sent directly to that user.
+Users are identiﬁed by a universally unique identiﬁer
+(UUID) of 128 bit called userId. This UUID is randomly
+generated on each device when the application is launched
+for the ﬁrst time. Users must also pick a display name when
+they install the app, however, it is not unique and can be ar-
+bitrarily chosen. When a new broadcast message is received,
+the display name of the sender is displayed along with the
+message.
+3.2
+Software Components
+As mentioned above, the Bridgefy application makes use of
+Bridgefy’s SDK. While the application is responsible for the
+user interface and chat management, the SDK provides the
+necessary mechanics to (i) establish trust between devices,
+(ii) encrypt and decrypt packets, and to (iii) transmit pack-
+ets via the Bluetooth functionality offered by the underlying
+operating system.
+For the SDK to work, it needs to be initialised, which hap-
+pens when the application starts. This process and the general
+use of the SDK is documented in a GitHub repository together
+with ofﬁcial sample applications [16]. Additionally, a descrip-
+tion of all exposed functionality is available in the ofﬁcial
+SDK documentation [14].
+To
+summarise,
+the
+application
+calls
+Bridgefy.initialize() of the SDK with a registra-
+tion callback and an API key. The SDK will then validate
+the API key and notify the application of the result
+via the callback. On success, the application next calls
+Bridgefy.start() with two different callbacks:
+• a message listener that is called when a new message is
+received, and
+• a state listener that is called when a connection with a
+nearby peer is established or closed.
+Finally, if
+the
+application
+wants
+to
+send
+a
+mes-
+sage,
+it
+calls
+Bridgefy.sendMessage()
+or
+Bridgefy.sendBroadcastMessage().
+Depending
+on
+USENIX Association
+31st USENIX Security Symposium    273
+
+its use case, the application can set a proﬁle for the SDK to
+control the lifetime of messages in the network.
+The SDK outsources some cryptography-related operations
+to libsignal. When instantiating a SignalProtocolAddress,
+Bridgefy sets the deviceId to 0 while using a peer’s userId
+in the addresses name ﬁeld. libsignal maintains state for all
+established sessions in a SignalProtocolStore. When a
+new PKB is received from a peer, Bridgefy instantiates a
+SessionBuilder which is supplied with the protocol store
+and the peer’s protocol address. A new session is then created
+by passing the PKB to SessionBuilder.process(). When
+the SDK needs to encrypt data using Signal for a particular
+peer, it instantiates a SessionCipher and supplies it with the
+protocol store and the peer’s protocol address. The data is
+then passed to SessionCipher.encrypt().
+3.3
+Packet Types
+Users can decide between sending broadcast messages and
+private messages. However, since private messages can either
+be sent directly to the other peer or over the mesh network,
+there are three different settings to consider:
+• A broadcast packet propagates a broadcast message from
+one peer to multiple other peers over the mesh network.
+• A multi-hop packet transmits a private message from one
+peer to another over the mesh network.
+• A one-to-one packet transmits a private message from
+one peer to another directly. Note that this setting is only
+applicable when the two peers are within Bluetooth reach.
+On the network layer, Bridgefy associates only two dif-
+ferent packet types with these settings: those that are routed
+through the mesh network, and those that are sent directly.
+The former packets are referenced as type ForwardMessage,
+while the latter are of type BleEntityContent.
+3.4
+Handshake
+When two devices get physically close enough to establish a
+Bluetooth connection, they perform a handshake (assuming
+that they have not performed a handshake previously). This
+process is handled by the SDK, meaning it is not visible to
+the application.
+In the handshake, each party generates a PKB and sends
+it to the other party. Based on the exchanged PKBs, a Signal
+session is established, enabling the parties to encrypt and
+authenticate packets.
+Assuming Alice A and Bob B come within range of one
+another for the ﬁrst time, the handshake proceeds as follows:
+A →B :
+ResponseTypeGeneral(userIdA)
+(1)
+B →A :
+ResponseTypeGeneral(userIdB)
+(2)
+A →B :
+ResponseTypeKey(PKBA)
+(3)
+B →A :
+ResponseTypeKey(PKBB)
+(4)
+Here, userIdA denotes the userId of peer A and PKBA de-
+notes the PKB generated by A. After (1), B checks if any
+Signal session has already been established for userIdA, and
+aborts the handshake if this is the case. Peer A may also abort
+the handshake after (2).
+Note that we have made some simpliﬁcations here that are
+not relevant to our analysis. For example, the packets also con-
+tain CRC checksums and version information. Further, all four
+packets of the handshake are wrapped in a BleHandshake
+packet, which itself is wrapped in a BleEntity packet.
+The handshake is not performed over the mesh network,
+but only over a direct Bluetooth connection. As a result, only
+peers that have previously met can later exchange messages
+privately over the mesh network.
+Because no further authentication is involved, the hand-
+shake follows the trust on ﬁrst use (TOFU) principle: in (3)
+and (4), the parties implicitly trust the PKB they receive. In
+contrast to messengers like Signal, users cannot verify the
+keys of peers manually, as Bridgefy’s user interface offers no
+way to do so.
+3.5
+Packet Encoding
+On the lowest layer, Bridgefy encapsulates all packets into the
+type BleEntity. Its et ﬁeld (presumably for ‘entity type’)
+indicates the type of packet it contains.
+The type ForwardPacket represents multi-hop pack-
+ets and broadcast packets. For efﬁciency, multiple ob-
+jects of type ForwardPacket are bundled into a packet
+of type
+ForwardTransaction
+on
+the
+network layer.
+Going forward and for ease of exposure, we will as-
+sume that a ForwardTransaction contains only a single
+ForwardPacket, as would be the case in a low-trafﬁc mesh
+network.
+The type ForwardPacket features ﬁelds necessary to route
+the packet through the mesh network. Among other things,
+it contains a time to live (TTL) ﬁeld named hops. This ﬁeld
+is a single byte value that decrements whenever the packet is
+forwarded by a node. The purpose of the ﬁeld is to prevent
+packets from circulating in the mesh network indeﬁnitely:
+once the value reaches 0, the packet is discarded.
+The track ﬁeld is a list that contains the CRC-32 sums of
+userIds that have been involved in the delivery of a packet.
+More precisely, its length is limited to the last n nodes, where
+n varies depending on the proﬁle of the connection.The ﬁeld
+appears unused otherwise.
+Both the ForwardPacket and the ForwardTransaction
+have their own sender ﬁeld. The former holds the userId
+of the message sender, while the latter holds the userId of
+the packet sender. The message sender originally typed the
+message into the chat window, whereas the packet sender was
+the most recent peer to relay the message. The two ﬁelds are
+equal exactly at the very ﬁrst hop of the message.
+While the overall structure of broadcast and multi-hop pack-
+ets is similar, there are important differences:
+274    31st USENIX Security Symposium
+USENIX Association
+
+1
+1..*
+ForwardPacket
++ id: UUID
++ payload: Map<String, Object>
++ sender: UUID
++ receiver: UUID
++ creation: long
++ expiration: long
++ receiver_type: int
++ hops: int
++ profile: int
++ track: List<long>
+BleEntity<T>
++ id: UUID
++ et: int
++ ct: T
+«bind»
+ForwardTransaction
++ dump: bool
++ sender: UUID
+BleEntityContent
++ id: UUID
++ payload: Map<String, Object>
+«bind»
+Figure 2: A ForwardPacket is always encapsulated in
+a ForwardTransaction, which itself is encapsulated in a
+BleEntity. A BleEntityContent is also encapsulated in a
+BleEntity.
+• The receiver_type ﬁeld is used to differentiate broadcast
+packets from multi-hop packets: the value 1 indicates a
+broadcast packet, and the value 0 a multi-hop packet.
+• Since broadcast packets do not have a designated receiver,
+they do not contain a populated receiver ﬁeld.
+• In multi-hop packets, the payload entry nm (presumably
+for ‘name’) refers to the name of the receiver, whereas in
+broadcast packets, it refers to that of the sender.
+• While a ForwardPacket containing a broadcast packet is
+serialised and encrypted as a whole, it is handled differently
+for multi-hop packets: the payload ﬁeld is removed from
+the BleEntity and processed separately. The remaining
+data in the BleEntity is considered metadata and encryp-
+ted in another way than the payload.
+Because one-to-one packets are not carried over the
+mesh network, they do not carry routing information. For
+this reason, they are encoded in the more concise packet
+type BleEntityContent. Figure 2 illustrates the relations
+between all discussed types in a UML diagram.
+The message typed by a user is referred to as ‘payload
+content’. In a ForwardPacket, the payload content is stored
+as a string under the key ct in the payload. For one-
+to-one packets, it is encoded in the payload map of the
+BleEntityContent respectively.
+3.6
+Packet Encryption
+Before a BleEntity is sent to another peer, it is (i) serial-
+ised using MessagePack, (ii) compressed using gzip, and then
+Data Category
+Metadata
+Payload
+BleHandshake
+AES-ECB
+AES-ECB
+BleEntityContent
+AES-ECB
+libsignal
+ForwardTransaction
+AES-ECB
+libsignal
+Table 1: Encryption of packets in Bridgefy by data category
+and packet type.
+(iii) encrypted. The encryption step can involve Signal encryp-
+tion in combination with AES in ECB mode with PKCS#7
+padding, or AES-ECB with PKCS#7 padding only. Table 1
+summarises which encryption method is used for the different
+packet types.
+For AES-ECB, a symmetric key is shared between all peers
+in the network. In the case of the Bridgefy messenger, an
+adversary can easily obtain this symmetric key because the
+application is public. More generally, depending on the nature
+of the threats considered – inside and outside – the shared
+symmetric key may be considered known or unknown to the
+adversary.
+Signal encryption is only used for the payload ﬁeld of
+multi-hop and one-to-one packets. Broadcast packets and the
+metadata of any other packets are encrypted with AES-ECB.
+In Section 5 we will ignore this layer of encryption as the
+shared key of the Bridgefy messenger must be assumed as
+known to the adversary: it can be recovered using dynamic
+instrumentation. We then treat it in Section 6 and Appendix A.
+Remark 1 Previous versions of Bridgefy implemented a cus-
+tom scheme based on RSA in place of the Signal protocol.
+With Bridgefy’s adoption of the Signal protocol in place of
+RSA, the padding oracle attack reported in [1] is no longer
+applicable.
+3.7
+Devices and Sessions
+In the Bridgefy SDK, the DeviceManager is responsible for
+maintaining a list of nearby Bluetooth devices. Each device
+is associated with a session, which itself is managed by a
+SessionManager. Since the co-existence of devices and ses-
+sions appears arbitrary, we will in the following refer to ses-
+sions only.
+During the handshake, a userId is received from the other
+peer and saved in the corresponding session. When the SDK is
+instructed to send a message to a userId, it looks for a session
+associated with that userId. The message is then queued in
+the TransactionManager together with the session. Once
+Android requests more Bluetooth data to send, the SDK pops
+the queued message, encrypts it for the userId saved in the
+session, and dispatches it.
+When a Bluetooth packet is received, the SDK looks up
+the correct session based on the remote Bluetooth address.
+After assembling and decrypting the packet, it is passed to a
+generic message handler.
+USENIX Association
+31st USENIX Security Symposium    275
+
+4
+Re-evaluation of Previous Attacks
+As outlined in Section 1, several vulnerabilities described
+in [1] remain unﬁxed. We discuss these here in more detail.
+4.1
+Active Attacker-in-the-middle (MITM)
+Due to Bridgefy’s architecture, any PKB received from a
+new peer is inherently trusted, following the TOFU principle.
+That implies that Bridgefy is vulnerable to a MITM attack
+similar to the one reported in [1]. However, with the adoption
+of libsignal, the conditions necessary to perform the attack
+have changed slightly: Mallory now needs to perform the
+handshake with Bob before Alice does, whereas in earlier
+versions of Bridgefy this was not required.
+The updated attack proceeds as follows: Assume that Alice
+and Bob have not met before. Mallory performs a handshake
+with each of Alice and Bob and impersonates them to one
+another. Any message then sent from one party is then relayed
+by Mallory to the other party.
+If Mallory tries to perform the attack after Bob has already
+run a handshake with Alice, the following would happen:
+Mallory would try to impersonate Alice by performing a full
+handshake with Bob, using Alice’s userId but Mallory’s own
+PKB. When the SDK tries to store Mallory’s PKB under
+Alice’s userId, libsignal would throw an exception since Alice
+has already established a Signal session with Bob and so a
+PKB is already present under Alice’s userId.
+Note that Alice and Bob will never be able to conﬁrm if
+they are directly exchanging messages or if they are instead
+subject to a MITM attack. This is because, in contrast to
+popular messaging applications like Signal, Bridgefy does
+not provide any mechanism to allow users to verify the keys
+of other peers manually.
+4.2
+Impersonation in the Broadcast Chat
+An adversary can forge arbitrary broadcast messages. The
+adversary can send messages under the name of any userId
+and freely choose a payload content and display name. The
+reason for this is the lack of authentication for broadcast
+messages.
+We implemented a proof of concept for this attack to verify
+it. We found, however, that the app permanently saves the
+display name of other peers based on their userId. Any peer
+that once received a message from Alice will remember her
+display name and permanently associate it with her userId.
+When Mallory sends a message using Alice’s userId but with
+a different display name, other peers will still show Alice’s
+real display name for this message.
+4.3
+Denial of Service (DoS)
+We conﬁrmed that Bridgefy remains vulnerable to a ZIP bomb
+attack as reported in [1]. This attack exploits that all packets
+are decompressed using gzip after decryption. An adversary
+can inject a speciﬁcally crafted packet that decompresses
+Assemble
+Decompress
+and Decrypt
+Relay to
+Network
+Process
+Figure 3: Since metadata is encrypted and compressed, a peer
+needs to decompress a packet before it can tell the type of
+message it received.
+to more bytes than are available in the memory of a target.
+The target’s app will ﬁrst freeze and become unresponsive,
+and eventually crash. That allows Mallory to prevent speciﬁc
+devices from participating in the mesh network.
+With its overhaul, Bridgefy now encrypts all metadata with
+the shared key. That makes it necessary for a peer to decom-
+press a packet before being able to determine what type of
+message was received, as illustrated in Figure 3. Given the
+new ﬂow to process incoming packets, the attack reported
+in [1] – where only a single message can shut down the entire
+network – no longer works, as it requires peers to forward
+mesh packets before decompression.
+However, this vulnerability can be used to interfere with
+the correct functioning of the mesh network by shutting down
+several parts of the network. Speciﬁcally, all the peers that
+are one hop from the adversarially controlled peers can be
+taken ofﬂine. Given that resilience is a key requirement for
+Bridgefy’s adoption in higher-risk environments, this attack
+invalidates one of Bridgefy’s most central appeals.
+4.4
+Building a Social Graph
+As reported in [1], Bridgefy previously transmitted the
+sender and receiver ﬁelds of multi-hop packets in plaintext.
+These are now encrypted under the shared network key. Thus,
+an adversary in the mesh network spanned by the Bridgefy
+messenger remains able to learn who is privately communic-
+ating with whom.
+Using the track ﬁeld of a ForwardPacket, an adversary
+can determine what nodes helped to deliver a packet. That
+permits building a model of the psychical topology of the
+mesh network. An adversary could also use this to trace back
+the location of a peer that repeatedly sends messages or relays
+such of other peers.
+4.5
+Historical Proximity Tracing
+Bridgefy announced that they now protect against the histor-
+ical proximity tracing method reported in [1]. However, our
+tests show that the attack is still possible: a full handshake is
+performed when two devices have not been near each other
+before, while only a partial handshake is performed otherwise.
+An adversary can leverage this, e.g. to learn if a peer was
+physically present at a protest. Given that the timing and the
+approximate size of the handshake packets are known to the
+276    31st USENIX Security Symposium
+USENIX Association
+
+adversary, the attack is even possible without knowledge of
+the shared symmetric key.
+5
+Breaking Conﬁdentiality of One-to-One
+Messages
+We identiﬁed a TOCTOU vulnerability in the SDK that can
+be leveraged to read private messages between two users of
+the Bridgefy application.
+For simplicity, we assume that the communicating parties
+are not directly connected via Bluetooth. While this assump-
+tion is not strictly necessary, it makes the exploitation of this
+vulnerability easier.
+Accompanying the textual description of the attack that
+follows, the packet ﬂow used in the attack is illustrated in
+Figure 4. The numbering on the very left of the illustration
+matches the numbering in the individual steps in the following
+paragraphs.
+Assume a setting where Alice and Bob’s devices have
+already performed a handshake and have exchanged messages
+(e.g. M0 in Figure 4). Bob’s device then goes out of range of
+Alice’s so that the Bluetooth connection is terminated (step 1
+in Figure 4). If Alice’s device was to now send a message
+to Bob’s device, it would send it into the mesh network, as
+Bob’s device is no longer a directly connected peer.
+Next, Mallory performs a full handshake with Alice’s
+device so that Alice’s device registers Mallory’s PKB (step 2
+in Figure 4). Until this point, Mallory behaves normally as
+any honest peer would.
+Mallory again sends the ﬁrst packet of the handshake, this
+time using Bob’s userId in place of Mallory’s own (step 3
+in Figure 4). No mechanism in Bridgefy prevents Mallory’s
+message from being processed. Alice’s device will now asso-
+ciate the established session with Bob. In particular, Alice’s
+device will queue any subsequent packets intended for Bob
+in this session.
+Because Mallory initiated a new handshake using Bob’s
+userId, Alice’s device will indicate to Alice that Bob’s device
+is in range. Suppose then Alice types a message intended for
+Bob (M1 in Figure 4). The SDK looks for any active session
+where the userId equals that of Bob’s device as per our de-
+scription in Section 3.7 (step 4 in Figure 4). Since Mallory
+provided the userId of Bob’s device in its second handshake,
+Alice’s session with Mallory yields a match. Hence, the mes-
+sage is queued in the TransactionManager for the session
+with Mallory. If the packet was dispatched at this point, the
+packet would be encrypted for Bob (this is because libsignal
+also uses the userId of the session to decide which key to
+use in the encryption). So Mallory would not be able to read
+it. However, instead of being dispatched, the packet is only
+queued.
+Now, Mallory sends the ﬁrst packet of the handshake for
+a third time, using Mallory’s own userId (step 5 in Figure 4).
+Mallory
+Bob
+Alice
+disconnect
+decryption successful
+decryption successful
+1
+2
+3
+4
+5
+Figure 4: The packet ﬂow of our TOCTOU attack on Bridgefy.
+Alice sends a message to Bob twice: the ﬁrst message M0 is
+sent to Bob only, but Mallory can decrypt the second message
+M1, even though it was intended for Bob.
+The userId of the session from the perspective of Alice’s
+device now equals that of Mallory again. When the SDK on
+Alice’s phone is asked for more data to transmit via Bluetooth,
+the packet is encrypted by Signal for Mallory and dispatched
+(again, libsignal uses the session’s userId to decide which key
+to use in the encryption).
+The above attack exploits a race condition: because Mallory
+sends the userId of Bob’s device in its second handshake,
+Alice thinks she has a session with Bob. If she types a message
+for Bob, this message is then queued in a session with Mallory.
+But Mallory switches the userId back to its own userId in the
+third handshake so that when the message is dequeued and the
+libsignal encryption is performed, it is done using Mallory’s
+public key.
+Remark 2 If no proper Signal session was established in
+the beginning, switching back to Mallory’s real userId would
+require a full 2-round-trip handshake. Given that this attack
+exploits a race condition, it is hence important for Mallory
+to initiate an honest handshake before proceeding with the
+attack.
+We implemented a proof of concept for this attack to con-
+ﬁrm that it works. We will publish the code in our public
+repository.3 We sent 100 messages from Alice’s phone, 56 of
+which were received and decrypted by Mallory in our tests.
+The fact that not all messages were received is explained
+3https://github.com/eikendev/breaking-bridgefy-again
+USENIX Association
+31st USENIX Security Symposium    277
+
+by the attack exploiting a race condition. What plays into
+the hands of Mallory is that Bridgefy reschedules a private
+message if it cannot be delivered to the receiver. If the SDK
+looks up a session matching the receiver’s userId while the
+session is associated with Mallory’s userId, it will be resched-
+uled. Still, packets can get ‘lost’ for Mallory when the packet
+is encrypted right after Mallory switches the userId back to
+Bob’s.
+Note that when Mallory intercepts a message, Bob will
+not receive it: Alice encrypts the packet for Mallory only,
+while Mallory cannot re-encrypt it for Bob in Alice’s name.
+If Mallory was to encrypt and send a message to Bob while
+using Alice’s userId during the handshake, Bob would fail to
+decrypt the packet. Instead, if Mallory used their real userId,
+Bob would process the packet before Mallory gets the chance
+to change the userId of the session again. In other words, the
+attack breaks conﬁdentiality but not authentication.
+6
+Attacks on Broadcast Messages
+Attacks on the conﬁdentiality of broadcast messages are not
+an issue for the Bridgefy messenger, since the encryption key
+is assumed to be public knowledge anyway. However, they
+are relevant for other applications that use the Bridgefy SDK,
+where a per-application encryption key is used.
+6.1
+Distinguishing Attack
+In Appendix A, we give a simple and efﬁcient distinguisher
+that formally breaks the IND-CPA security of Bridgefy’s
+broadcast message feature. That such an attack is possible
+seems intuitive given that the feature relies on AES-ECB,
+a deterministic encryption scheme. However, this intuition
+is not correct because, if we let the adversary only choose
+the payload content, then the scheme used is no longer de-
+terministic (since broadcast packets also contain unpredict-
+able ﬁelds such as the userIds, the sender’s display name,
+and timestamps). Moreover these ﬁelds interact with the per-
+packet compression to produce variable plaintext inputs to
+AES-ECB, even if the payload contents are known. For this
+reason, our distinguisher breaking IND-CPA security does
+not rely on having controlled input blocks to AES-ECB but
+instead exploits Bridgefy’s compression of the full plaintext
+before AES-ECB is applied. It is obtained by selecting in the
+IND-CPA security game pairs of equal-length payload con-
+tents: one payload content that compresses well and one that
+does not. AES-ECB aligns data on 16-byte block boundaries
+through padding, but we choose the payload contents so that
+the difference in compressed packet lengths is (sometimes)
+larger than one block in size.
+6.2
+Plaintext Recovery Attack
+This compression-based side channel points the way to our
+plaintext recovery attack, which is the focus of the remainder
+of this section. We assume from here on that the broad-
+cast message payload contents comes from a known set
+P = {p1, p2,..., pn} of possible payload contents. Addition-
+ally, we assume a network where a large number of devices
+participate, the senders of the broadcast messages have user-
+names of equal length, all broadcast messages contain the
+same payload content π (where π ∈P), and the adversary
+can capture M different packets containing payload content
+π at each of the ﬁrst H ≤50 hops. The attack we describe
+allows an adversary A to recover π given the set of M · H
+captured packets, without knowing the shared key.
+In our attacks, we will work with different choices of P.
+We deﬁne
+Pb = {pi|32 ≤i ≤126} and Pℓ,n
+w = {p1, p2,..., pn},
+where pi ∈Pb is a string that only consists of the single byte
+i – Pb contains all printable ASCII characters that a user can
+type in the chat window of Bridgefy – and where pi ∈Pℓ,n
+w
+is the i-the most commonly used password of length ℓin
+the rockyou password list [28] – a list of 32.6 million real-
+world passwords commonly used for password cracking. The
+payload contents in P8,256
+w
+, for instance, account for 2.2 %
+of all passwords in the whole rockyou data set. We do not
+anticipate Bridgefy users to be likely to broadcast passwords,
+but we use P8,256
+w
+as a proxy for a set of likely broadcast
+messages. It could be replaced by a set of common English
+words, for example.
+6.2.1
+Core Idea. Our attack ﬁrst simulates the broadcast
+of a large number of packets for each p ∈P, gathering stat-
+istics on the lengths of packets. The idea is that different
+values p ∈P will produce different length distributions due
+to varying amounts of compression (and with the amount of
+compression possibly depending on the hop count and other
+header ﬁelds). This simulation step is done ofﬂine. Then, in
+the second step, we take the set of M · H captured packets,
+speciﬁcally, their lengths and use MLE to compute the like-
+lihood of each candidate p ∈P, given the captured set of
+lengths. This allows us to rank all the candidates p ∈P in
+order of likelihood.
+6.2.2
+Simulation Phase. The adversary runs its simulation
+to collect the lengths of a total of N ·|P|·H packets. It builds
+|P| sets Xp of vectors, one set for each p ∈P. Each set Xp
+contains N vectors, and each vector has length H. A given vec-
+tor x ∈Xp represents the sequence of packet lengths observed
+for a packet transporting payload content p being transmitted
+across H hops of the network. The lengths are all multiples
+of the AES block size of 16 bytes.
+From this data, the adversary can derive an empirical value
+for θℓ|h,p, this being the probability of observing a certain
+length ℓgiven it is observed at hop h for a packet with payload
+content p. Note that at hop h the hops ﬁeld has the value
+50−h+1.
+278    31st USENIX Security Symposium
+USENIX Association
+
+Since this simulation phase is done ofﬂine, and the data
+reduction required to compute all the values θℓ|h,p can be done
+during the simulation itself, we can use large values of N and
+hence obtain accurate approximations to the corresponding
+distributions.
+6.2.3
+Attack Phase. The adversary observes M broadcast
+messages at each of the ﬁrst H ≤50 hops, yielding M · H
+packets. We assume all contain the same payload content
+π ∈P, where π is the target of the attack.
+From the lengths ℓi,h of these M ·H packets, the adversary
+computes counts cℓ,h, where cℓ,h is the number of observed
+packets having length ℓat hop h. Abstractly, we let l denote
+the collection of observed lengths and c the collection of
+observed counts.
+Now we deploy MLE. For each choice of p ∈P, the ad-
+versary computes L(p|l), the likelihood that p is the correct
+payload content given the collection of observed lengths, and
+ﬁnds:
+ˆπ = argmax
+p∈P L(p|l).
+If ˆπ = π, then the adversary is able to successfully recover
+the payload content of the broadcast message. The adversary
+can also output a list of the top candidates by likelihood. It
+remains to describe how to compute L(p|l). Recall that
+L(p|l) := Pr(l|p) =
+M
+∏
+i=1
+Pr(ℓi,1 ℓi,2 ...ℓi,H|p).
+We make the simplifying assumption that, in a given broad-
+cast, the observed packet lengths are independent across the
+hops and depend only on the payload content p.4 This enables
+us to write:
+L(p|l) =
+M
+∏
+i=1
+Pr(ℓi,1|p)·Pr(ℓi,2|p)·...·Pr(ℓi,H|p)
+=
+M
+∏
+i=1
+H
+∏
+h=1
+Pr(ℓi,h|p) = ∏
+ℓ
+H
+∏
+h=1
+θ
+cℓ,h
+ℓ|h,p
+where, in the last step, we work with non-zero counts cℓ,h
+instead of individual packet lengths ℓi,h. In practice, we work
+with the logarithm of the above expression, and compute
+ˆπ = argmax
+p∈P
+logL(p|l) = argmax
+p∈P ∑
+ℓ
+H
+∑
+h=1
+cℓ,h log(θℓ|h,p).
+Remark 3 If a certain packet length ℓis never observed for
+a pair (p,h) during the simulation phase, but that length
+appears in the attack sample, then we have θℓ|h,p = 0 and
+then log(θℓ|h,p) will be undeﬁned. In this case, we will use
+4Instead of assuming that the observed packet lengths are independent
+across the hops, we could make a ﬁrst order Markov assumption concerning
+the lengths. Because in our experimental results this only gave a negligible
+improvement, we here continue to assume independent lengths only.
+smoothing to set θℓ|h,p to a reasonable value. From the many
+smoothing methods available, we use Laplace smoothing [42,
+pg. 260] in our experiments. This is comparatively unsoph-
+isticated but easy to implement. We also experimented with
+Good-Turing smoothing, but it did not signiﬁcantly improve
+our results.
+6.3
+Attacking Single-Byte Payloads
+We ﬁrst discuss the instance of the attack where P = Pb,
+meaning that π is a single byte. A realistic attack scenario for
+this would be when a protest leader surveys participants with
+the options to respond ‘y’ for ‘yes’ and ‘n’ for ‘no’. If a signi-
+ﬁcant majority answers with either option, an adversary could
+determine the answer of that majority with high probability.5
+We now provide a possible mechanism to try to explain
+why our MLE attack based on compressed packet lengths
+can succeed in this case. The hops ﬁeld in a ForwardPacket
+indicates the time to live (TTL) of the packet. For each hop
+in the network, this ﬁeld decreases by 1, and the packet is
+eventually dropped before the value reaches 0. Because the
+ﬁxed starting value 50 is used for all broadcast packets, the
+exact value of the ﬁeld at each hop is known. When the hops
+ﬁeld matches the byte value of π we can hope that a small
+amount of extra compression will be obtained, and the encryp-
+ted packet may end up being one block shorter than average.
+Figure 5 shows the MessagePack-encoded hops ﬁeld of a
+packet at the ﬁrst hop, and its payload content. Because the
+ﬁelds do not share any surrounding bytes, the LZ77 compres-
+sion alone cannot cause a change in the compressed packet
+length, but the Huffman coding can: in packets where the
+payload content π matches the hops ﬁeld, we observed exper-
+imentally that the respective Huffman symbol is on average
+represented using 1 bit less than when they do not match. The
+root cause for this is the dynamic Huffman table in gzip, where
+more frequent symbols are assigned shorter code words.
+The DEFLATE data is padded to a full byte, meaning that,
+in roughly 1 in 8 cases the single bit difference causes the
+gzip output to be one byte shorter when π matches the hops
+ﬁeld than when it does not. Because the AES block size is 16
+bytes, in a further fraction of 1 in 16 cases, this byte difference
+propagates through the AES-ECB layer and shows up as a
+packet that is one block shorter when π matches the hops
+ﬁeld than when it does not.
+Our MLE attack, which separates the packets by hop count,
+and which empirically estimates the distributions of packet
+lengths as a function of hop count and payload content, auto-
+matically makes use of any small signal arising through a com-
+pression leak of the type described above. In reality, based on
+experiments with single-byte payloads, the actual behaviour
+of the compression is signiﬁcantly more complex. Neverthe-
+5Our attack assumption was that all broadcast payload contents π are
+identical. This would not hold in the given scenario, but the minority answers
+can be regarded as noise in the likelihood computations.
+USENIX Association
+31st USENIX Security Symposium    279
+
+A4
+68
+6F
+70
+73
+32
+A7
+70
+72
+6F
+66
+69
+6C
+65
+marker
+marker
+hops value
+"profile"
+"hops"
+A2
+63
+74
+A1
+32
+A2
+6D
+74
+marker
+payload
+marker
+marker
+"ct"
+"mt"
+...
+Figure 5: The hops ﬁeld and the payload content in a MessagePack-serialised packet. All values are represented in hexadecimal,
+meaning this packet’s hops value is 50.
+less, the MLE attack still does improve plaintext prediction
+over random guessing, as we show in Section 6.5 below.
+6.4
+Equal-Length Payloads
+We now discuss the case where P = Pℓ,n
+w . In our experi-
+ments, we take ℓ= 8 and n = 256, implying that π is 8 bytes
+in length, so our attack will be trying to recover an 8-byte
+message from a set of 256 possibilities. We also look at
+P = PX,256
+w
+, where we consider payload contents of mixed
+lengths. In the real world, when peers repeatedly share a mes-
+sage π with each other through the broadcast functionality, an
+adversary interested in this message could leverage the attack
+to recover π.
+As two examples, P8,256
+w
+contains the strings ‘11111111’
+and ‘princess’. For the former, the effects of compression
+are easily visible in packet lengths because the string itself
+contains duplicate data. For the latter, the compression yields
+a signal because parts of the string can also appear in the
+metadata. As we will see in our experimental results, the
+signal is strong enough to give the MLE attack an advantage
+over random guessing.
+6.5
+Results
+We implemented a proof of concept simulation for the attack
+to conﬁrm that the compression leak is sensitive enough to
+provide statistically signiﬁcant results. We perform the attack
+with N = 220, and with different H and M, using Laplace
+smoothing to account for lengths not encountered during the
+simulation.
+We ran the attack for each of Pb, P8,256
+w
+, and PX,256
+w
+.
+For each such set P, we ran the attack using each π ∈P
+as a target, performing n = 26 attacks per target to remove
+noise. In each such run, we created a ranking of all possible
+candidates from P ordered by their log likelihoods. Before
+we present our results, we deﬁne the rank of an attack run.
+Deﬁnition 1 Let π ∈P be the payload content used to gen-
+erate a sample in an attack run. We call the rank of that attack
+run the index of π within the ordered ranking of all possible
+candidates from P.
+So, for example, if the rank is 1, then the attack output the
+correct π as having the highest likelihood, if the rank is 2, then
+the attack output the correct π as having the second highest
+likelihood, etc.
+Let rπ,i be the rank of the i-th run for payload content π.
+We denote
+¯rπ = 1
+n
+n
+∑
+i=1
+rπ,i
+as the average rank over all runs for the payload content π,
+and
+¯rP =
+1
+|P| ∑
+π∈P
+¯rπ
+as the average rank over all runs for all payload contents in
+P. To measure the overall accuracy of our attack, we look at
+the relative frequency of ranks among all measured payload
+contents. In particular, we are interested in the percentage of
+attack runs where the rank is less or equal to R, for increasing
+values of R. When randomly guessing π, we expect this rela-
+tion to be linear – for example, half of the attacks would have
+a rank below the average value and the other half above. The
+plots in Figure 6 then highlight what difference our attack
+makes in comparison to random guessing.
+Finally, we evaluate how the parameters H and M affect
+the accuracy of the attack. For this, we run simulations and
+attacks with various values for these parameters, while ﬁxing
+N = 220 (in the simulation phase). Figure 7 shows the average
+rank across all payload contents for several combinations of
+parameters.
+Our results demonstrate that the attack outperforms random
+guessing by a signiﬁcant margin. As a point of comparison,
+Pb is of size 95, so random guessing would result in an
+average rank of 47.5, whereas the attack achieves average
+ranks well below that. We note that increasing H (the number
+of hops over which packets are observed) leads to a better
+performance of the attack, as does increasing M (the number
+of packets available at each hop).
+Remark 4 Assuming an a priori non-uniform distribution on
+P is known, we can replace MLE by Maximum A Posteriori
+(MAP) estimation. This uses the a priori distribution to weight
+the candidates when computing likelihoods, resulting in a
+more powerful attack.
+280    31st USENIX Security Symposium
+USENIX Association
+
+10
+20
+30
+40
+50
+60
+70
+80
+90
+100
+0
+0.2
+0.4
+0.6
+0.8
+1
+10
+20
+30
+40
+50
+60
+70
+80
+90
+100
+0
+0.2
+0.4
+0.6
+0.8
+1
+Threshold R
+Frequency of ranks < R
+Random
+π ∈Pb
+32
+64
+96
+128
+160
+192
+224
+256
+0
+0.2
+0.4
+0.6
+0.8
+1
+32
+64
+96
+128
+160
+192
+224
+256
+0
+0.2
+0.4
+0.6
+0.8
+1
+Threshold R
+Frequency of ranks < R
+Random
+π ∈P8,256
+w
+π ∈PX,256
+w
+Figure 6: Cumulative frequency histogram of ranks, comparing our attack against random guessing for different P. The plots
+show the portion of ranks less than R for H = 2, N = 220 and M = 28.
+6
+8
+10
+12
+14
+16
+18
+1
+10
+20
+30
+6
+8
+10
+12
+14
+16
+18
+1
+10
+20
+30
+log2 M
+¯r
+H = 21
+H = 22
+H = 24
+(a) π ∈Pb
+6
+8
+10
+12
+14
+16
+18
+1
+20
+40
+60
+80
+6
+8
+10
+12
+14
+16
+18
+1
+20
+40
+60
+80
+log2 M
+H = 21
+H = 22
+H = 24
+(b) π ∈P8,256
+w
+6
+8
+10
+12
+14
+16
+18
+1
+20
+40
+60
+6
+8
+10
+12
+14
+16
+18
+1
+20
+40
+60
+log2 M
+H = 21
+H = 22
+H = 24
+(c) π ∈PX,256
+w
+Figure 7: Average rank ¯r for different (M,H).
+7
+Discussion
+We gave a practical attack which enables an attacker to read
+private messages sent in the Bridgefy messenger because of an
+improper integration of the Signal protocol. Indeed, the most
+restricting requirement is physical presence: an adversary
+must be in sufﬁciently close proximity to the target to establish
+a direct Bluetooth connection. This does not pose an obstacle
+in a protest, where an adversary can disguise themselves as a
+protester. This highlights the dangers of ‘bolting on’ security
+to an otherwise unchanged design and suggests the need to
+carefully redesign Bridgefy to integrate tightly and fully its
+security mechanisms, here provided by the Signal protocol.
+We also gave an attack to recover plaintexts of broadcast
+messages without knowing the shared encryption key. This
+attack is only relevant to the Bridgefy SDK but not to the
+Bridgefy application and its users, where this shared key can
+be assumed to be known to the adversary, as mentioned earlier.
+The attack is enabled by the decision to perform compression
+before encryption. This exposes information about the under-
+lying data based on the output length. Our attack assumes a
+small space of possible plaintexts. This is reasonable in many
+contexts. For example, in a protest setting, a small group of
+protest leaders [4] may issue typical messages to the group.
+We illustrated the attack by recovering plaintext from a small
+set of possible passwords. Preventing compression oracle
+attacks is a known problem in the literature. The natural solu-
+tion is to remove compression and to introduce an appropriate
+randomised padding mechanism to prevent length-based at-
+tacks. However, this needs to be done carefully so as to avoid
+trafﬁc analysis attacks, cf. [21], and such an approach would
+reduce Bluetooth performance while enhancing security.
+The privacy issues of Bridgefy remain largely unresolved.
+While sender and receiver identities are no longer transmitted
+in plaintext, any peer in the mesh can decrypt the relevant
+ﬁelds. In the case of the Bridgefy messenger, the userIds of
+sender and receiver hence continue to be publicly visible. An
+adversary can leverage this to build communication graphs
+and thereby identify protest leaders. Moreover, an adversary
+could use the track ﬁeld of a ForwardPacket to approxim-
+ate the physical location of a peer in the network. It remains
+an open research question how (ﬂooding based) mesh net-
+working can efﬁciently provide sender and receiver privacy
+even against passive adversaries.
+Bridgefy’s decision to adopt the Signal protocol to replace
+its previous home-grown RSA-based solution – heeding the
+often-repeated ‘don’t roll your own crypto’ advice – is to
+USENIX Association
+31st USENIX Security Symposium    281
+
+be applauded. Yet, our ability to still mount practical attacks
+against Bridgefy’s ﬂagship application highlights that this
+common mantra is insufﬁcient. What else do we expect inex-
+perienced developers to do other than call out to a third-party
+cryptographic library when faced with the task of securing
+their application? That is, while progress has been made in
+simplifying cryptographic APIs, the task of cryptographically
+securing an application is still non-trivial. Exploring whether
+this is inherent, i.e. whether a certain defensive development
+mindset and training will remain required, or not, is a fas-
+cinating and pressing question for usable, developer-friendly
+cryptography and security.
+Overall, we note that Bridgefy’s track record on security
+contrasts with the fact that it continues to be advertised to
+higher-risk users. Ours is the second work within a year to
+present signiﬁcant and practically exploitable security vul-
+nerabilities in Bridgefy’s ﬂagship application. Moreover, the
+long response time and lack of transparency of the develop-
+ment team when responding to reports of security vulnerab-
+ilities suggest a team inexperienced with handling security-
+critical issues. Yet, this track record does not seem to impact
+Bridgefy’s popularity among those who offer advice on how
+to stay connected in face of government-mandated Internet
+shutdowns, as discussed in the introduction. This highlights
+that there is, seemingly, no good alternative to Bridgefy,6
+i.e. that the problem of secure ofﬂine messaging remains
+unsolved in practice.
+Acknowledgements
+The work of Albrecht was supported by the EPSRC grants
+EP/S020330/1, EP/P009417/1, EP/L018543/1. The work of
+Paterson was supported in part by a gift from VMware.
+References
+[1] Martin R. Albrecht, Jorge Blasco, Rikke Bjerg Jensen,
+and Lenka Mareková. Mesh messaging in large-scale
+protests: Breaking Bridgefy. In Kenneth G. Paterson,
+editor, Topics in Cryptology – CT-RSA 2021, volume
+12704 of Lecture Notes in Computer Science, pages 375–
+398. Springer, Heidelberg, May 2021. doi: 10.1007/97
+8-3-030-75539-3_16.
+[2] Martin R. Albrecht, Jorge Blasco, Rikke Bjerg Jensen,
+and Lenka Mareková. Collective information security
+in large-scale urban protests: the case of Hong Kong. In
+30th USENIX Security Symposium (USENIX Security
+’21). USENIX Association, 2021.
+[3] Connectivity Standards Alliance. https://zigbeeal
+liance.org/solution/zigbee/, no date.
+6See [1] for a survey on mesh messaging.
+[4] Evronia Azer, G Harindranath, and Yingqin Zheng. Re-
+visiting leadership in information and communication
+technology (ICT)-enabled activism: a study of Egypt’s
+grassroots human rights groups. New Media & Society,
+21(5):1141–1169, 2019.
+[5] Lee Benﬁeld. https://www.benf.org/other/cfr/,
+no date.
+[6] Matt Bishop and Mike Dilger. Checking for race condi-
+tions in ﬁle accesses. Computing Systems, 9(2):131–152,
+Mar. 1996. ISSN 0895-6340.
+[7] Dan Boneh and Victor Shoup. A Graduate Course in
+Applied Cryptography. 2020. URL https://toc.cr
+yptobook.us/.
+[8] Tim Bray. The JavaScript Object Notation (JSON) Data
+Interchange Format. RFC 8259, December 2017. URL
+https://rfc-editor.org/rfc/rfc8259.txt.
+[9] Rémi Bricout, Sean Murphy, Kenneth G. Paterson, and
+Thyla van der Merwe. Analysing and exploiting the
+mantin biases in RC4. Des. Codes Cryptogr., 86(4):
+743–770, 2018. doi: 10.1007/s10623-017-0355-3. URL
+https://doi.org/10.1007/s10623-017-0355-3.
+[10] Bridgefy.
+Press release – major security updates at
+bridgefy! https://bridgefy.me/press-release-
+major-security-updates-at-bridgefy/, October
+2020.
+[11] Bridgefy. https://twitter.com/bridgefy/statu
+s/1356603238674538496, February 2021. https:
+//web.archive.org/web/20210514094051/https:
+//twitter.com/bridgefy/status/135660323867
+4538496.
+[12] Bridgefy. Bridgefy SDK (legacy). https://bridgefy
+.me/sdk-legacy/, 2021. https://web.archive.or
+g/web/20220204151515/https://bridgefy.me/sd
+k-legacy/.
+[13] Bridgefy. https://twitter.com/bridgefy/statu
+s/1359200080700600322, February 2021. https:
+//web.archive.org/web/20210209175856/https:
+//twitter.com/bridgefy/status/135920008070
+0600322.
+[14] Bridgefy. https://www.bridgefy.me/docs/javad
+oc/, no date.
+[15] Bridgefy. http://104.196.228.98:8081/artifac
+tory/libs-release-local/, no date.
+[16] Bridgefy. https://github.com/bridgefy/bridge
+fy-android-sdk-sample, no date.
+282    31st USENIX Security Symposium
+USENIX Association
+
+[17] Antonio Cilfone, Luca Davoli, Laura Belli, and Gi-
+anluigi Ferrari.
+Wireless mesh networking: An iot-
+oriented perspective survey on relevant technologies.
+Future Internet, 11(4), 2019. ISSN 1999-5903. doi:
+10.3390/ﬁ11040099. URL https://www.mdpi.com/1
+999-5903/11/4/99.
+[18] Katriel Cohn-Gordon, Cas Cremers, Benjamin Dowling,
+Luke Garratt, and Douglas Stebila. A formal security
+analysis of the signal messaging protocol. J. Cryptol.,
+33(4):1914–1983, 2020. doi: 10.1007/s00145-020-093
+60-1. URL https://doi.org/10.1007/s00145-0
+20-09360-1.
+[19] L. Peter Deutsch. DEFLATE Compressed Data Format
+Speciﬁcation version 1.3. RFC 1951, May 1996. URL
+https://rfc-editor.org/rfc/rfc1951.txt.
+[20] L. Peter Deutsch. GZIP ﬁle format speciﬁcation version
+4.3. RFC 1952, May 1996. URL https://rfc-edit
+or.org/rfc/rfc1952.txt.
+[21] Kevin P. Dyer, Scott E. Coull, Thomas Ristenpart, and
+Thomas Shrimpton. Peek-a-boo, i still see you: Why
+efﬁcient trafﬁc analysis countermeasures fail. In 2012
+IEEE Symposium on Security and Privacy, pages 332–
+346. IEEE Computer Society Press, May 2012. doi:
+10.1109/SP.2012.28.
+[22] Ingy döt Net. https://yaml.org/, no date.
+[23] Ksenia Ermoshina, Harry Halpin, and Francesca Mu-
+siani. Can johnny build a protocol? co-ordinating de-
+veloper and user intentions for privacy-enhanced secure
+messaging protocols. In European Workshop on Usable
+Security, 2017.
+[24] Sadayuki Furuhashi. https://msgpack.org/, no
+date.
+[25] Christina Garman, Kenneth G. Paterson, and Thyla van
+der Merwe. Attacks only get better: Password recov-
+ery attacks against RC4 in TLS. In Jaeyeon Jung and
+Thorsten Holz, editors, USENIX Security 2015: 24th
+USENIX Security Symposium, pages 113–128. USENIX
+Association, August 2015.
+[26] Christina Garman, Matthew Green, Gabriel Kaptchuk,
+Ian Miers, and Michael Rushanan. Dancing on the lip of
+the volcano: Chosen ciphertext attacks on apple iMes-
+sage.
+In Thorsten Holz and Stefan Savage, editors,
+USENIX Security 2016: 25th USENIX Security Sym-
+posium, pages 655–672. USENIX Association, August
+2016.
+[27] GitHub – Bridgefy. https://github.com/bridgef
+y/bridgefy-android-sdk-sample/blob/56ad2ac
+c7c8893cb2ba53f0aa5839b867ebea446/CHANGELO
+G.md, no date.
+[28] GitHub – danielmiessler. https://github.com/dan
+ielmiessler/SecLists/blob/master/Passwords
+/Leaked-Databases/rockyou-withcount.txt.ta
+r.gz, no date.
+[29] GitHub – msgpack. https://github.com/msgpack
+/msgpack-java, no date.
+[30] GitHub – msgpack. https://github.com/msgpack
+/msgpack/blob/master/spec.md, no date.
+[31] GitHub – vmihailenco. https://github.com/vmiha
+ilenco/msgpack/, no date.
+[32] Dan Goodin. Bridgefy, the messenger promoted for
+mass protests, is a privacy disaster. Ars Technica, https:
+//arstechnica.com/features/2020/08/bridgef
+y, August 2020.
+[33] Google. https://play.google.com/store/apps/d
+etails?id=me.bridgefy.main, no date.
+[34] Robert Grosse. https://github.com/Storyyeller
+/enjarify, no date.
+[35] Robert Grosse. https://github.com/Storyyeller
+/Krakatau, no date.
+[36] Thread Group. https://www.threadgroup.org/, no
+date.
+[37] Harry Halpin, Ksenia Ermoshina, and Francesca Mus-
+iani. Co-ordinating developers and high-risk users of
+privacy-enhanced secure messaging protocols. In Cas
+Cremers and Anja Lehmann, editors, Security Standard-
+isation Research - 4th International Conference, SSR
+2018, Darmstadt, Germany, November 26-27, 2018, Pro-
+ceedings, volume 11322 of Lecture Notes in Computer
+Science, pages 56–75. Springer, 2018. doi: 10.1007/97
+8-3-030-04762-7\_4. URL https://doi.org/10.1
+007/978-3-030-04762-7_4.
+[38] David A. Huffman. A method for the construction of
+minimum-redundancy codes. Proceedings of the IRE,
+40(9):1098–1101, 1952. doi: 10.1109/JRPROC.1952.
+273898.
+[39] JetBrains. https://github.com/JetBrains/intel
+lij-community/tree/master/plugins/java-dec
+ompiler/engine, no date.
+[40] John Kelsey. Compression and information leakage of
+plaintext. In Joan Daemen and Vincent Rijmen, editors,
+Fast Software Encryption – FSE 2002, volume 2365
+of Lecture Notes in Computer Science, pages 263–276.
+Springer, Heidelberg, February 2002. doi: 10.1007/3-
+540-45661-9_21.
+USENIX Association
+31st USENIX Security Symposium    283
+
+[41] John Koetsier. Hong Kong protestors using mesh mes-
+saging app China can’t block: Usage up 3685%. https:
+//web.archive.org/web/20200411154603/https:
+//www.forbes.com/sites/johnkoetsier/2019/0
+9/02/hong-kong-protestors-using-mesh-messa
+ging-app-china-cant-block-usage-up-3685/,
+September 2019.
+[42] Christopher D. Manning, Prabhakar Raghavan, and Hin-
+rich Schütze.
+Introduction to Information Retrieval.
+Cambridge University Press, Cambridge, UK, 2008.
+ISBN 978-0-521-86571-5. URL http://nlp.stan
+ford.edu/IR-book/information-retrieval-boo
+k.html.
+[43] Angelo Prado, Neal Harris, and Yoel Gluck. Ssl, gone
+in 30 seconds: A breach beyond crime. Black Hat USA,
+2013, 2013.
+[44] Tom Preston-Werner. https://toml.io/, no date.
+[45] The Android Open Source Project. https://develo
+per.android.com/studio/command-line/adb, no
+date.
+[46] Ole André V. Ravnås. https://frida.re/, no date.
+[47] Juliano Rizzo and Thai Duong. The crime attack. In
+Ekoparty, volume 2012, 2012.
+[48] Mike Ryan. Bluetooth: With low energy comes low
+security. In 7th USENIX Workshop on Offensive Tech-
+nologies (WOOT 13), Washington, D.C., August 2013.
+USENIX Association. URL https://www.usenix.o
+rg/conference/woot13/workshop-program/pres
+entation/ryan.
+[49] SensePost. https://github.com/sensepost/objec
+tion, no date.
+[50] Bluetooth SIG. https://www.bluetooth.com/lear
+n-about-bluetooth/recent-enhancements/mesh
+/, no date.
+[51] Signal. https://github.com/signalapp/libsign
+al-protocol-java, no date.
+[52] Signal. https://signal.org/, no date.
+[53] Pallavi Sivakumaran and Jorge Blasco. A study of the
+feasibility of co-located app attacks against BLE and a
+large-scale analysis of the current application-layer se-
+curity landscape. In Nadia Heninger and Patrick Traynor,
+editors, USENIX Security 2019: 28th USENIX Security
+Symposium, pages 1–18. USENIX Association, August
+2019.
+[54] skylot. https://github.com/skylot/jadx, no date.
+[55] Mike Strobel. https://github.com/mstrobel/pr
+ocyon, no date.
+[56] The MITRE Corporation. https://cwe.mitre.org/
+data/definitions/367.html, July 2021.
+[57] Twitter – Bridgefy. https://twitter.com/bridge
+fy/status/1168917929301348354, September 2019.
+https://web.archive.org/web/20211010115025
+/https://twitter.com/bridgefy/status/116891
+7929301348354.
+[58] Twitter – Bridgefy. https://twitter.com/brid
+gefy/status/1268015807252004864, June 2020.
+http://archive.today/uKNRm.
+[59] Twitter – Bridgefy. https://twitter.com/bridge
+fy/status/1216473058753597453, January 2020.
+http://archive.today/x1gG4.
+[60] Twitter – Bridgefy. https://twitter.com/brid
+gefy/status/1268905414248153089, June 2020.
+http://archive.today/odSbW.
+[61] Twitter – Bridgefy. https://twitter.com/bridge
+fy/status/1456292964750307330, November 2021.
+https://web.archive.org/web/20220208195010
+/https://twitter.com/bridgefy/status/145629
+2964750307330.
+[62] Twitter – Bridgefy. https://twitter.com/bridge
+fy/status/1356750830955884552, February 2021.
+https://web.archive.org/web/20210516231628
+/https://twitter.com/bridgefy/status/135675
+0830955884552.
+[63] Twitter – Bridgefy. https://twitter.com/brid
+gefy/status/1371507779299590144, March 2021.
+https://web.archive.org/web/20210514094031
+/https://twitter.com/bridgefy/status/137150
+7779299590144.
+[64] Twitter – Bridgefy. https://twitter.com/bridge
+fy/status/1356680753338318859, February 2021.
+https://web.archive.org/web/20210516231655
+/https://twitter.com/bridgefy/status/135668
+0753338318859.
+[65] Paul C. van Oorschot. Computer Security and the Inter-
+net: Tools and Jewels. Springer, Cham, 2020.
+[66] Mathy Vanhoef and Tom Van Goethem. Heist: Http en-
+crypted information can be stolen through tcp-windows.
+In Black Hat US Brieﬁngs, Las Vegas, USA, 2016.
+[67] Deutsche Welle. Afghanistan: How can messaging work
+safely in an internet shutdown? https://www.dw.c
+om/en/afghanistan-how-can-messaging-work-s
+284    31st USENIX Security Symposium
+USENIX Association
+
+afely-in-an-internet-shutdown/a-59018976,
+August 2021. https://web.archive.org/web/2021
+1008155150/https://www.dw.com/en/afghanista
+n-how-can-messaging-work-safely-in-an-inte
+rnet-shutdown/a-59018976.
+[68] Jianliang
+Wu, Yuhong
+Nan, Vireshwar
+Kumar,
+Dave (Jing) Tian, Antonio Bianchi, Mathias Payer,
+and Dongyan Xu. BLESA: Spooﬁng attacks against
+reconnections in bluetooth low energy.
+In 14th
+USENIX Workshop on Offensive Technologies (WOOT
+20). USENIX Association, August 2020.
+URL
+https://www.usenix.org/conference/woot20/p
+resentation/wu.
+[69] Yue Zhang, Jian Weng, Rajib Dey, Yier Jin, Zhiqiang
+Lin, and Xinwen Fu.
+Breaking secure pairing of
+bluetooth low energy using downgrade attacks. In Srd-
+jan Capkun and Franziska Roesner, editors, USENIX Se-
+curity 2020: 29th USENIX Security Symposium, pages
+37–54. USENIX Association, August 2020.
+[70] J. Ziv and A. Lempel. A universal algorithm for sequen-
+tial data compression. IEEE Transactions on Informa-
+tion Theory, 23(3):337–343, 1977. doi: 10.1109/TIT.19
+77.1055714.
+All links were last checked on 2022-02-13.
+A
+Broadcast Message Distinguisher
+We formalise the game IND-CPA(q) analogous to [7, Sec-
+tion 5.3] between an adversary A and a challenger C that
+acts as a Left-or-Right (LoR) oracle. In the following game,
+let KGen,Enc, and Dec be the key generation function, the
+encryption function, and the decryption function employed
+by Bridgefy respectively, and SE = (KGen,Enc,Dec) the
+symmetric encryption scheme. Note that Enc includes the
+compression using gzip, and Dec the decompression. Further,
+let ℓ(x) denote the length of string x and xy the repetition of x
+with y copies.
+Game IND-CPA(q):
+1. C generates a key K ←$KGen and a bit b ←$ {0,1}
+uniformly at random.
+2. A submits at most q queries to C. In the ith query,
+A chooses two payload contents πi,0,πi,1, such that
+B = ℓ(πi,0) = ℓ(πi,1), and submits (πi,0,πi,1) to C. C
+computes ci = EncK(πi,b) and returns ci to A.
+3. A outputs a guess ˆb ∈{0,1}.
+We denote the advantage of A in this game as
+AdvIND-CPA(q)
+SE
+(A,B) = 2·|Pr(ˆb = b)−1/2|.
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9 10 11 12 13 14
+0
+0.2
+0.4
+0.6
+0.8
+1
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9 10 11 12 13 14
+0
+0.2
+0.4
+0.6
+0.8
+1
+log2 B [byte]
+AdvIND−CPA(q)
+SE
+(A,B)
+q = 2
+q = 1
+Figure 8: The advantage of A to win the game IND-CPA(q)
+for different B.
+With q ≥2, A can submit the pair (π1,0,π1,0) in the 2nd
+query, and compare c1 = EncK(π1,b) to c2 = EncK(π1,0): A
+can infer from matching blocks in c1 and c2 that the underly-
+ing gzip data also matches, suggesting that b = 0. Note that
+because we do not assume Enc to be deterministic, c1 and c2
+do not match in every round of the game. We implemented
+this attack using a program that simulates a Bridgefy network
+with sufﬁcient accuracy but without the physical setup. We
+measure AdvIND-CPA(2)
+SE
+(A,B) for different values of B in Fig-
+ure 8 by playing the game n = 218 times each. The simulation
+conﬁrms that Bridgefy’s scheme is not IND-CPA secure.
+But Bridgefy’s scheme is even weaker: since compression
+precedes encryption, A can draw conclusions about the plain-
+text based on the ciphertext, if only the length of the plaintext
+is known. A can use this to win the game IND-CPA(1): A
+submits a single query (π0,π1) in Step 2, where π1 contains
+duplicate data, but π0 does not. In particular, we let π0 be a
+random string, while π1 is 0B, where B = ℓ(π0) = ℓ(π1).
+Since π1 is a string with duplicate data that can be com-
+pressed efﬁciently with gzip but π0 is not, we can expect that
+ℓ(EncK(π0)) > ℓ(EncK(π1)) for increasing B. The difference
+in length of the compression output propagates to the length
+of the encryption output, such that b is leaked: in Step 3, A
+outputs
+ˆb =
+(
+0,
+if ℓ(c) > ℓ(EncK′(π0))+ℓ(EncK′(π1))
+2
+1,
+otherwise.
+Here, EncK′(π0) and EncK′(π1) are not derived by making a
+query to C. Instead, A chooses an arbitrary key K′ and runs
+EncK′ locally. While K is unknown to A, an arbitrary key K′
+can be chosen since only the output length is of interest. The
+userIds, sender’s display name and timestamps used to derive
+c are also unknown to A, and hence the values used by A will
+diverge from those used by C. This introduces more noise to
+the compression length.
+As before, we measure AdvIND-CPA(1)
+SE
+(A,B) for different
+B in Figure 8 by playing the game n = 218 times each. At
+USENIX Association
+31st USENIX Security Symposium    285
+
+B = 26, A is already able to make a correct guess in each run
+of the game.
+B
+Network Simulation Considerations
+In this section, we discuss how we performed simulations
+with sufﬁcient accuracy for our attacks. We implemented
+the program ptxtrecov in Go. ptxtrecov can repeatedly
+simulate Bridgefy networks, where a single node sends a
+broadcast message to other peers.
+In the simulation phase, a large number of broadcast pack-
+ets are generated for each payload content p at each hop h.
+The lengths of these packets are then recorded in a map which
+counts how often a length is observed for p at h.
+While
+Bridgefy
+uses
+the
+ofﬁcial
+MessagePack
+library
+for
+Java
+[29], we
+used
+the
+Go
+library
+vmihailenco/msgpack [31].
+To generate data repres-
+entative for the Bridgefy application, we need to be especially
+careful in the serialisation step: MessagePack is somewhat
+ﬂexible concerning the format used to encode a type. For
+instance, we found that Bridgefy converts timestamps with
+the float64 format of MessagePack, although they could be
+converted with their dedicated timestamp extension format.
+Moreover, our Go library did not convert certain integers
+to their smallest possible format, as is intended by the
+MessagePack speciﬁcation. To account for these differences,
+the types for these ﬁelds needed to be forced using our
+library.
+The display name can have variable length, and so can the
+respective ﬁeld of a packet. Because we draw conclusions
+based on the distribution of packet lengths, we need to ensure
+that the values we choose for this ﬁeld do not cause a bias in
+the derived distributions. We decided to randomly choose the
+display names from a list composed of the 64 most common
+female and 64 most common male English names with a
+length of 5 characters.
+We used a bespoke pseudo-random generator aesrand
+based on AES in counter mode to generate all the UUIDs
+needed in packets. We designed aesrand to be seeded and
+used it carefully so as to avoid both blocking and overlapping
+sequences of outputs in our multi-threaded simulations.
+We also used aesrand to produce timestamps and time
+differences. In all experiments, we start at a constant base
+time T, given as a UNIX timestamp in microseconds. We
+can assume A to know T. The time at which a broadcast
+message is assumed to be sent (the ds ﬁeld in the payload)
+is t0 = T + ∆0, where ∆0 is a random 24 bit integer. ∆0 is
+drawn for each broadcast message individually. Note that
+using 24 bit for ∆0 allow the attack to span over more than
+4 h.
+The packet’s creation ﬁeld is calculated as t1 = t0 +∆1,
+where 4 ≤∆1 < 64. That is consistent with the behaviour of
+the Bridgefy messenger in the real world. The small delay
+occurs when the application passes the message on to the
+SDK for processing.
+At each hop, the added ﬁeld is set to the time when the
+packet is queued. The delay now reﬂects the time it takes
+to transmit the message via Bluetooth to the next hop and
+is, therefore, longer than ∆1. We calculate the ﬁeld as t′
+2 =
+t2 +∆2, where 128 ≤∆2 < 512, and t2 is the ﬁeld’s value in
+the previous step.
+286    31st USENIX Security Symposium
+USENIX Association
+

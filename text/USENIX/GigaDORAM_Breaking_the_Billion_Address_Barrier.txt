@@ -1,0 +1,1766 @@
+This paper is included in the Proceedings of the 
+32nd USENIX Security Symposium.
+August 9–11, 2023 • Anaheim, CA, USA
+978-1-939133-37-3
+Open access to the Proceedings of the 
+32nd USENIX Security Symposium 
+is sponsored by USENIX.
+GigaDORAM: Breaking the Billion Address Barrier
+Brett Falk, University of Pennsylvania; Rafail Ostrovsky, Matan Shtepel, 
+and Jacob Zhang, University of California, Los Angeles
+https://www.usenix.org/conference/usenixsecurity23/presentation/falk
+
+GigaDORAM: Breaking the Billion Address Barrier
+Brett Falk∗
+University of Pennsylvania
+Rafail Ostrovsky∗
+UCLA
+Matan Shtepel∗
+UCLA
+Jacob Zhang∗
+UCLA
+Abstract
+We design and implement GigaDORAM, a novel 3-server
+Distributed Oblivious Random Access Memory (DORAM)
+protocol. Oblivious RAM allows a client to read and write
+to memory on an untrusted server, while ensuring the server
+itself learns nothing about the client’s access pattern. Dis-
+tributed Oblivious RAM (DORAM) allows a group of servers
+to efficiently access a secret-shared array at a secret-shared
+index.
+A recent generation of DORAM implementations (e.g.
+FLORAM, DuORAM) have focused on building DORAM
+protocols based on Function Secret-Sharing (FSS). These pro-
+tocols have low communication complexity and low round
+complexity but linear computational complexity of the servers.
+Thus, they work for moderate size databases, but at a certain
+size these FSS-based protocols become computationally inef-
+ficient.
+In this work, we introduce GigaDORAM, a hierarchical-
+solution-based DORAM featuring poly-logarithmic computa-
+tion and communication, but with an over 100× reduction in
+rounds per query compared to previous hierarchical DORAM
+protocols. In our implementation, we show that for moderate
+to large databases where FSS-based solutions become com-
+putation bound, our protocol is orders of magnitude more
+efficient than the best existing DORAM protocols. When
+N = 231, our DORAM is able to perform over 700 queries per
+second.
+1
+Introduction
+To an outside observer, traditional encryption schemes can
+effectively hide the contents of a memory, yet encryption
+alone does not hide the memory locations being accessed.
+In many cases, the access pattern of a file system can leak
+sensitive information, even when the contents are encrypted.
+Oblivious Random Access Memory (ORAM), introduced by
+Goldreich and Ostrovsky [21] is a cryptographic protocol that
+∗Authors are in alphabetical order.
+allows a client to read and write from memory while ensuring
+the physical access pattern (which is potentially observable to
+someone with sufficient access to the machine) is independent
+of the virtual access pattern (the underlying data retrieved by
+the client). Thus, when memory is accessed using an ORAM
+protocol, it is mathematically provable that an observer learns
+nothing about the client’s query pattern (beyond the number
+of queries).
+Oblivious RAM was developed in a model where a sin-
+gle client wishes to store and retrieve sensitive data from an
+untrusted data store. Originally, the untrusted data store was
+conceptualized as untrusted RAM on the same machine as
+the client, but today we usually imagine a client storing and
+retrieving data from an untrusted cloud provider. In this set-
+ting, encryption can hide the data from the cloud provider,
+but ORAM is necessary to hide the access pattern1. Thus,
+ORAM provides the strongest possible guarantee – hiding
+both the data and the access pattern.
+Although ORAM was designed in the client-server setting,
+a slight variant of ORAM is also useful in the context of se-
+cure multiparty computation, where a group of servers need to
+access a secret-shared array at a secret-shared location. In this
+setting, the secret sharing hides the data, but every participat-
+ing server observes the physical access pattern. Distributed
+Oblivious RAM (DORAM) provides a method for efficiently
+accessing a secret-shared array at a secret-shared index, which
+in turn makes it possible to do secure multiparty computa-
+tion (MPC) in the RAM model (RAM-MPC). Almost all
+existing MPC protocols work in the circuit-model where the
+desired computation is first converted to an arithmetic/boolean
+circuit before being executed securely. This conversion be-
+comes costly (e.g. in the case of private database) since every
+“random-access” is replaced with an O(memorySize) “MUX
+1Note that most Searchable Symmetric Encryption (SSE) schemes allow
+a client to efficiently query encrypted data stored in an untrusted cloud,
+but they typically do not hide the access pattern from the cloud provider.
+SSE schemes also target a different model, where data payloads may be of
+drastically different size (in ORAM all entries are of size D) and queries may
+return different number of “matches” [34]
+USENIX Association
+32nd USENIX Security Symposium    3871
+
+operation.” RAM-MPC allows random-access programs to
+be executed securely without this costly conversion, which in
+turn enables much more flexible and efficient secure multi-
+party computation protocols [23,39].
+1.1
+Previous DORAMs
+The efficiency of a (D)ORAM protocol is usually mea-
+sured by the communication complexity of each query.
+Several recent DORAM protocols (e.g. [18, 32]) achieved
+(O((κ+D)log(N))) communication and computation. These
+asymptotically-efficient protocols are built using the ORAM’s
+“hierarchical solution”, introduced in [37,38], which we de-
+scribe in Section 4. The downside of these protocols is that
+they have high round complexity, requiring O(log(N)) rounds
+of communication (with large hidden constants) per query. In
+practice, network latency causes bottleneck in performance
+of these solutions.
+It has been noted that the high round complexity of
+the hierarchical solution makes it unsuitable for practical
+applications [49], so most DORAM implementations (e.g.
+[11,16,23,25,26,43,45,46,49,53]) take a different approach.
+These constructions focus on minimizing rounds while com-
+promising on either asymptotic computation or asymptotic
+communication costs. One common technique (most recently
+applied by DuORAM [45]) for creating DORAM protocols
+with low round complexity and low communication complex-
+ity is Function Secret Sharing (FSS) [10,19]. While FSS re-
+sults in low communication complexity, FSS-based protocols
+require O(N) computation, where N is a size of the database.
+Thus, protocols like DuORAM shine in high-latency, low-
+bandwidth networks at a small database size.
+By contrast, our DORAM is designed for low-latency en-
+vironments (such as of co-located servers in the same data-
+center). This design choice is present in several current de-
+ployments, such as Points of Presence (POP) of mutually
+distrustful ISP machines present in the same Data Center in
+support of BGP protocols [1,44]. These mutually mistrustful
+yet co-located machines offer a viable alternative to data clean
+rooms, which present a single point of failure (if security of
+clean room is breached). As another example, Cybernetica’s
+commercial offering “Sharemind” MPC platform is intended
+to be run on three servers in nearby data centers [9]. In these
+low-latency environments, FSS-based DORAMs quickly be-
+comes a bottleneck of performance for large values of N. We
+focus on this type of network environment because, these
+type of low-latency networks are necessary for RAM-MPC,
+which is one of the main motivations for building DORAM
+protocols in the first place.2
+2Although MPC can run in high-latency environments [47], in a high-
+latency environment MPC can only compute simple functions that would not
+benefit from a RAM-model computation.
+1.2
+Our Contributions
+1.2.1
+Protocol contributions
+In this work, we design and implement a high-performance
+DORAM protocol in the (3,1)-security model, i.e., where
+there are three semi-honest servers, and no two of them
+collude. Two effective techniques for building (D)ORAM
+protocols are “the hierarchical solution” (e.g. [4, 5, 18, 32])
+which yields (D)ORAM protocols with low communication
+complexity, but high round complexity, and FSS-based DO-
+RAMs (e.g. FLORAM and DuORAM) which have very
+low round complexity, but high computational complexity.
+In this work, we show how to reduce the round-complexity
+of the hierarchical solution and give round-efficient hierar-
+chical DORAM that scales well beyond the limits of FSS-
+based (D)ORAM protocols. Specifically, our DORAM re-
+quires O((κ2 + D)logN) communication and computation
+per query. At the cost of practically significant round-cost,
+we can easily tweak our protocol to matches the best-known
+(D)ORAM complexity [4,5,18,32] of O((κ+D)logN) (Re-
+mark 4.1). Our work is the first (D)ORAM protocol achieving
+these asymptotics to be implemented.
+1.2.2
+Code contributions
+Implementing our DORAM protocol required over 9,000 lines
+of custom C++ code. Additionally, we provide lightweight
+client implementation in Python and JavaScript, enabling
+users to to utilize DORAM in the client-server setting.
+In addition to the implementation of our DORAM protocol,
+we contribute (1) a from-scratch competitive implementation
+of the [3] general MPC framework which, in many settings,
+is the fastest known 3-party MPC protocol.3 (2) A custom
+(3,1)-garbled circuits protocol built using EMP-toolkit’s 2-
+party garbled circuits, which can be imported separately from
+ABY3’s [42] large framework, and (3) The first tested cir-
+cuit files of the LowMC block cipher [2], featuring a novel
+optimization which reduces cache misses.
+2
+Preliminaries
+Notation. We let N be the number of elements in the DORAM
+database, D the size in bits of each element, and κ be the
+computational security parameter (in practice κ = 128, in
+theory κ = ω(logN)), σ the statistical security parameter (in
+practice 2−40 or 2−80).
+Secret sharing. Our DORAM protocol makes heavy use
+of secret-sharing. Throughout this work, we use J·K to de-
+note a “replicated” (or CNF [14]) secret sharing. In a 3-
+party replicated sharing, a secret, x is split into three shares
+x = x1 ⊕x2 ⊕x3, and participant x gets two of the shares –
+3The implementation used to benchmark the results in the [3] is propri-
+etary, and not publicly available.
+3872    32nd USENIX Security Symposium
+USENIX Association
+
+every share except xi. We use [·](i,j) to denote a simple XOR-
+2-sharing between participants Pi,Pj
+Obliviousness: A computation is data-oblivious if its
+control-flow is independent of the input data. An Oblivious
+RAM protocol is a protocol for accessing an array (indexed
+by 1,...,N), where the algorithm’s control flow, and in par-
+ticular, the physical memory accessed, is independent of the
+index being queried. ORAM protocols are designed to allow
+a client to make a any sequence of queries and are often com-
+posed of simpler data structures which are only oblivious on
+distinct queries. A data structure (e.g. a hash table) is called
+distinct-query oblivious if the control-flow between any two
+sequences of distinct queries is indistinguishable, but a se-
+quence with repeated queries might result in a control flow
+that is distinguishable from a sequence of distinct queries.
+Cuckoo Hashing: A cuckoo hash table is a distinct-query
+oblivious data structure for storing key-value pairs [40]. The
+cuckoo hash table consists of two arrays (“tables”) T0 and T1
+of size c·n, and two hash functions h0 and h1, hi : X →[cn].
+A key-value pair, (x,y), can be stored in the table at location
+h0(x) in T0 or h1(x) in T1. It is possible that there is no valid
+way to store a series of elements (e.g. if there are x0,x1,x2
+such that h0(x0) = h0(x1) = h0(x2) and h1(x0) = h1(x2) =
+h1(x3)). In this case we say there is a “build failure.” The
+probability of a build failure is 1/poly(n), but if we allow a
+small “stash” that can hold at most O(log(n)) elements, the
+probability of a build failure becomes negligible in n [27,36].
+In our DORAM (as in most prior hierarchical (D)ORAM
+protocols) we use cuckoo hash tables as a building block for
+our oblivious hash tables.
+DORAM: A distributed Oblivious RAM protocol is a mul-
+tiparty protocol that allows a group of participants holding
+a secret-shared array Jx1K,...,JxNK to access the array at a
+secret-shared index, JiK, and obtain the sharing JxiK, without
+revealing any information about the query, i, or the database
+x1,...,xn. The theoretical efficiency of DORAM protocol is
+often measured by the amortized communication complexity
+the servers spend to respond to a single query. In practice,
+DORAM protocols may be bottlenecked the amortized com-
+munication per query (e.g. [46]), the amortized computation
+per query (e.g. [16,45]), or the amortized number of commu-
+nication rounds per query (e.g. [18,32]). To compare between
+these constructions targeting different points in the solution
+space, we measure the practical efficiency of a DORAM pro-
+tocol by the number of queries per second that it can process.
+SISO-PRFs: A core building block of most DORAM pro-
+tocols is a Shared-Input, Shared-Output PRF (SISO-PRF).
+A SISO-PRF allows the participants to compute the secret-
+sharing of a PRF output on a shared input, under a shared
+key. Any regular PRF can be converted into a SISO-PRF by
+implementing the PRF under a generic MPC protocol. Sev-
+eral PRF protocols have been designed to be “MPC friendly”
+(e.g. LowMC [2]). The basic idea which makes SISO-PRFs
+useful for DORAM is that servers can generate a random,
+shared key, JkK, and build a hash table where the cleartext tags
+(of secret-shared payloads) are SISO-PRF evaluations of the
+elements.
+3
+Secure Multiparty Computation
+Secure multiparty computation (MPC) [13, 20, 50, 51] is a
+protocol that allows a group of participants to securely com-
+pute a joint function on their private inputs without revealing
+any information beyond the output of the function. An MPC
+protocol is called (n,t)-secure if the protocol involves n par-
+ticipants, and remains secure if at most t participants collude
+(i.e., share private state). Our DORAM protocol works in the
+standard (3,1) semi-honest security model, which assumes
+that there are three semi-honest servers, and no collusion be-
+tween servers. We use the (3,1)-“replicated” MPC protocol
+of [3] as a building block. In one crucial place, we also use
+a custom implementation of the (3,1) garbled circuit MPC
+protocol of ABY3 [33] to reduce round complexity. Our DO-
+RAM protocol is also an important tool in building efficient
+RAM-MPC protocols, because it allows for MPC computa-
+tion in the RAM model of computation, whereas most current
+MPC protocols work in the circuit model.
+3.1
+The Arithmetic Black-Box Model
+Our DORAM protocol makes use of several “basic” oper-
+ations on secret shared values, e.g. addition, comparisons,
+and equality tests. In our protocol descriptions, we use the
+Arithmetic Black Box (ABB) model to abstract away the un-
+derlying implementations of these operations. In practice, we
+use our own implementation of [3]. A formal description of
+the ABB model can be found in [18,24].
+In
+protocols, we
+use
+our
+ABB
+by
+invoking
+FABB.FunctionalityName,
+where
+FunctionalityName
+makes it obvious what the functionality achieves. For
+instance, we invoke JzK = FABB.Mult(JxK,JyK) to multiply
+secret shared values x,y and obtain secret shared value z s.t
+z = x · y. Although the names are usually self-explanatory,
+we provide a complete list of our ABB functionalities in
+Appendix A.
+4
+Construction Overview
+Section 4.1 describes known techniques which enabled build-
+ing communication and computation efficient “hierarchical”
+DORAM which takes many rounds of communication to exe-
+cute a single query [18,32]. In Section 4.2 we motivate and
+outline several novel techniques which enable us to signifi-
+cantly reduce the round complexity of standard “hierarchical”
+DORAMs. In Section 9, we show that our round-reduced “hi-
+erarchical” DORAM, GigaDORAM, is efficient in practice.
+USENIX Association
+32nd USENIX Security Symposium    3873
+
+4.1
+The hierarchical solution
+OHTable We call an efficient, oblivious to build, distinct-
+query oblivious, hash table an OHTable. Oblivious Hash Ta-
+bles have three key functionalities: Build, Query and Extract.
+FOHTable.Build(X) creates an oblivious hash table storing the
+elements X, where each element in X is unique. Once the hash
+table has been built, FOHTable.Query queries the table obliv-
+iously, and FOHTable.Extract extracts all elements currently
+stored in the table which have not been queried.
+The hierarchical solution. The key idea of the hierarchi-
+cal solution is that it is fairly easy to build a distinct-query
+OHTable – for example reading from a cuckoo hash table is
+oblivious as long as you never query the same element twice.
+With this insight, the hierarchical solution [38] can be seen as
+a compiler for bootstrapping a distinct-query OHTable con-
+struction into a full-fledged DORAM (that remains oblivious
+even if the user makes repeated queries). The hierarchical
+solution is a powerful tool, used to build many ORAM proto-
+cols, e.g. [4,18,21,22,28,32,37,38,41], and is the technique
+used by many of the most (asymptotically) communication
+efficient (D)ORAM protocols.
+A hierarchical ORAM is made up of a hierarchy of OHTa-
+bles, L0,...,LnumLevels, of geometrically increasing size. Usu-
+ally, we have numLevels = O(logN) and the largest level,
+LnumLevels, has size O(N). The smallest level, L0, is a small
+“cache”. The cache itself needs to remain oblivious even if
+queries are repeated. But the cache is small, so it can be im-
+plemented inefficiently without dramatically increasing the
+cost of a given ORAM query. For this reason, the cache is
+often set be constant sized (|L0| = O(1)). This means that
+the client can read the entire cache with each query (in time
+O(|L0|)) and this is clearly oblivious. Each larger level, Li for
+i ≥1 holds a distinct-query OHTable of size O
+ 2i
+.
+When a user queries the DORAM, the user queries each
+level of he hierarchy sequentially. If the item is found at
+level i, a “dummy” element is queried at subsequent levels
+Li+1,...,LnumLevels, and the retrieved item is reinserted into
+the cache. To maintain obliviousness, if the requested item is
+not found anywhere in the hierarchy, a dummy item is inserted
+in the cache. When the cache (or any subsequent level of the
+hierarchy) is full, all the elements from that level (and smaller
+levels) are extracted and rebuilt into the next level of the
+hierarchy. If |Li+1| ≥2·|Li|, then level i+1, can accommodate
+all the elements in levels 0,1,...,i. This periodic rebuild
+schedule guarantees that no element is ever queried twice at
+the same level between rebuilds, because once an element
+has been found at level i, it is moved to the cache, and will
+always stay in a level j < i, until level i is rebuilt. Since no
+element will be queried twice in any given distinct-query
+OHTable, the entire construction is oblivious, even if queries
+are repeated. The formal proof that the resulting hierarchical
+data structure is indeed an ORAM is now standard, and can be
+found for example in [38]. With this rebuild schedule, level Li
+is rebuilt every O(|Li|) queries. We outline our instantiation
+of the hierarchical protocol in Figure 4 in Section 8.
+4.2
+Reducing numRoundsDORAM
+Our protocol is based on a 3-party implementation of the
+hierarchical solution (similar to [18]). Although the hierarchi-
+cal solution has low asymptotic communication and com-
+putation complexity, it has high round complexity which
+can make it inefficient in practice.4 This inefficiency stems
+from the fact that every query to the DORAM forces a
+query into every level of the hierarchy, L0,...,LnumLevels. Crit-
+ically, these queries must be sequential, because if the item
+is found at Li, the protocol must query dummy elements at
+Li+1,...,LnumLevels. Thus the round complexity of a DORAM
+query5 , numRoundsDORAM, can be written as
+numRoundsOHTable·numLevels+numRoundsCache (1)
+where numRoundsOHTable is the number of rounds to query
+Li for 1 ≤i ≤numLevels (which is fixed and independent of i)
+and numRoundsCache is the number rounds it takes to query
+the cache, L0. The main technical contribution of our work
+is to optimize the hierarchical solution to reduce its round
+complexity.
+In light of Equation 1, we can divide our efforts to
+reduce round complexity into four parts: (1) reducing
+numRoundsOHTable via our novel OHTable, ShufTable, and
+SISO-PRF parallelization, (2) generalizing the hierarchical-
+solution with a tuneable parameter, baseAmpFactor, to re-
+duce numLevels, (3) designing a new oblivious-cache data-
+structure, SpeedCache, to reduce numRoundsCache, and (4)
+applying additional engineering/implementation-level opti-
+mizations.
+With these design improvements, we are able to signifi-
+cantly reduce the round complexity of the hierarchical solu-
+tion, while maintaining similar asymptotic overheads to the
+theoretic state-of-the-art, [18]. In addition to its low asymp-
+totic complexity and low rounds-per-query, we show that our
+DORAM design is actually quite fast in practice (Section 9).
+We briefly explain each of our optimizations below and
+expend on them in Section 5, 6 and 7 respectively.
+(1) Reducing numRoundsOHTable: ShufTable & SISO-
+PRF parallelization. To reduce numRoundsOHTable we
+present a novel, standalone OHTable, called ShufTable, with
+reduced round complexity. We also devise a method to par-
+allelize the sequentially-dependent SISO-PRF evaluations
+needed to query each level of the hierarchy.
+4The (3,1)-DORAM of [18] and the 2-server ORAM of [32] use the
+hierarchical solution to achieve amortized communication complexity of
+O((κ+D)logN). We remark, however, that both these protocols have high
+round complexity, and have never been implemented.
+5DORAM also incurs round costs when building a level Li and extracting
+from a level Li. Since the protocols are only invoked every |Li| queries and
+have small, constant, round costs (where our final protocol has |L0| = O(κ)),
+their round cost has negligible impact on the performance of DORAM.
+3874    32nd USENIX Security Symposium
+USENIX Association
+
+The key ideas in these optimizations revolve around how
+to handle queries for elements that are not in the table. This
+type of query happens frequently in a hierarchical ORAM,
+because although each element is only stored at one level of
+the hierarchy, each ORAM query results in a query to the
+OHTable at every level of the hierarchy. Prior solutions for
+handling these “dummy” queries were round-intensive (e.g.
+the Oblivious Sets in [18]), so we develop a new method.
+As in prior works, our OHTable, ShufTable inserts dummy
+elements (d1,⊥)...,(dl,⊥) along with the real elements, and
+retrieves a dummy when the queried element is not stored
+in the table. Assuming the SISO-PRF has already been eval-
+uated, ShufTable requires only 5 rounds of server-to-server
+communication per query. The main ingredient that enables
+this round-savings is a novel “persistent shuffling” trick (Sec-
+tion 5.1)6 which allows to efficiently evaluate a random per-
+mutation under MPC. Our OHTable, like those in prior DO-
+RAM constructions, requires an equality-check on secret-
+shared values. We implement this equality check using a
+custom implementation of a 3-party garbled circuit [33]. This
+increases the asymptotic communication of each level’s query
+from O(κ) to O(κ2), but decreases the round complexity at
+each level by O(logκ). In practice, when κ ∈{128,256}, this
+dramatically improves real-world performance.
+More details can be found in section 5.2 and the protocol
+is given in Figure 2.
+Remark 4.1. If one were focused on optimizing asymptotic
+communication complexity, this step could be replaced by an
+constant-overhead-MPC-based equality check (e.g. using [3]),
+which would give us best known (same as [18,32]) asymptotic
+communication and computation complexity O((κ+D)log).
+In the hierarchical solution, each a query into the OHTable
+at level i, requires evaluating a SISO-PRF, but the query into
+table Li+1 depends on whether the item was found at a lower
+level. Thus, hierarchical based (D)ORAMs wait until after
+Li.Query is performed to evaluate the SISO-PRF for Li+1.
+With ShufTable and most other OHTables, there are essen-
+tially two types of queries that can be made at any level a
+“real” query (if the desired element has not yet been found) or
+a “dummy” query (if the element was found at a lower level).
+A simple observation we make is that we can evaluate JriK,
+the PRF evaluation needed to make a real query at Li, and
+JdiK, the PRF evaluation needed to make a dummy query at Li,
+in parallel for all i ∈[numLevels]. Then, after Li is evaluated
+and it is determined under MPC whether the queried element
+was found, we can multiplex between Jri+1K and Jdi+1K un-
+der MPC, which takes only one round. Since the outputs
+of the SISO-PRF are secret-shared and since multiplexing
+in MPC hides whether the table is queried for a dummy or
+a real element, the DORAM remains oblivious. This opti-
+mization decreases the rounds per query dedicated to evalu-
+6 [30] presents various efficient shuffling protocols, but none of their
+shuffles allows for the efficient evaluation of a reverse permutation at a point.
+ating the SISO-PRF from numRoundsPRFEvalnumLevels to
+numRoundsPRFEval/+numLevels.
+Unfortunately, the above change increases communica-
+tion per query by ≈2×. To resolve this issue, we upgrade
+ShufTable with a “just-in-time” mechanism to detect if an
+element is stored in the table, replacing the retrieved element
+with a dummy if necessary. Due to this mechanism only JriK
+is needed to query the OHTable at Li.
+In practice this optimization is noticeable, saving ∼100
+rounds of interaction per query.
+To further reduce rounds, in practice, we parallelize the
+query of the cache, L0 with the evaluation of the PRFs for
+L1,...,LnumLevels. Note that if we knew multiple queries in
+advance, we would be able to further batch evaluations, but
+we do not assume that in this work.
+Overall, these optimizations have a significant im-
+pact of the efficiency of our protocol.
+We decrease
+numRoundsOHTable from the 45 of [18] to amortized 5 +
+numRoundsPRFEval/numLevels ≈7. Additionally, we re-
+duce the number of expensive SISO-PRF evaluations neces-
+sary by a factor of four when compared to [18] which is the
+state-of-the-art in low SISO-PRF hierarchical DORAMs.
+(2) Generalizing the hierarchical solution to reduce
+numLevels. Above, we described our techniques for reduc-
+ing the round complexity of queries to individual OHTables.
+Yet in the hierarchical solution, every ORAM query requires
+querying each level of the hierarchy sequentially. Thus a hier-
+archy of depth numLevels immediately adds a multiplicative
+factor of numLevels to the round complexity of the protocol.
+Since round complexity is one of the main performance bot-
+tlenecks in (D)ORAM protocols, there is a strong motivation
+to reduce numLevels.
+In most hierarchical (D)ORAMs, level i in the ORAM hier-
+archy had size 2i ·|L0|, resulting in numLevels = O(log2 N).
+In Section 6 we show that by introducing a new parameter,
+baseAmpFactor > 2, and setting |Li+1| = baseAmpFactor ·
+|Li|, we can reduce the round complexity of the protocol
+with minimal impact on the communication complexity,
+which we find to be less expensive in practice. This sim-
+ple change immediately reduces numLevels from log2(N)
+to log2(N)/log2(baseAmpFactor). While this modification
+is conceptually simple, it requires a more nuanced rebuild
+schedule.
+Empirically, we
+find
+that
+the
+optimal
+value
+for
+baseAmpFactor is much greater than 2. For instance,
+at N = 230 and the network conditions we test we found that
+baseAmpFactor = 128 is optimal. That is, each level is 128
+times larger than the previous (smaller) level.
+(3) Optimizing the cache: SpeedCache. In the hierarchi-
+cal ORAM solution, the top level (i.e. L0, the “cache”) needs
+to support oblivious accesses (compared to lower levels in
+the hierarchy which only need to be distinct-query oblivious).
+For this reason, L0 is usually implemented as a simple read-
+all-to-read, append-to-write array. This is obviously oblivi-
+USENIX Association
+32nd USENIX Security Symposium    3875
+
+ous, but its query complexity increases linearly with the size
+of the cache. In particular, if the cache stores t key-value
+pairs ((Jx1K,Jy1K),...,(JxtK,JytK)), querying the cache is of-
+ten implemented by sequentially checking whether the query,
+JxK, is equal to JxiK (costs O(loglog|xi|) sequential rounds)
+and if so updating return value to JyiK. Unfortunately, this
+simple implementation has multiplicative depth t, meaning
+numRoundsCache = O(|L0|·loglog|xi|).
+In Section 7, we outline a simple Cache protocol Speed-
+Cache that allows us to query the cache in ⌈loglog|xi|⌉+1
+rounds of communication (which is independent of |L0|).
+Since our SpeedCache protocol has a round complexity that
+is independent of the cache size, we are somewhat free to in-
+crease the cache size, which has other benefits (e.g. reducing
+numLevels by log2 |L0|).
+(4) Gadget implementations: Minimizing the round com-
+plexity of our SISO-PRF is crucial for the overall efficiency
+of our protocol, so we provide the first circuit file of the
+LowMC [2] block cipher within our custom MPC implemen-
+tation. Our circuit file features a novel optimization we call
+“wire threading” that allows us to reduce the number of L1-
+cache misses during evaluation. We multithread the MPC
+evaluation of LowMC, allowing us to evaluate the PRF 6.7M
+times per second. See Appendix C for further details.
+We adapt the Alibi reinsertion technique [17] for “caching
+the stash” to the distributed setting, and we provide the first
+implementation of Alibi. See Appendix D for further details.
+5
+ShufTable: reduce numRoundsOHTable
+In this section, we present ShufTable, a novel, oblivious
+distinct-query, hash table (OHTable). With ShufTable we
+have numRoundsOHTable ≈7 (compared to [18] which re-
+quired 45 rounds of communication for each OHTable query).
+In Section 8 we use the hierarchical solution and [17] to
+compile ShufTable into an efficient DORAM. The resulting
+DORAM requires only a constant number of rounds per query,
+whereas prior hierarchical DORAM protocols (e.g. [18]) had
+a round complexity that scaled with N.
+In Section 5.1 we present the “Persistent shuffle proto-
+col,” a method that enables ΠShufTable, the new OHTable
+protocol we present in Section 5.2. Leveraging features of
+ΠShufTable.Query, in Section 5.3 we show how to amortize the
+round cost of SISO-PRF evaluations across L1,...,LnumLevels.
+5.1
+Persistent shuffle Protocol
+Like many DORAM protocols, our DORAM construction
+relies on an efficient oblivious shuffle, which allows players
+holding a secret shared list, JXK = JX1K,...,JXnK to shuffle
+JXK under some random permutation π ∈Sn such that nothing
+about π is learned by any player.
+As presented in [30], there is an efficient, linear-
+communication (3,1)-oblivious shuffle which works as fol-
+lows. The players P1,P2,P3 reshare JXK to P1,P2, who shuffle
+their secret shares according to some random agreed upon
+permutation, and reshare the shuffled list to P2,P3, who shuf-
+fle and reshare to P3,P1 who shuffle and reshare to P1,P2,P3.
+Since the composition of permutations is not known to any
+single player, the final permutation is oblivious. Unfortunately,
+at the end of the [30] protocol, information about the permu-
+tation, π, is not accessible to the players. In our Persistent
+shuffle (described in Figure 1), we augment the shuffling pro-
+tocol to also output a secret sharing of π.
+Cost of the Persistent shuffle protocol. The Persistent
+shuffle protocol requires 4 rounds of communication and
+each round requires n(|Xi| + logn) bits of communication.
+For comparison, shuffling n elements using Persistent shuffle
+is 6 times less bandwidth than evaluating a SISO-PRF (using
+LowMC) on those elements, so shuffling contributes only
+minimally to the overall communication cost of our DORAM.
+Lemma
+5.1.
+Persistent
+shuffle
+(described
+in
+Figure
+1
+fulfills
+the
+functionality
+FABB.ObliviousShuffle(
+◦
+,DistributeShuffle
+=
+True)
+where the players input JXK and receive as output Jπ(X)K
+and JKK = JK1K,...,JKnK s.t π(i) = Ki. It also guarantees
+that π is uniformly sampled from Sn and unknown to all
+players.
+Proof. In step 1, the 3 participants reshare the shares of the
+vector X to and the indices L = (1,2,...,n) to two participants.
+By the security of FABB.ReshareReplicatedTo2Sharing, each
+individual participant learns nothing about X (in fact each
+player’s shares are uniformly random). In steps 2 & 3, pairs
+of players locally shuffle their shares and reshare to the next
+pair. In this case, the security of FABB.Reshare2To2Sharing
+ensures that each player learns nothing about the underlying
+data (the shuffled values). As in step 1, each player receives
+uniformly random shares and nothing else. In step 4, pairs of
+players call FABB.Reshare2SharingToReplicated, and again,
+each player’s view of the protocol is a collection of uniformly
+random shares.
+The final list is a sharing of π(X), where π = π{3,1} ⊙
+π{2,3} ⊙π{1,2}. Every player knows two of the three permuta-
+tions, so the resulting permutation is uniformly random from
+the perspective of any player.
+5.2
+ShufTable construction
+In this section, we describe and evaluate ΠShufTable.Build and
+ΠShufTable.Query, the component of our new Oblivious Hash
+Table ShufTable. The pseudocode for Protocol ΠShufTable is
+presented in Figure 2.
+Parameters. ΠShufTable is parameterized by N, the size of
+the address space, D, the size of each payload, κ, the com-
+putational security parameter, n, the number of real elements
+stored in the table, numDummies, the number of dummy el-
+ements stored in the table, and stashSize, the minimum size
+3876    32nd USENIX Security Symposium
+USENIX Association
+
+Setup: Each pair of players Pi,Pj agree on a random permutation π{i,j} ∈Sn. The players also generate a sharing JLK =
+J1K,...,JnK.
+Protocol:
+1. The players reshare to the first shufflers, calling
+[X](1,2) = FABB.ReshareReplicatedTo2Sharing(JXK,{P1,P2})
+and
+[L](3,1) = FABB.ReshareReplicatedTo2Sharing(JLK,{P3,P1})
+2. Shuffle & Reshare to next shuffling pair #1:
+(a) P1,P2 let [X′](1,2) = [π{1,2}(X)](1,2). Note that since Pi,Pj hold [X](i,j) they can obtain [π(X)](i,j) for a known π
+by locally shuffling their list of secret shares. P1,P2 reshare X′ to the next shufflers, calling
+[X′′](2,3) = FABB.Reshare2To2Sharing([X′](1,2),{P2,P3}).
+(b) P3,P1 let [L′](3,1) = [π−1
+{3,1}(L)](3,1). P1,P2 reshare L′ to the next shufflers, calling
+[L′′](2,3) = FABB.Reshare2To2Sharing([L′](3,1),{P2,P3})
+3. Shuffle & Reshare next shuffling pair #2:
+(a) P2,P3 let [X′′](2,3) = [π{2,3}(X′)](2,3). P2,P3 reshare X′′ to the next shufflers, calling
+[X′′](3,1) = FABB.Reshare2To2Sharing([X′](2,3),{P3,P1}).
+(b) P2,P3 let [L′′](2,3) = [π−1
+{2,3}(L′)](2,3). P2,P3 reshare L′′ to the next shufflers, calling
+[L′′](1,2) = FABB.Reshare2To2Sharing([L′′](1,2),{P1,P2}).
+4. Shuffle & Reshare back to all players #3:
+(a) P3,P1 let [X′′′](3,1) = [π{3,1}(X′′)](3,1). P3,P1 reshare X′′′ back to the entire group, calling
+JX′′′K = Reshare2SharingToReplicated([X′′′](3,1)).
+(b) P1,P2 let [L′′′](1,2) = [π−1
+{1,2}(L′′)](1,2). P1,P2 reshare L′′′ back to the entire group, calling
+JL′′′K = Reshare2SharingToReplicated([L′′′](1,2)).
+Output: The output of the protocol is Jπ(X)K,Jπ−1(L)K.
+Figure 1: The Persistent shuffle protocol, FABB.ObliviousShuffle(JXK,DistributeShuffle = True)
+USENIX Association
+32nd USENIX Security Symposium    3877
+
+ΠShufTable.Build: The players (refers to P1,P2,P3) hold (JX1K,JY1K),...,(JXnK,JYnK).
+1. The players create dummies to satisfy queries that were not found, letting JYiK = J⊥K, JXiK = J⊥K for i ∈{n+1,...,n+
+numDummies}.
+2. The players generate a κ-bit secret-shared PRF key, evaluating JkK = FABB.RandomElement(κ).
+3. The players create pseudorandom tags for all the addresses, evaluating JQiK = FABB.PRFEval(JkK,JXiK) for i ∈
+{1,...,n} and JQiK = J⊥K for i ∈{n+1,...,n+numDummies}.
+4. Players obliviously shuffle the lists before revealing Q to P1 to hide information about the elements in the table/stash,
+executing J ˆQK,J ˆXK,JˆYK,JjK = FABB.ObliviousShuffle(JQK,JXK,JYK,DistributeShuffle = True) (c.f. Section 5).
+(a) The players locally create JDIiK = Jjn+iK for all i ∈[numDummies]. If DIi = k, that implies Xk = n+i and Yk = ⊥.
+That is, the kth element of ( ˆX, ˆY) is the ith dummy. We use DI in step 4 of query to return a dummy if needed.
+5. Revealing Qi to P1 so that it can build a CHT∪Stash containing Xi using fast, local random accesses without learning
+Xi, the players call ˆQi = FABB.RevealTo(P1,J ˆQiK) for i ∈{1,...,n+numDummies}
+6. P1
+locally
+constructs
+the
+Cuckoo
+hash
+table
+and
+list
+of
+stashed
+indices
+CHT∪Stash =
+BuildCHTwS(( ˆQi||i)i∈[n],stashSize). CHTstores
+ˆQi||i for n −stashSize such different i’s where || represents
+bit-wise appending.
+(a) P1 secret shares CHT between P2 and P3, running [CHT](2,3) = FABB.InputTo2Sharing(CHT,P2,P3). P2,P3 will
+use CHT to satisfy queries.
+(b) P1 sends Stash, a cleartext list of stashSize-many indexes, s.t. i ∈Stash indicates that (J ˆXiK,JˆYiK) is stashed. If
+i ∈Stash then Xi ̸= ⊥. Output Xstash = {J ˆXiK}i∈Stash and Y stash = {JˆYiK}i∈Stash. These will be reinserted into the
+cache when ΠShufTable.Build is called as part ΠDORAM (Figure 4).
+7. The players shuffle the data under under a permutation, ˆˆπ, only known to P2 and P3, executing J ˆˆXKJˆˆYK =
+FABB.ObliviousShuffle((JXK,JˆYK),RevealTo = {2,3}). This “rebalances the information asymmetry,” allowing P2,P3
+to guide P1 to respond to queries (see step 5 of query) s.t. P1 cannot use his privileged information from ΠShufTable.Build,
+not learning anything about the query.
+ΠShufTable.Query: The players hold JQqueryK = FABB.PRFEval(JXtK,JkK) (Section 5.3). Each step corresponds to a single
+round of communication. We pack parallelizable/silent instructions into the same step.
+1. First, the players compute JrK = FABB.RandomElement(κ) (silent generation of random κ-bit secret share) and then
+compute JqK = JQqueryK+JuseDummyK·JrK (one MPC multiplication). useDummy is an artifact of the hierarchical
+solution that indicates if Xt was already found in previous level.
+2. The players reveal enable P2,P3 to query [CHT](2,3) by revealing q to them, evaluating, q = FABB.RevealTo(JqK,P2,P3).
+3. P2,P3 input [CHT[h1(q)]](2,3),[CHT[h2(q)]](2,3) their secret-shares of locations in CHT where q might be stored, calling
+Jq′
+b || i′
+bK = F2Share.Reshare2to3WithoutCheck(JT[hb(Q)]K) for b = 1,2.
+4. The
+players
+evaluate
+QueryCircuit
+using
+(3,1)
+garbled
+circuits
+(see
+[33]), evaluating
+l
+=
+FABB.EvalCircuit(3,1)GC(QueryCircuit,Inputs = Jq′
+1K,Ji′
+1K,Jq′
+2K,Ji′
+2K,JqK,JDItK), revealing
+l
+only
+to
+P2,P3.
+QueryCircuit returns i′
+1 if q′
+1 = q, returns i2 if Q′
+2 = q, and returns DIt otherwise.
+5. P2,P3 send j = ˆˆπ(l) to P1. The parties set JYoutputK = JˆˆYjK and append j to list queriedDblhatIdxs
+ΠShufTable.Extract: Output (J ˆˆXiK,J ˆˆYiK) for i ∈([n+numDummies]−queriedDblhatIdxs)
+Figure 2: ΠShufTable.Build and ΠShufTable.Query.
+3878    32nd USENIX Security Symposium
+USENIX Association
+
+of a stash in cuckoo hash table storing n elements such that
+the probability of a build failure is less than our statistical
+security parameter, σ.
+On each query, we must be able to retrieve either (1) the ele-
+ment being queried or (2) a new dummy element that has never
+been queried (if the desired element is not in the OHTable).
+Hence, the number of queries to each ShufTable is bounded
+by min{numDummies,n}. Thus we set numDummies ≈n.
+Since our construction uses a Cuckoo hash table (CHT), it
+as also implicitly parameterized by c, the number of slots in
+CHT table, and t, the number of such tables. Instantiations of
+these variables are discussed in Section 9.
+Input-Output behavior of ΠShufTable.Build. The parties,
+P1,P2,P3, input E = {(JX1K,JY1K),...,(JXnK,JYnK)} where
+n ≤N to ΠShufTable.Build. Protocol ΠShufTable.Build, outputs
+secret shares of CHT held by P2,P3, [CHT](2,3), and J ˆˆXK,JˆˆYK,
+special shuffling of the elements under a permutation some-
+what known to P2,P3 (Step 7 of ΠShufTable.Build). The data
+structure, ShufTable, stores a subset of the elements sent
+to the build protocol A ⊂E. ΠShufTable.Build also outputs
+Stash = E \A, with |Stash| ≤stashSize. In the greater DO-
+RAM protocol (Section 8), Stash will be inserted into the
+cache, L0. As long as X1,...,Xn are distinct (as assured
+by the hierarchical solution), the parties learn nothing of
+(X1,Y1),...,(Xn,Yn) or which elements belong to Stash.
+Input-Output behavior of ΠShufTable.Query. For the t’th
+query where 1 ≤t ≤numDummies, the players input JxtK
+to ΠShufTable.Query. ΠShufTable.Query, outputs JYjK if xt = Xj
+for (Xj,Yj) ∈A and J⊥K otherwise (and outputs JfoundK ac-
+cordingly). The security guarantee is that for any sequence of
+distinct queries, x1,...,xt, P1,P2,P3 do not learn whether Yj
+or ⊥was outputted, j, or Yj.
+Performance analysis. The cost of ΠShufTable.Build is dom-
+inated by the cost of n SISO-PRF evaluations.7 With our im-
+plementation of LowMC, this requires a total of 2304n bits
+of communication at κ = 128 and the computation of many
+XORs. Despite this cost, ΠShufTable.Build is very efficient,
+since via multi-threading LowMC (Section C) we are able to
+evaluate 6.7M SISO-PRFs/s in our tests.
+The time needed to evaluate ΠShufTable.Query is driven by
+its round complexity, since we must sequentially invoke this
+protocol numLevels times during ΠDORAM.Query. Each step
+of the query requires equality checks on secret shared ele-
+ments, which we execute using 3-party garbled circuits. 8
+Lemma 5.2. ΠShufTableimplements the distinct-query oblivi-
+ous hash table functionality.
+Proof. We begin by showing that the view of each player
+during ΠShufTable.Build is independent of the input data X,Y.
+7For comparison, [18] requires more than twice as many SISO-PRF
+evaluations (2n+numDummies) for each OHTable build.
+8We use 3-party garbled circuits rather than the (constant-round) 3-party
+BMR protocol [8] implemented in EMP because 3-party garbled circuits are
+significantly more bandwidth efficient than BMR. 3-party garbled circuits
+require honest majority, while BMR does not.
+During ΠShufTable.Build, P2,P3 only receive secret shares and
+operate on those secret shares using MPC. Since secret shares
+are sampled from a (individually) uniformly random distribu-
+tion, P2,P3’s views are independent of underlying data X,Y.
+During ΠShufTable.Build, other than operating on secret
+shares, P1 receives the list ˆQ in the clear. By assumption,
+X has no repetitions, so the PRF “tags” Q appear uniformly
+random and independent to a computationally bounded ad-
+versary. Since ˆQ is a uniformly random shuffle of Q which
+P1 does not know, P1 cannot decipher any information about
+X from seeing ˆQ. Moreover, when deciding which elements
+to place in Stash (by deciding on which indexes to place
+there), P1 cannot tell which elements from (Xi,Yi) he is plac-
+ing in stash (except that they aren’t dummies since ˆQi ̸= ⊥).
+Thus, P1’s view is independent of X,Y and the stash contains
+uniformly random real elements.
+Next we show that in ΠShufTable.Query the view of each
+player is independent of the query Xt, the output, or X,Y pre-
+viously stored. During ΠShufTable.Query, other than operating
+on secret shares, P2,P3 learn q in the clear. q is either a random
+or a pseudorandom element which is thus computationally
+independent from P2,P3’s view (because P2,P3 did not see
+ˆQ which P1 used to build CHT∪Stash). Thus, P2,P3 do not
+learn anything by seeing q. Additionally, P2,P3 learn l, an
+index into the ∧-shuffled list which depends on Xt’s presence
+at the level (see step 4 of ΠShufTable.Query). Yet, since l is
+entirely determined by π∧which P2,P3 don’t know, and more-
+over, since they do not know which indexes of ˆY correspond
+to dummies, l is sampled from a distribution indistinguishable
+from random relative to the individual view of P2,P3.
+Finally, during ΠShufTable.Query, other than operating on
+secret shares, P1 learns l in the clear. Yet, although P1 knows
+which elements from ˆY are dummies, due to an additional
+oblivious shuffle, he does not know which elements of ˆˆY are
+dummies (or were stashed, or were stored in the table, etc).
+Hence l is independent of P1’s view.
+Thus, on distinct queries and when i ̸= j =⇒Xi ̸= Xj,
+P1,P2, and P3’s views are independent of the data stored and
+queried, and hence ShufTable is distinct-query oblivious.
+5.3
+Parallelizing sequential SISO-PRF evalua-
+tions
+In the hierarchical ORAM construction, each query requires
+searching every level in the hierarchy, and the OHTable query
+at a given level requires evaluating a SISO-PRF.
+In previous constructions (e.g. [18,32]) these SISO-PRF
+were evaluated sequentially, because when performing the
+OHTable query for an index, x, at level i, the SISO-PRF input
+will be JxK or a dummy element depending on whether x was
+found in a smaller level of the hierarchy.
+Since there are only two possible SISO-PRF inputs at each
+level, rather than evaluating the PRF sequentially, the players
+USENIX Association
+32nd USENIX Security Symposium    3879
+
+could evaluate both the “dummy query”
+JaiK = FABB.PRFEval(JN +tiK,JkK)
+and the “real query”
+JbiK = FABB.PRFEval(JXqueryK,JkK)
+for all i ∈{1,...,numLevels} in parallel before querying L1,
+then multiplex the result using MPC (which costs only a
+single round) before evaluating Li.Query.
+This trick will reduce the round complexity, but requires
+doubling the number of SISO-PRF calls per query. Since
+round-complexity is often the bottleneck, this improves prac-
+tical performance.
+In our protocol, however, we can leverage the design of
+ShufTable to parallelize the SISO-PRF calls without increas-
+ing communication.
+The crucial observation is that we have designed ShufTable
+to require only JbiK, regardless of found. That is, since pre-
+vious OHTables stored and retrieved their dummy elements
+from some data structure, obtaining the index of each dummy
+from ai was needed. We observe that it is not necessary: using
+the (3,1) garbled circuits of [33] we “just-in-time” detect if qi
+is stored in the table and output a dummy index if necessary
+(ΠShufTable.Query, step 4). Thus, if foundi−1, for ShufTable
+it is sufficient to set qi to be some uniformly random κ-bit
+value r (ΠShufTable.Query, step 1), which, except from with
+negligible probability, will not be stored in the table and will
+yield the desired dummy-output. This “just-in-time” trick is
+largely enabled by the Persistent shuffle trick we present in
+Section 5.1.
+Thus to parallelize the SISO-PRF, we evaluate JbiK =
+FABB.PRFEval(JXqueryK,JkK) for all i ∈{1,...,numLevels}
+in parallel before querying L1. Hence we can parallelize the
+SISO-PRF evaluations across the table without increasing the
+total number of SISO-PRF calls. This can be seen in Step 1.b
+of ΠDORAM.ReadAndWrite, Figure 4.
+This
+optimization
+reduces
+numRoundsDORAM
+by
+(numLevels −1) · numRoundsPRFEval. In our implementa-
+tion numLevels ≈5 and numRoundsPRFEval = 9, so this
+saves us ≈45 rounds per DORAM query.
+6
+Reducing the depth of the hierarchy
+In most hierarchical ORAM solutions, each level is twice
+as large as the level above it, i.e., |Li+1| = 2 · |Li|. Since
+we must have |LnumLevels| = O(N) and generally |L0| is
+a small constant, this means that numLevels = O(logN).
+In our protocol, we introduce a tuneable “base amplifi-
+cation factor” denoted baseAmpFactor, and set |Li+1| ≈
+baseAmpFactor · |Li|. This change reduces numLevels by a
+factor of log2(baseAmpFactor) (but increases communica-
+tion by a factor of baseAmpFactor/log(baseAmpFactor)).
+In our testing, we find that increasing baseAmpFactor dra-
+matically improves practical performance because latency
+is significantly more time-expensive than bandwidth (Sec-
+tion 9). For instance, for GigaDORAM we found that in-
+creasing baseAmpFactor with N to maintain that |L0| ≈
+28 and numLevels ≈4 yielded the best performance. For
+N = 230, this meant setting baseAmpFactor = 27, which is
+much larger than all previous protocols, which implicitly set
+baseAmpFactor = 2.
+In
+most
+hierarchical
+ORAM
+schemes
+(where
+baseAmpFactor = 2), when levels L0,...,Li
+are full,
+they are reshuffled and rebuilt into Li+1 Since
+i
+∑
+j=0
+|Lj| =
+i
+∑
+j=0
+2j|L0| = (2i+1 −1)|L0|
+this rebuild schedule works nicely when baseAmpFactor = 2.
+In our generalization, we also rebuild levels when they are
+full, but for baseAmpFactor > 2 we have that
+baseAmpFactori+1 ·|L0| ≫
+i
+∑
+j=0
+baseAmpFactor j|L0|
+thus, we must slightly adjust our rebuild schedule. In particu-
+lar we must accommodate for “partial rebuilds.” We formalize
+this procedure in protocol ΠDORAM.Rebuild presented in Sec-
+tion 8, Figure 4.
+Since
+rebuilding
+level
+i
++
+1
+costs
+O
+ κ·|L0|·baseAmpFactori+1
+communication
+and
+computation, the total amortized (re)build cost of the
+DORAM is at most
+log(N)
+log(baseAmpFactor)
+∑
+i=1
+O
+ (κ+D)·|L0|·baseAmpFactori+1
+|L0|·baseAmpFactori
+= O
+(κ+D)·baseAmpFactor ·log(N)
+log(baseAmpFactor)
+
+Since the original amortized (re)build cost of all O(logN) lev-
+els of the DORAM is O((κ+D)logN), the cost of decreasing
+numLevels by a factor of log2(baseAmpFactor) is a factor of
+O(baseAmpFactor)/log(baseAmpFactor)) increase in com-
+munication and computation.
+7
+SpeedCache: Larger, optimized cache
+Most hierarchical (D)ORAMs use a constant-sized “cache,”
+i.e., |L0| = O(1). Since each ORAM query performs a lin-
+ear scan over the cache (implying a linear communication,
+computation, and number of rounds), a large cache can sig-
+nificantly hurt both asymptotics and practical performance.
+In our protocol, we use the Alibi reinsertion technique to
+“cache-the-stash” from Cuckoo hash tables at each level of the
+ORAM hierarchy. This means that we must have a moderately
+3880    32nd USENIX Security Symposium
+USENIX Association
+
+large cache size, otherwise reinserting the stashes would fill
+the stash and trigger an infinite chain of table rebuilds.
+Thus we increase the cache size to |L0| = Ω(stashSize).
+This has the additional advantage of eliminating “small” levels
+from the ORAM hierarchy since |Li| > |L0| for every level in
+the hierarchy.9
+In order to facilitate our new, larger cache without hurting
+round complexity, we create, SpeedCache, that can be queried
+using O((D+logN)·|L0|) communication and only requires
+⌈loglogN⌉+1 rounds of communication (that is, independent
+of the number of elements in the cache – only dependent on
+the size of the address space). We implement our SpeedCache
+protocol in the 3-party MPC framework of [3]. We present
+the protocol, ΠSpeedCache, in Figure 3.
+Since the SpeedCache protocol just uses MPC to compute
+on secret-shared values, the security of the SpeedCache pro-
+tocol follows immediately from the security of the underlying
+MPC protocol.
+Experimentally we find that it is optimal to maintain
+|L0| ≈210 a constant, rather than scaling |L0| with N. Note
+that 210 > log(N) for any conceivable value of N. Concretely,
+setting |L0| ≈29 as we do in practice allows us to reduce
+numLevels by ≈8/log2(baseAmpFactor). We found that
+changing |L0| useful for adapting the performance of GigaDO-
+RAM to different network settings. For instance when latency
+is high, a larger |L0| yields better performance.
+An alternative approach would be to implement the triv-
+ial linear-scan cache (see Appendix B) via garbled circuits
+in a constant number of rounds. When |L0| ≈210 we esti-
+mate this would make L0.Query up to 100× slower than our
+implementation of SpeedCache.
+8
+Full DORAM protocol ΠDORAM
+We give the GigaDORAM protocol, ΠDORAM, in Figure 4.
+Round-complexity: With our optimizations the final round
+complexity of ΠDORAM.Query is
+numRoundsDORAM =
+numLevels·numRoundsOHTable
++max(numRoundsCache,numRoundsPRFEval)+1
+= numLevels·5+max(loglog(N)+2,9)+1
+≈5·5+9+1 = 35
+(when N = 231)
+The term max(loglog(N)+2,9) occurs because L0.Query
+(loglog(N)+2 rounds) and the SISO-PRF pre-evaluations (9
+rounds – see Section 5.3, Appendix C) can be evaluated in par-
+allel. Hence, compared to the over 2500-round-per-query [18]
+construction we draw inspiration from, GigaDORAM has a
+9Because cuckoo hash tables have higher build-failure probability when
+the table size is small, many hierarchical (D)ORAMs had two types of
+tables, one for the “small” levels and one for the “large” levels (e.g. [18,32]).
+Because our L0 is sufficiently large, we do not incur this complexity.
+≈70× reduction in round complexity. Our overall commu-
+nication and computation complexity is comparable to that
+of [18,32] and previous hierarchical DORAMs.
+Lemma 8.1. Protocol ΠDORAM securely realizes the DORAM
+functionality in the semi-honest (3,1)-setting.
+Proof. Protocol ΠDORAM is a straightforward application of
+the hierarchical solution to our building blocks, ΠShufTable
+and ΠSpeedCache in the distributed setting. The security of the
+hierarchical solution is standard (see e.g. [38]).
+The proof proceeds as follows. Since ShufTable will be
+oblivious as long as no queries are repeated, we must show
+that even if the client makes repeated queries into the DO-
+RAM, no OHTable is ever queried twice between rebuilds.
+To see this, suppose the user makes a series of queries,
+x1,...,xt and xi1 = xi2 with i1 < i2. Suppose xi1 was initially
+at level ℓ. In this case, after query xi1, the key-value pair
+(xi1,yi1) will be inserted into the cache. As later queries come
+in and the cache becomes full (xi1,yi+1) may get pushed to
+lower levels of the hierarchy. After sufficiently many queries,
+levels i = 1,...,ℓ−1 will be rebuilt into level ℓ. If query xi2
+happens before level ℓis rebuilt, xi2 will be found at a level
+above level ℓ, and at level ℓa (new) dummy element will be
+queried. If query xi2 happens after level ℓhas been rebuilt,
+then at this point xi1 has never been queried against this new
+OHTable.
+9
+Evaluation
+In this section we evaluate the practical performance of Gi-
+gaDORAM and compare its performance to previous DO-
+RAM implementations. To make the comparisons fair, when-
+ever possible we evaluated on the same hardware setup. To
+make our results easily reproducible, we test on AWS, using
+c5n.metal instances with 72vCPUs and 192GiB memory.
+We measure only writes in our experiments because “reads”
+vary across works (e.g. DuORAM separates “dependent” and
+“independent” reads) and for all constructions, writes are at
+least as expensive as reads. For each construction at each N
+we averaged performance across multiple write (up to 100K
+writes in faster networks). All experiments were on D = 64
+bit payloads as in DuORAM’s testing.
+To compare fairly with previous works, we re-benchmark
+all previous DORAMs with existing implementations (with
+the exception of proprietary [26]) on the same hardware setup
+we used to test GigaDORAM. To the best of our knowledge,
+this is the most comprehensive Distributed ORAM benchmark
+to date.10 See Appendix E for details.
+10We do not benchmark [29], because it is based on the proprietary Share-
+mind software, and is focused on batch queries. As noted in that work, in
+the single-query setting those techniques are not expected to give significant
+improvements over straightforward “ORAM in MPC” schemes.
+USENIX Association
+32nd USENIX Security Symposium    3881
+
+(⋆) symbolizes the invariant that when ΠSpeedCache.Query is called i ̸= j =⇒xi ̸= xj ∨xi = xj = ⊥.
+ΠSpeedCache.Init(): The players set the query counter t = 0. No communication.
+ΠSpeedCache.Store(JxK,JyK): Let JxtK = JxK and JytK = JyK. No communication.
+ΠSpeedCache.Query(JxK): (Jx1K,Jy1K),...,(JxtK,JytK) are stored where xi is unique. Note that this invariant, (⋆), inductively
+holds: On Init (⋆) trivially holds. On Store(x) at the end of ΠDORAM.ReadAndWrite, if x was stored at L0, it was zeroed-out
+in Step 4 of ΠSpeedCache.Query (below) and thus (⋆) holds. On alibi-reinsertion from Li since Li.Build(JXK,JYK), (⋆) holds
+because X is guaranteed to be a unique list and thus its reinserted subset also unique.
+1. Using MPC, the players compute equality-indicators JbiK for all i ∈[t] s.t bi = 1 iff x = xi. This takes ⌈loglogN⌉rounds
+and t logN communication, because each xi is logN bits.
+2. Using MPC, the players zero-out all the non-queried elements, computing the bit-vector product Jx′
+iK = Jx′
+iK·JbiK and
+Jy′
+iK = JyiK·JbiK for all i ∈[t]. This takes a single round and n(logN +D) communication.
+3. The players output Ln
+i=1Jy′
+iK which is JyiK if x = xi, else J⊥K This costs no communication or rounds.
+4. Preparing for the next query, the players zero-out (put a dummy) at the location where xi was found (if it was found) by
+setting JxiK := JxiK⊕Jx′
+iK for all i ∈[n].
+ΠSpeedCache.Extract: Output (Jx1K,Jy1K),...,(JxtK,JytK), set t = 0. No communication.
+Figure 3: The SpeedCache protocol, ΠSpeedCache
+9.1
+Low-latency tests
+One of the primary applications of DORAM is in heavy-
+compute large-scale MPC computations (where random ac-
+cess could outperform circuit-based computations). Thus we
+focus on low-latency network environments where large scale
+MPC becomes practical.11
+With this motivation, we begin by benchmarking GigaDO-
+RAM in a realistic low-latency regime. Specifically, we de-
+ploy to three cluster-placed AWS c5n.metal instances.12 In
+this setup, In cluster placement at region us-west-2. Via
+ping -c 20 we measure latency of min/avg/max/mdev =
+0.229/0.236/0.244/0.003 ms.13
+Figure 5 shows that in this low-latency environment Gi-
+gaDORAM outperforms all other DORAMs for 212 ≤N ≤
+231. GigaDORAM perform 700−900 queries/sec for all mea-
+sured N, with oscillations which depend on the size of the
+hierarchical cache L0.14
+11Although MPC is possible under poor network conditions [48], it is
+only possible when the circuits are fairly simple and thus would not benefit
+significantly from random access. To put this in perspective, [48] benchmark
+computing the AES circuit under MPC. In GigaDORAM, we compute AES
+(or LowMC) under a circuit-based MPC multiple times for each query. Thus
+no DORAM that makes use of a SISO-PRF could not possibly improve the
+performance of a simple computations like AES.
+12For some comparisons (e.g. [25,45]) we used existing Docker setups to
+simulate three parties on a single c5.metal machine in which case we adjust
+the network via the tc command (see Section E).
+13We observed latency fluctuating according to usage, although AWS does
+not make such policies public.
+14The “oscillations” seen in our performance are due to the fact log2 |L0| =
+N −baseAmpFactor ·(numLevels−1) and the fact that baseAmpFactor
+9.2
+Testing in restricted networks
+Previous DORAM papers benchmarked [16, 26, 45] under
+artificial restrictions to the network. For example, [45] bench-
+marked restricted their bandwidth to 100Mb/s with a latency
+of 30ms. These network conditions are lower than you would
+expect from geographically separated machines. For exam-
+ple, we measured 20ms ping from us-east-1 to us-west-2,
+servers in different AWS regions should enjoy several Gbit
+connections [7], and it is possible to achieve 1ms ping times
+across different cloud providers15. Still, we compare the per-
+formance of GigaDORAM to other DORAMs under worse
+network conditions (which may be unavoidable in some ap-
+plications).
+Performance without cluster-placement. Figure 5 shows
+the performance of GigaDORAM when the machines are
+cluster-placed. When the machines were not cluster-placed
+(but still in the same AWS region) the number of queries / sec
+drops by about 33% (Table 1).
+Performance and breakeven points in varying laten-
+cy/bandwidth. Using the tc (as in [16, 45]) we vary the
+latency and bandwidth to search for the breakeven point be-
+tween GigaDORAM and DuORAM (which is the best previ-
+ous DORAM in high-latency low-bandwidth environments).
+Figure 6.a shows that the performance of GigaDORAM
+degrades dramatically with latency while the performance
+is a power of 2, and thus for certain values of N we cannot reasonably set
+|L0| as small as we’d like.
+15https://medium.com/@sachinkagarwal/public-cloud-inter-r
+egion-network-latency-as-heat-maps-134e22a5ff19
+3882    32nd USENIX Security Symposium
+USENIX Association
+
+ΠDORAM.Init(JYK):
+1. The players input the address of each payload JXiK = FReplicatedMPC.InputConstant(i) for i = 1 to N. The players build
+the top level LnumLevels = FOHTable.Build(JXK,JYK,N) and initialize the cache L0.Init(). The players set the query
+counter t = 0.
+ΠDORAM.ReadAndWrite(JXqueryK,JYnewK, JisWriteK): |L0| is the size of the cache and is tracked externally.
+1. The players increment the query counter, t, initialize numLevels-bit Alibi data accumulator JeaccumK = J0numLevelsK,
+D-bit payload accumulator JYaccumK = J⊥K, and one-bit flag JfoundK = 0. Then, the players do the following in parallel
+(This step takes max{numRoundsCache,numRoundsPRFEval} rounds):
+(a) query the Cache, JYaccumK,JfoundK = L0.Query(JXqueryK). The players extract JeaccumK from JYaccumK (by silently
+copying the last numLevels-bits).
+(b) For each level ℓ∈numLevels evaluate JaℓK = FABB.PRFEval(JkℓK,JXqueryK)
+2. For each ℓfrom 1 to numLevels, if there is an OHTable at level Lℓ:
+(a) Set the bit JuseDummyK = JeK[ℓ]⊕JfoundK, i.e., locally XOR the ℓth bit of the share of e with the share of found.
+Query Li, calling JYℓK,JfoundℓK = Lℓ.Query(JaℓK,JuseDummyK). This step takes numRoundsOHTable rounds.
+3. Set JYnewK ←−FReplicatedMPC.IfThenElse(JisWriteK,JYnewK,JYaccumK). Set the Alibi mask of JYnewK, JYnew.eK to 0. Call
+FLinear.Store(JXK,JYnewK). This takes 1 round.
+(a) Silently extract the numLevels-bit value JeℓK from JYℓK and update JeaccumK ←−Jeaccum ⊕eℓK. Update the value of
+JfoundK to found∨foundℓAdditionally, In parallel with the first round of the next iteration of the loop, update
+JYaccumK ←−FReplicatedMPC.IfThenElse(JfoundℓK,JYℓK,JYaccumK). This step takes one round.
+4. If t = |L0|, run the subroutine ΠDORAM.Rebuild().
+ΠDORAM.Rebuild(): We define a level Li for 1 ≤i ≤numLevels in the DORAM to be full if it contains a ShufTable
+with (baseAmpFactor −1)·baseAmpFactori ·|L0| elements. L0 is full if it has been written to |L0| times since it was last
+initialized. Suppose that ℓis the largest number such that levels L0, ... Lℓare full while Lℓ+1 is not, instead containing
+A·baseAmpFactorℓ|L0| elements for some A ∈{0,...,baseAmpFactor −2} If ℓ= numLevels, then necessarily A = 1.
+1. By concatenating the output of L0.Extract() and Li.Extract() for i ∈[ℓ+1], the players prepare lists JXK, JYK of length
+(A+1)·baseAmpFactorℓ·|L0| containing all the elements to be (potentially) placed in Lℓ+1.
+2. If ℓ< numLevels:
+In parallel, relabel the dummies, calling JX∗
+j K ←−FReplicatedMPC.ReplaceIfNull(JXjK,JN + jK) and JY ∗
+j K = JYjK (syntac-
+tically convenient) for j ∈[(A + 1) · baseAmpFactorℓ· |L0|] (this is so P1 does not learn how many dummies were
+queried at the previous level).
+3. If ℓ= numLevels: The players “cleanse out the dummies” by shuffling, J ˆXK,JˆYK = FABB.ObliviousShuffle(JXK,JYK),
+and then revealing which element is dummy by calling FABB.Reveal(FABB.Equals(J ˆXjK,⊥)) for all j.
+The above will reveal exactly N 0’s and N 1’s (because we started with N “real” elements which we have maintained
+and we made N queries since last build LnumLevels. Since stale elements are relabeled (step 2.A) the invariant holds).
+Compact the J ˆXK and JˆYK shares corresponding to 0’s into arrays JX∗K and JY ∗K.
+4. The players reinitialize the cache by calling L0 = FLinear.Init(|L0|) and build Lℓ+1 by calling JXstashK,JY stashK =
+Lℓ+1.Build(JX∗K,JY ∗K)
+5. For i from 1 to stashSize, update the Alibi bit JeK[ℓ+ 1] = of JY stash
+i
+K to 1, then call FLinear.Store(JXstash
+i
+K,JY stash
+i
+K).
+The players reset t = 0.
+Figure 4: The complete DORAM protocol, ΠDORAM
+USENIX Association
+32nd USENIX Security Symposium    3883
+
+15
+20
+25
+30
+100
+200
+300
+400
+500
+600
+700
+800
+900
+Log number of elements (log2 N)
+Queries/second
+GigaDORAM
+DuORAM [45]
+PFEDORAM [26]
+Circuit ORAM [46]
+Square Root ORAM [53]
+FLORAM-CPRG [16]
+FLORAM [16]
+3PC-ORAM [25]
+Figure 5: Number of queries/second vs. log number of ele-
+ments (N). Each query is a write of random data to a random
+index. Preprocessing costs are accounted for. The number of
+queries per second is an estimate of (at least) hundreds of
+queries. All constructions were run in AWS cluster placement
+network environment.
+of DuORAM degrades dramatically with log(N). In partic-
+ular, we see that at log(N) = 20, for latency 8ms GigaDO-
+RAM outperforms DuORAM while for 8ms latency DuO-
+RAM edges out GigaDORAM. At log(N) = 25 GigaDORAM
+outperforms DuORAM for all sub-40ms latency.
+Figure 6.b shows that the performance of neither con-
+struction degrades substantially with bandwidth. Our exper-
+iments show DuORAM outperforming GigaDORAM for
+log(N) = 20 and GigaDORAM outperforming DuORAM for
+log(N) = 25. Again, we see the performance of DuORAM
+degrading significantly with log(N) while GigaDORAM’s
+performance hardly changes.
+9.3
+The cost of GigaDORAM
+Running large computations in AWS can be quite expensive,
+but due to its high query/sec, GigaDORAM is cost efficient.
+Including both network and compute costs, GigaDORAM
+can handle about over 120,000 queries per dollar with cur-
+log(N)
+Standard Q/s
+Cluster Q/s
+Slowdown
+20
+543
+812
+33%
+23
+573
+910
+37%
+26
+597
+877
+32%
+29
+589
+891
+34%
+Table 1: Benchmarking GigaDORAM using 3 different
+c5n.metal machines standard placement vs cluster placement
+in us-west-2. We benchmarked over 100,000 queries, using
+lowMC as our SISO-PRF.
+0
+10
+20
+30
+40
+5
+10
+15
+20
+25
+30
+35
+40
+Latency (ms)
+Queries/second
+(a)
+0
+0.2
+0.4
+0.6
+0.8
+1
+0
+1
+2
+3
+4
+5
+6
+7
+Bandwidth (Gbit/sec)
+Queries/second
+GigaDORAM (log(N) = 20)
+DuORAM (log(N) = 20)
+GigaDORAM (log(N) = 25)
+DuORAM (log(N) = 25)
+(b)
+Figure 6: (a) Number of queries/second vs. latency in millisec-
+onds for fixed 1Gbit network (b) Number of queries/second
+vs. Bandwidth in Gbit for fixed 8ms latency. Executed on a
+single c5.metal via multiple processes restricted in communi-
+cation via the tc. Preprocessing costs are accounted for. The
+number of queries per second is an estimate of 5000 queries
+for GigaDORAM and 128 for DuORAM.
+rent AWS pricing, which is 10× DuORAM [45], which is to
+the best of our knowledge, the previously most cost efficient
+DORAM. See Appendix F for the calculations.
+3884    32nd USENIX Security Symposium
+USENIX Association
+
+log(N)
+AES Q/s
+LowMC Q/s
+Slowdown
+20
+393
+812
+51%
+23
+405
+910
+55%
+26
+401
+877
+54%
+29
+417
+891
+53%
+Table 2: Benchmarking GigaDORAM using AES to imple-
+ment a SISO-PRF instead of LowMC. We run the benchmark
+in the same setting as Figure 5.
+9.4
+Replacing LowMC with AES
+For reference, we also evaluated GigaDORAM using AES
+instead of LowMC as our SISO-PRF. The AES circuit we
+has about 10× the ANDs and 10× the AND-depth as the
+LowMC circuit we use, and is thus less efficient to evaluate
+under MPC. Table 2 shows approximately a 2× slowdown to
+GigaDORAM when using AES instead of LowMC.
+10
+Conclusion
+In this work we introduce GigaDORAM, the most efficient
+and scalable DORAM construction to date. At N = 231, our
+DORAM can perform over 700 queries per second, making
+GigaDORAM orders of magnitude faster than prior DORAM
+constructions in low-latency environments. We give a custom
+C++, open source implementation of GigaDORAM. We hope
+GigaDORAM will enable the first somewhat practical RAM-
+MPC applications and open a new realm of possibilities for
+privacy-preserving cloud data-stores.
+11
+Acknowledgments
+We thank AWS solutions engineers, the LowMC [2] authors,
+the PFEDORAM [26] authors, the DuORAM [45] authors,
+the replicated-MPC [3] authors for their help with bench-
+marking. We thank Michael Brown, Eric Chen, Matthew Day,
+Daniel Noble and Sam Kumar for helpful discussions. We
+also thank the USENIX reviewers for their extensive and de-
+tailed feedback which significatnly improved the quality of
+the exposition.
+Supported in part by DARPA under Cooperative Agree-
+ment HR0011-20-2-0025, the Algorand Centers of Excellence
+programme managed by Algorand Foundation, NSF grants
+CNS-2246355, CCF-2220450 and CNS-2001096, US-Israel
+BSF grant 2015782, Amazon Faculty Award, Cisco Research
+Award and Sunday Group. Any views, opinions, findings,
+conclusions or recommendations contained herein are those
+of the author(s) and should not be interpreted as necessarily
+representing the official policies, either expressed or implied,
+of DARPA, the Department of Defense, the Algorand Foun-
+dation, or the U.S. Government. The U.S. Government is
+authorized to reproduce and distribute reprints for govern-
+mental purposes not withstanding any copyright annotation
+therein.
+References
+[1] AGER, B., CHATZIS, N., FELDMANN, A., SARRAR, N., UHLIG, S.,
+AND WILLINGER, W. Anatomy of a large European IXP. In SIG-
+COMM (2012).
+[2] ALBRECHT, M. R., RECHBERGER, C., SCHNEIDER, T., TIESSEN,
+T., AND ZOHNER, M. Ciphers for MPC and FHE. In EUROCRYPT
+(2015), Springer, pp. 430–454.
+[3] ARAKI, T., FURAKAWA, J., LINDELL, Y., NOF, A., AND OHARA, K.
+High-throughput semi-honest secure three-party computation with an
+honest majority. In CCS (2016).
+[4] ASHAROV, G., KOMARGODSKI, I., LIN, W.-K., NAYAK, K., PE-
+SERICO, E., AND SHI, E. OptORAMa: Optimal oblivious RAM. In
+EUROCRYPT (2020).
+[5] ASHAROV, G., KOMARGODSKI, I., LIN, W.-K., AND SHI, E. Oblivi-
+ous RAM with worst-case logarithmic overhead. In CRYPTO (2021),
+Springer, pp. 610–640.
+[6] BANIK, S., BAROOTI, K., VAUDENAY, S., AND YAN, H. New attacks
+on LowMC instances with a single plaintext/ciphertext pair.
+[7] BAR, J. The floodgates are open – increased network bandwidth for
+EC2 instances. https://aws.amazon.com/blogs/aws/the-flood
+gates-are-open-increased-network-bandwidth-for-ec2-i
+nstances/, 2018.
+[8] BEAVER, D., MICALI, S., AND ROGAWAY, P. The round complexity
+of secure protocols. In STOC (1990), pp. 503–513.
+[9] BOGDANOV, D., KAMM, L., KUBO, B., REBANE, R., SOKK, V., AND
+TALVISTE, R. Students and taxes: a privacy-preserving study using
+secure computation. Proc. Priv. Enhancing Technol. 2016, 3 (2016),
+117–135.
+[10] BOYLE, E., GILBOA, N., AND ISHAI, Y. Function secret sharing. In
+EUROCRYPT (2015).
+[11] BUNN, P., KATZ, J., KUSHILEVITZ, E., AND OSTROVSKY, R. Effi-
+cient 3-party distributed ORAM. In SCN (2020).
+[12] CHASE, M., DERLER, D., GOLDFEDER, S., ORLANDI, C., RA-
+MACHER, S., RECHBERGER, C., SLAMANIG, D., AND ZAVERUCHA,
+G. Post-quantum zero-knowledge and signatures from symmetric-key
+primitives. In CCS (2017), pp. 1825–1842.
+[13] CHAUM, D., CRÉPEAU, C., AND DAMGÅRD, I. Multiparty Uncondi-
+tionally Secure Protocols. In STOC (1988).
+[14] CRAMER, R., DAMGÅRD, I., AND ISHAI, Y. Share conversion, pseu-
+dorandom secret-sharing and applications to secure computation. In
+TCC (2005).
+[15] DINUR, I., LIU, Y., MEIER, W., AND WANG, Q. Optimized interpola-
+tion attacks on lowmc. In ASIACRYPT (2015), Springer, pp. 535–560.
+[16] DOERNER, J., AND SHELAT, A. Scaling ORAM for secure computa-
+tion. In CCS (2017).
+[17] FALK, B. H., NOBLE, D., AND OSTROVSKY, R. Alibi: A flaw in
+cuckoo-hashing based hierarchical ORAM schemes and a solution. In
+EUROCRYPT (2021), Springer, pp. 338–369.
+[18] FALK, B. H., NOBLE, D., AND OSTROVSKY, R. 3-party distributed
+ORAM from oblivious set membership. In SCN (2022), Springer,
+pp. 437–461.
+[19] GILBOA, N., AND ISHAI, Y. Distributed point functions and their
+applications. In EUROCRYPT (2014).
+[20] GOLDREICH, O., MICALI, S., AND WIGDERSON, A. How to play
+any mental game. In STOC (1987).
+USENIX Association
+32nd USENIX Security Symposium    3885
+
+[21] GOLDREICH, O., AND OSTROVSKY, R.
+Software protection and
+simulation on oblivious RAMs. JACM 43, 3 (1996).
+[22] GOODRICH, M. T., MITZENMACHER, M., OHRIMENKO, O., AND
+TAMASSIA, R. Privacy-preserving group data access via stateless
+oblivious RAM simulation. In SODA (2012).
+[23] GORDON, S. D., KATZ, J., KOLESNIKOV, V., KRELL, F., MALKIN,
+T., RAYKOVA, M., AND VAHLIS, Y. Secure two-party computation in
+sublinear (amortized) time. In CCS (2012).
+[24] GRASSI, L., RECHBERGER, C., ROTARU, D., SCHOLL, P., AND
+SMART, N. P. MPC-friendly symmetric key primitives. In CCS (2016),
+pp. 430–443.
+[25] JARECKI, S., AND WEI, B. 3PC ORAM with low latency, low band-
+width, and fast batch retrieval. In ACNS (2018).
+[26] JI, K., ZHANG, B., LU, T., AND REN, K. Multi-party private function
+evaluation for RAM. Cryptology ePrint Archive, Paper 2022/939, 2022.
+https://eprint.iacr.org/2022/939.
+[27] KIRSCH, A., MITZENMACHER, M., AND WIEDER, U. More robust
+hashing: Cuckoo hashing with a stash. SIAM Journal on Computing
+(2009).
+[28] KUSHILEVITZ, E., LU, S., AND OSTROVSKY, R. On the (in) security
+of hash-based oblivious RAM and a new balancing scheme. In SODA
+(2012).
+[29] LAUD, P. Privacy-preserving minimum spanning trees through obliv-
+ious parallel RAM for secure multiparty computation. IACR ePrint
+Archive 2014/630, 2014.
+[30] LAUR, S., WILLEMSON, J., AND ZHANG, B. Round-efficient oblivi-
+ous database manipulation. In ISC (2011).
+[31] LIU, F., ISOBE, T., AND MEIER, W. Cryptanalysis of full LowMC and
+LowMC-M with algebraic techniques. In CRYPTO (2021), pp. 368–
+401.
+[32] LU, S., AND OSTROVSKY, R. Distributed oblivious RAM for secure
+two-party computation. In TCC (2013).
+[33] MOHASSEL, P., AND RINDAL, P. ABY3: A mixed protocol framework
+for machine learning. In CCS (2018), pp. 35–52.
+[34] NAVEED, M. The fallacy of composition of oblivious RAM and search-
+able encryption. IACR ePrint 2015/688, 2015.
+[35] NIST. Post-quantum cryptography PQC: Round 3 submissions. ht
+tps://csrc.nist.gov/Projects/post-quantum-cryptograph
+y/post-quantum-cryptography-standardization/round-3-s
+ubmissions, 2021.
+[36] NOBLE, D. An intimate analysis of cuckoo hashing with a stash. IACR
+ePrint 2021/447, 2021.
+[37] OSTROVSKY, R. Efficient computation on oblivious RAMs. In STOC
+(1990).
+[38] OSTROVSKY, R. Software Protection and Simulation On Oblivious
+RAMs. PhD thesis, Massachusetts Institute of Technology, 1992.
+[39] OSTROVSKY, R., AND SHOUP, V. Private information storage. In
+STOC (1997), vol. 97.
+[40] PAGH, R., AND RODLER, F. F. Cuckoo hashing. In ESA (2001).
+[41] PATEL, S., PERSIANO, G., RAYKOVA, M., AND YEO, K. PanORAMa:
+Oblivious RAM with logarithmic overhead. In FOCS (2018).
+[42] RINDAL, P. The ABY3 Framework for Machine Learning and Database
+Operations. https://github.com/ladnir/aby3.
+[43] SHI, E., CHAN, T.-H. H., STEFANOV, E., AND LI, M. Oblivious
+RAM with O((logN)3) worst-case cost. In ASIACRYPT (2011).
+[44] SMITH, P. Internet exchange point design. https://nsrc.org/wor
+kshops/2021/marwan-cnrst-ixp/networking/peering-ixp/e
+n/presentations/IXP-Design.pdf, 2021.
+[45] VADAPALLI, A., HENRY, R., AND GOLDBERG, I.
+DuORAM: A
+bandwidth-efficient distributed ORAM for 2- and 3-party computation.
+IACR ePrint 2022/1747, 2022.
+[46] WANG, X., CHAN, H., AND SHI, E. Circuit ORAM: On tightness of
+the Goldreich-Ostrovsky lower bound. In CCS (2015).
+[47] WANG, X., RANELLUCCI, S., AND KATZ, J. Global-scale secure
+multiparty computation. In CCS (2017), pp. 39–56.
+[48] WANG, X., RANELLUCCI, S., AND KATZ, J. Global-scale secure
+multiparty computation. In CCS (2017), pp. 39–56.
+[49] WANG, X. S., HUANG, Y., CHAN, T.-H. H., SHELAT, A., AND SHI,
+E. SCORAM: oblivious RAM for secure computation. In CCS (2014).
+[50] YAO, A. Protocols for secure computations (extended abstract). In
+FOCS (1982).
+[51] YAO, A. How to generate and exchange secrets. In FOCS (1986).
+[52] ZAHUR, S., AND EVANS, D. Obliv-C: A language for extensible
+data-oblivious computation. IACR ePrint 2015/1153, 2015.
+[53] ZAHUR, S., WANG, X., RAYKOVA, M., GASCÓN, A., DOERNER, J.,
+EVANS, D., AND KATZ, J. Revisiting square-root ORAM: efficient
+random access in multi-party computation. In S & P (2016).
+A
+ABB Functionalities
+The basic ABB operations we use are described in Figure 7.
+B
+The naïve cache protocol
+The naïve cache protocol works as follows
+r ←⊥
+for i = 1,...,t do
+if x = xi then
+r ←yi
+end if
+end for
+Return: r
+This protocol has multiplicative depth, t, thus implement-
+ing this under the MPC of [3] leads to a protocol with
+numRoundsCache = |L0|. It is possible to implement this
+with a garbled-circuit-based approach, (e.g. 3-party garbled
+circuits [33] or BMR [8]). This results in a constant-round
+MPC protocol, but the communication complexity is large –
+too inefficient for our application.
+ΠSpeedCache, (described in Figure 3), parallelizes the equal-
+ity tests of the naïve protocol leading to a low-depth circuit,
+that we implement using the 3-party MPC of [3].
+C
+LowMC
+In this section, we discuss LowMC, an MPC-friendly block-
+cipher we use to instantiate FABB.PRFEval.
+LowMC. LowMC (Low Multiplicative Complexity) [2] is a
+family of block cipher that is built with MPC, ZK, and FHE in
+mind. LowMC has a variety of instantiations which trades low
+3886    32nd USENIX Security Symposium
+USENIX Association
+
+• [x](i,j) = FABB.InputTo2Sharing(x,Pi,Pj). A single player shares creates an additive sharing of a secret, x, among
+participants i and j.
+• [x](i,j) = FABB.ReshareReplicatedTo2Sharing(JxK,{Pi,Pj}). Convert a 3-party CNF sharing of a secret, x, to a two-party
+DNF sharing of the same secret, x, held by participants i and j.
+• [x](i′,j′) = FABB.Reshare2To2Sharing([x](i,j),{Pi′,Pj′}). Convert a two-party DNF sharing of a secret, x, held by partic-
+ipants i and j, to a two-party DNF sharing of the same secret, x, held by participants i′ and j′.
+• JxK = FABB.Reshare2SharingToReplicated([x](i,j)). Convert a two-party DNF sharing of a secret, x, held by participants
+i and j to a three-party CNF sharing of the same secret, x.
+• JkK = FABB.RandomElement(κ). Generate a three-party CNF sharing of a uniformly random field element (whose
+value is unknown to the participants).
+• x = FABB.RevealTo(Pi,JxK). Reveal a secret-shared value, JxK, to participant Pi.
+We also abstract away a few more sophisticated operations:
+• JyK = FABB.PRFEval(JxK,JkK). Evaluate a SISO-PRF with secret-shared key, JkK, on secret-shared input, JxK, to obtain
+a secret-shared output, JyK. In our instantation, we instantiate the FABB.PRFEval(·,·) functionality by evaluating the
+LowMC block cipher [2] under MPC. Specifically, in our custom implementation of a (3,1)-MPC protocol (based
+on [3]).
+• JQueryCircuit(x1,...,xl)K = FABB.EvalCircuit(3,1)GC(QueryCircuit,Inputs = (Jx1K,...,JxlK)). Evaluate a 3-party
+garbled circuit on secret-shared inputs Jx1K,...,JxlK, and returns a sharing of the output of the circuit computation. We
+use a custom implementation of the 3-party Garbled Circuit protocol outlined in ABY3 [33].
+• JYK = FABB.ObliviousShuffle(JXK). This functionality implements a linear-communication, three-party shuffle of se-
+cret shared values [30]. So Y = π(X) for some random permutation, unknown to the participants. We also use a modified
+protocol to output a sharing of the permutation as well. JYK,JLK = FABB.ObliviousShuffle(JXK,DistributeShuffle =
+True). In this setting,Y = π(X) as before, and L = π−1(1,2,...,n). We describe how to implement this novel “Persistent
+shuffle” in Section 5.1.
+Figure 7: The ABB functionalites used in our DORAM protocol.
+log(N)
+# of bytes sent
+20
+5.86·109
+25
+5.64·109
+30
+6.73·109
+Figure 8: The number of bytes sent by a single GigaDORAM machine for
+100,000 queries, using LowMC as the PRF at varying values of log(N) at the
+same values of baseAmpFactor, numLevels, in which our main benchmark
+was conducted (see Figure 5).
+USENIX Association
+32nd USENIX Security Symposium    3887
+
+number of AND gates and a low circuit AND-depth.16 The
+instantiation of LowMC we use has 46837 total gates, out of
+which 1134 are ANDs, stacked into 9-AND-depth circuit. By
+contrast, AES has a total of 36663 gates, out of which 6400
+are ANDs, stacked into a 60-AND-depth-circuit.17 Since the
+AND-depth of the circuit is equal to the number of rounds
+to evaluate the circuit under MPC, using LowMC instead of
+AES saves 51 rounds of communication for each query.
+We provide the first circuit files for LowMC and encode
+them in the popular Bristol fashion.18 The traditional Bristol
+fashion requires that each virtual “wire” to be only assigned
+once, requiring more memory for the computation than neces-
+sary. Threading wires through the circuit (i.e., reusing mem-
+ory) we are able speed up the computation of LowMC under
+the [3] MPC by a factor of 2.
+Although LowMC has less analysis than AES, it’s security
+has been been adapted into the Picnic signature scheme [12],
+a 3rd round candidate in the NIST post-quantum digital sig-
+nature contest [35]. Additionally, there have been several
+thorough cryptanalysis attempts [6,15,31] motivated by an on-
+going Microsoft-funded challenge, none discovering an attack
+which made the community doubt the security LowMC.19
+D
+Alibi reinsertion
+We ensure that ΠShufTable.Build has negligible failure prob-
+ability (in N) by outputting a small stash, Stash, which we
+reinsert into the cache. Naïvely, for all (JXiK,JYiK) ∈Stash
+we could call L0.Append(JXiK,JYiK), “reinserting” (JXiK,JYiK)
+which could not fit in Li’s CHT into the cache. Yet, as
+proved in [17], the naïve reinsertion technique above com-
+promises the obliviousness of (D)ORAM. Intuitively, if we
+reinsert (JXiK,JYiK) to L0 from Lj and then query JXiK, in the
+aggregate, an eavesdropper could tell that we should have
+queried JXiK to Lj, but instead queried a dummy because we
+found (JXiK,JYiK) at some previous level (it was reinserted).
+Roughly speaking, our goal (∗) is to append some data to
+(JXiK,JYiK) such that when (JXiK,JYiK) is reinserted from Lj
+and found at Lk for k < j, we will know to continue query-
+ing Lk+1,...,Lj as if we did not find (JXiK,JYiK), and query
+Lj+1,...,LnumLevels as if we found (JXiK,JYiK) at Lj. To do
+this, we store JeXiK ∈{0,1}numLevels as the last numLevels
+bits of Yi (it is assumed that D > numLevels) where eXi[j] = 1
+iff (JXiK,JYiK) was reinserted from Lj. We set eXi = 0numLevels
+every time we query (JXiK,JYiK). When querying for JxK and
+finding it at Lk where ex[j] = 1 from Lj, under MPC we “de-
+cide” to query according to (∗). The full details of how the
+Alibi bits are used can be found Figure 4.
+16LowMC provides a script to calculate this tradeoff https://github.c
+om/LowMC/lowmc/blob/master/determine_rounds.py.
+17We refer to Bristol Fashion AES circuit file from https://homes.es
+at.kuleuven.be/~nsmart/MPC/MAND/aes_128.txt
+18https://homes.esat.kuleuven.be/~nsmart/MPC/
+19https://lowmcchallenge.github.io/
+E
+Benchmarking previous DORAMs
+We benchmark the (3,1) semi-honest (most efficient) DuO-
+RAM variant [45] via their convenient Docker setup on a
+single c5n.metal machine. We use the set-networking.sh
+script they provide to set .229ms latency and 25Gbit band-
+width simulated network between Docker containers. We do
+not restrict the number of cores their process can use, and
+DuORAM used all 96 vCPUs during preprocessing.
+We benchmark FLORAM, FLORAM-CPRG, Circuit
+ORAM, and Square Root ORAM [16,46,53] via the obliv-
+c [52] based setup given by [16].20 We benchmark the above
+2-party constructions between two cluster-placed c5n.metal
+machines. For backwards compatibility with obliv-c, we run
+tests on Ubuntu 18.04.6 LTS. We do not restrict the network
+via the tc command as was done in [16].
+Bingsheng Zhang kindly benchmarked the proprietary PFE-
+DORAM [26] on a comparable network to ours. Zhang exe-
+cuted the protocol via separate processes on the same Intel(R)
+Core i7 8700 CPU 3.2 GHz, 6 CPUs, 32 GB Memory, 1TB
+SSD machine.Bandwidth between the processes was not lim-
+ited and latency was restricted to 0.05ms.
+We benchmark 3PC-ORAM [25] via the dockerization
+graciously provided by the DuORAM [45] team21. Like other
+constructions, we ran 3PC-ORAM with 0.229ms latency and
+25Gbit bandwidth.
+F
+The cost of running GigaDORAM
+The c5n.metal machines we rent cost $3.888 per hour, and
+running DORAM requires 3 different machines. GigaDO-
+RAM. Given that we get ≈800 queries per second, (Figure
+5), we get 800·3600/(3.888·3) = 246914 queries per USD.
+If we benchmark in the same region, all communication is
+free. If we benchmark in different regions, according to AWS
+the charge per Gigabyte in and out of AWS is $0.01.22 Accord-
+ing to Table 8 it is reasonable to conservatively estimate that
+GigaDORAMrequires 3 · 7 · 109/100,000 = 210,000 bytes
+per query = 210,000/230 = 2 · 10−4 Gigabytes per query.
+Multiplying by the dollar cost, we get that GigaDORAM
+requires 2·10−4 ·.02 = 4·10−6 USD per query.
+Summing up communication and computation, we get that
+we have 1/246914 + 4 · 10−6 = 8.05 · 10−6 which gives ap-
+proximately 120,000 queries per dollar.
+By comparison, DuORAM [45] reports 8900·10−6 dollars
+for 128 queries (computation cost) giving 128/8900 · 10−6
+queries per dollar. For communication DuORAM gets 5 ·
+10−6 dollars per 128 queries, giving 128/5·10−6. This gives
+128/8905·106 = 14,374 ≈15,000 queries per dollar.
+20See https://gitlab.com/neucrypt/floram/
+21https://git-crysp.uwaterloo.ca/iang/circuit-oram-docker
+22https://aws.amazon.com/ec2/pricing/on-demand/
+3888    32nd USENIX Security Symposium
+USENIX Association
+

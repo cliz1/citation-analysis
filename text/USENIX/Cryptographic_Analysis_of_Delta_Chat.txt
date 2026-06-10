@@ -1,0 +1,1917 @@
+This paper is included in the Proceedings of the 
+33rd USENIX Security Symposium.
+August 14–16, 2024 • Philadelphia, PA, USA
+978-1-939133-44-1
+Open access to the Proceedings of the 
+33rd USENIX Security Symposium 
+is sponsored by USENIX.
+Cryptographic Analysis of Delta Chat
+Yuanming Song, Lenka Mareková, and Kenneth G. Paterson, ETH Zurich
+https://www.usenix.org/conference/usenixsecurity24/presentation/song-yuanming
+
+Cryptographic Analysis of Delta Chat
+Yuanming Song
+ETH Zurich
+Lenka Mareková
+ETH Zurich
+Kenneth G. Paterson
+ETH Zurich
+Abstract
+We analyse the cryptographic protocols underlying Delta
+Chat, a decentralised messaging application which uses e-
+mail infrastructure for message delivery. It provides end-to-
+end encryption by implementing the Autocrypt standard and
+the SecureJoin protocols, both making use of the OpenPGP
+standard. Delta Chat’s adoption by categories of high-risk
+users such as journalists and activists, but also more generally
+users in regions affected by Internet censorship, makes it a tar-
+get for powerful adversaries. Yet, the security of its protocols
+has not been studied to date. We describe five new attacks on
+Delta Chat in its own threat model, exploiting cross-protocol
+interactions between its implementation of SecureJoin and
+Autocrypt, as well as bugs in rPGP, its OpenPGP library. The
+findings have been disclosed to the Delta Chat team, who
+implemented fixes.
+1
+Introduction
+Delta Chat1 is an open-source decentralised messaging ap-
+plication based on e-mail infrastructure. It can be seen as
+a custom-built e-mail client: users log into Delta Chat with
+their existing e-mail accounts, and messages in Delta Chat are
+specially formatted e-mails. It does not have a central server,
+since users can choose different e-mail providers or even host
+their own e-mail servers. It provides end-to-end encryption by
+implementing the Autocrypt standard [53] and the SecureJoin
+protocols [23], both based on a subset of the OpenPGP stan-
+dard [34]. It functions in two modes, with different security:
+verified chats guarantee end-to-end encryption, while unveri-
+fied chats are not intended to be secure against active network
+attackers, i.e. they are vulnerable to machine-in-the-middle
+(MITM) attacks, and may not even be encrypted.
+While Delta Chat does not explicitly advertise itself as
+suitable for high-risk users, these users likely make up a no-
+ticeable part of Delta Chat’s user base. For example, Delta
+Chat’s website lists feedback from people in regions with
+1https://delta.chat/
+strict Internet governance [22]. Delta Chat works with activist
+groupings and researchers to improve the usability and secu-
+rity of the application for high-risk users, and has produced
+several need-finding reports by engaging with journalists and
+activists in Ukraine [32,33] and elsewhere [31].
+Delta Chat has been supported or recommended by several
+organisations in the human rights context. Among other fund-
+ing sources, Delta Chat has received support from the U.S. Bu-
+reau of Democracy, Human Rights and Labor to make Delta
+Chat “more resilient and secure in places often affected by
+internet censorship and shutdowns” [20]. Front Line Defend-
+ers, a human rights organisation, recommended Delta Chat
+for secure communication during COVID-19 [27]; eQualitie,
+a digital security organisation, recommends Delta Chat to
+Ukrainian users in the ongoing Russia-Ukraine war [49].
+Despite being perceived as secure and engaging with high-
+risk users, the security of Delta Chat is still largely unclear,
+especially for its cryptographic components and protocol im-
+plementations. Further, while its position as both an instant
+messenger and an e-mail client ensures easier adoption, it also
+brings more complexity to its protocols, thereby enlarging its
+attack surface. The Autocrypt and SecureJoin protocols have
+received considerable input from academia [45], but have
+never been formally analysed. This is especially concerning
+since these protocols use OpenPGP in non-standard ways,
+and the Delta Chat team has made substantial changes to
+the SecureJoin protocols. Further, the OpenPGP library used
+by Delta Chat, rPGP, has received relatively little attention
+compared to other OpenPGP libraries.
+Recent works have uncovered serious security flaws in sev-
+eral messaging applications deploying custom cryptographic
+protocols such as Bridgefy [3,6], Matrix [4] and Threema [47].
+In the last two, flaws were found after the application in ques-
+tion was “vetted” via security audits, showing that audits
+alone cannot establish a protocol as secure and trustworthy.
+Indeed, Delta Chat too has undergone two audits that covered
+its use of cryptography [51,52]; as we will see, this was not
+sufficient to prevent attacks.
+USENIX Association
+33rd USENIX Security Symposium    6363
+
+1.1
+Contributions
+We have analysed the core cryptographic protocols used by
+Delta Chat, discovering five new attacks:
+1. Gossip key injection. An attacker can send an e-mail
+to the target such that the target will replace the public
+key of a given contact of the target with an attacker-
+controlled key and mark it as verified.
+2. Group member removal. An attacker can remove ar-
+bitrary members from a verified group as if they were
+removed by other members by adding a carefully con-
+structed plaintext e-mail header to a normal group mes-
+sage.
+3. Synchronisation forgery. An attacker capable of spoof-
+ing self-addressed e-mails for the target can trivially
+forge synchronisation messages. This allows the attacker
+to verify themselves to the target or change chat statuses.
+4. InsecureJoin observer. An attacker can exploit the fact
+that clients observe self-sent SecureJoin protocol mes-
+sages from other devices to trick the target into marking
+an attacker-controlled key as verified.
+5. Autocrypt Setup forgery. An attacker can forge an Au-
+tocrypt Setup Message, which is used to transfer a user’s
+secret key between different e-mail clients. This enables
+the attacker to make the target use a key known by the
+attacker.
+Overall, our analysis demonstrates that Delta Chat users
+were vulnerable to: a MITM attacker reading and modify-
+ing their messages even in verified chats, being impersonated
+to other Delta Chat users (or vice versa), their chat statuses
+and setup being modified, being deceived to use an attacker-
+controlled OpenPGP key and consequently losing most secu-
+rity guarantees, and denial-of-service attacks.
+1.2
+Related Work
+No prior works to date provide an in-depth security analysis
+of Delta Chat or its specialised protocols. ClaimChain [41], a
+part of the CounterMITM [46] specification which served as
+the basis for SecureJoin, is a solution for privacy-preserving
+key distribution for Autocrypt, but it was never implemented
+in Delta Chat. A recent work [28] proposed to extend the
+OpenPGP library used by Delta Chat with post-quantum prim-
+itives, but did not include a security analysis.
+OpenPGP itself has a long history in the literature as evi-
+denced by EFAIL [48], attacks on signatures [44] and ElGa-
+mal implementations [26], format oracle attacks [39] and key
+overwriting attacks [17]. It has also been criticised for its lack
+of usability [50, 56] and wider standardisation and deploy-
+ment issues [35]. Yet, efforts are underway for updating the
+cryptographic building blocks of OpenPGP [57].
+Delta Chat has undergone four independent security au-
+dits [20], and is planning a fifth audit in 2024 [37]. Two of the
+audits covered the cryptographic components of Delta Chat,
+including one in 2019 on its OpenPGP and RSA libraries [51],
+and another in 2020 on its core Rust libraries [52], both con-
+ducted by Include Security.
+Our work fits within the larger area of cryptographic study
+of secure messaging protocols. A number of works show
+attacks on messaging apps [3,4,6,7,47], while other works
+provide security proofs, largely focusing on Signal-based
+protocols [9,15,24], though attacks may still be possible [25].
+From a wider perspective, analysis of TLS 1.2 has provided
+both security proofs [40,43] and practical attacks [1,8,13].
+In Signal, verification of user keys is more invisible than
+in Delta Chat, relegated to an optional feature of verify-
+ing “safety numbers”. Recent works have focused on both
+its usability aspects [54] and enhancing its security guaran-
+tees [29, 30]. For group communication, Messaging Layer
+Security (MLS) [14] could provide an alternative, provably
+secure design [10,11,18]; however, implementing it in a de-
+centralised fashion remains an open problem [12].
+Notably, Delta Chat’s need-finding reports [31–33] uncov-
+ered many of the information security practices of higher-risk
+users that were later replicated in a different context [2].
+1.3
+Methodology
+We conducted a security analysis on the cryptography used in
+Delta Chat, covering Delta Chat’s cryptographic components
+as well as Delta Chat’s implementation of the Autocrypt and
+SecureJoin protocols. We manually analysed Delta Chat’s
+core Rust implementation2 as well as the relevant parts of
+rPGP,3 Delta Chat’s OpenPGP library: we analysed version
+1.132.0 of the Delta Chat core library,4 released on 6 Decem-
+ber 2023, and version 0.10.2 of the rPGP library,5 released on
+24 July 2023. We studied the specifications of OpenPGP [34],
+Autocrypt [53], and SecureJoin [23] and compared them with
+their implementations in Delta Chat and rPGP.
+We implemented our attacks using the Python bindings
+for the Delta Chat core library.6 We instantiated eavesdrop-
+pers and network attackers as malicious SMTP proxies, and
+we used a local testing e-mail server for attack simulation.
+We verified our proof-of-concept attacks on Delta Chat core
+versions 1.132.0 and 1.133.27 and Delta Chat Desktop 1.42.2.
+Since Delta Chat and its dependencies are open-source, we
+did not perform any reverse engineering for our analysis. Our
+analysis and tests did not involve any real Delta Chat users or
+target the Delta Chat infrastructure.
+2https://github.com/deltachat/deltachat-core-rust
+3https://github.com/rpgp/rpgp
+4https://github.com/deltachat/deltachat-core-rust/
+releases/tag/v1.132.0
+5https://crates.io/crates/pgp/0.10.2
+6https://pypi.org/project/deltachat/
+7The latest core version available to us at the time.
+6364    33rd USENIX Security Symposium
+USENIX Association
+
+1.4
+Responsible Disclosure
+We disclosed our findings to the Delta Chat development team
+on 2 February 2024, suggesting a 90-day disclosure period.
+They acknowledged receipt and agreed to a coordinated dis-
+closure on 7 February 2024. The team implemented fixes for
+all of the main attacks as well as for a number of additional
+issues identified during our analysis. Some of the fixes were
+implemented in rPGP. The fixes were released to end users as
+part of Delta Chat application versions 1.44 on 12-16 March
+2024, with a public disclosure describing the issues on 25
+March 2024 in order to allow time for users to update [21].
+1.5
+Overview of the Paper
+We describe Delta Chat’s threat model in Section 2 and its
+architecture in Section 3. We describe our attacks in Section 4
+and discuss the implications of our findings in Section 5. For
+extended background and other details we may refer the reader
+to the full version of the paper.8
+2
+Threat Model
+Delta Chat provides different levels of security for different
+types of chats. Verified chats provide guaranteed end-to-end
+encryption with the SecureJoin protocols, protecting against
+network attackers that can actively modify messages, such
+as malicious e-mail servers. Unverified chats are opportunis-
+tically end-to-end encrypted via Autocrypt, protected only
+against passive eavesdropping attackers. Hence, for unveri-
+fied chats, MITM attacks are outside of the threat model [37];
+it is also possible to use them to send unencrypted messages.
+Delta Chat does not offer advanced properties such as for-
+ward secrecy and post-compromise security, and verified chats
+do not aim to protect against insider attacks. Our threat model
+follows Delta Chat’s security claims and assumptions, thus
+only capturing a subset of the attackers typically considered
+for other end-to-end encrypted messaging applications.
+Capabilities.
+We consider attackers with one or more of
+the following capabilities, ordered roughly by their strength.
+Note that different capabilities may overlap with each other.
+Sending e-mails. The attacker knows the target’s e-mail
+address and is able to send e-mails to the target without being
+flagged by the spam detector or blocked by the target. In Delta
+Chat, it is possible to receive e-mails from non-contacts, in
+which case the e-mails appear as “message requests” [20].
+Knowledge of public keys. The attacker knows the target’s
+public key. This capability is trivial for eavesdropping attack-
+ers since they can observe the Autocrypt headers attached
+to all of the target’s outgoing e-mails. The attacker may also
+learn the target’s public key by tricking the target into sending
+8Available at https://eprint.iacr.org/2024/918.
+an e-mail to an attacker-controlled e-mail address, or through
+the Autocrypt key gossip mechanism (Section 3.1.3).
+Eavesdropping. The attacker is able to observe messages
+on the network, including the target’s incoming and outgoing
+e-mails; this is assumed in the Autocrypt standard [53].
+E-mail spoofing. The attacker is able to create and send
+e-mails to the target with the From header arbitrarily chosen
+by the attacker, e.g. through an insecure SMTP server [42].
+A special case is spoofing an e-mail as if it were sent from
+the target to themselves, where both the From and To headers
+represent the target’s e-mail address.
+Control of network messages. The attacker can read, create,
+modify, and delete messages. The SecureJoin protocols [23,
+Section 1.1] as well as Delta Chat [20] consider such a net-
+work attacker in their threat model.
+Limiting assumptions.
+Attackers targeting unverified chats
+are assumed to not spoof e-mails or modify network messages.
+We assume that users can share their QR invite codes via a
+secure out-of-band channel that cannot be observed or modi-
+fied by the attacker [23, Section 1.1].
+All verified contacts of the target are honest, and no infil-
+trators colluding with the attacker are present in the verified
+groups where the target is a member [23, Section 2.2.3]. This
+assumption does not exclude the attacker from communicat-
+ing with the target through unverified chats, or establishing
+themselves as by exploiting vulnerabilities in Delta Chat.
+Goals.
+The Autocrypt standard does not specify the at-
+tacker’s goals, but it can be inferred that Autocrypt intends to
+protect the content of encrypted messages. The SecureJoin
+protocols specify the attacker’s goals as “i) read the content
+of messages, and to ii) impersonate peer devices” [23, Sec-
+tion 1.1]. Finally, Delta Chat states that messages in verified
+chats “can not be read or altered by compromised e-mail
+servers or Internet providers” [20]. Thus, the attacker’s goal is
+to break the confidentiality or integrity of encrypted messages,
+break authenticity by forging messages in verified chats, and
+break verification guarantees in Delta Chat. The latter in-
+cludes the attacker getting themselves or some honest peer to
+be verified by the target under a key controlled by the attacker,
+and changing the setup of verified chats.9
+We do not consider removing, duplicating, or reordering
+messages as among the goals of the attacker, even though they
+are trivial for network attackers and can become real threats.
+3
+Delta Chat
+In this section, we introduce Autocrypt (Section 3.1) as well
+as the SecureJoin protocols (Section 3.2), which together form
+9Having the target verify a key controlled by the attacker allows the
+attacker to perform a “Bob in the middle” attack [23, Section 2.2.3] to
+the target as a malicious insider and break all previous security properties.
+Changing the verified chat setup qualifies as breaking integrity or authenticity.
+USENIX Association
+33rd USENIX Security Symposium    6365
+
+the cryptographic core of Delta Chat. Delta Chat relies on a
+subset of the OpenPGP standard for end-to-end encryption
+that Delta Chat claims to be secure [20], implemented in the
+rPGP library. We summarise the relevant parts of OpenPGP
+in Appendix A of the full version of the paper.
+User’s perspective.
+Upon installation, Delta Chat prompts
+the user to log into their e-mail account or import an existing
+Delta Chat account from another device. The user can add a
+contact by scanning a QR code of another user, inputting an
+e-mail address or being part of the same group chat. When
+the user sends an encrypted message, it is shown with a small
+padlock. If the encryption material for a contact is considered
+verified, chats with that contact are shown with a green check-
+mark. Verification needs little effort from the user: a contact is
+verified when added using their invite code or from a verified
+chat, and a chat is verified if all members are verified.
+Public keys.
+Delta Chat associates each contact or peer
+with several OpenPGP keys. In the context of Autocrypt,
+these will be referred to as the peer’s Autocrypt (public) key
+and the peer’s gossip key. In the context of SecureJoin, we
+will also define verified keys. The functions of these keys will
+be explained in later subsections.
+AEAP.
+Automatic E-mail Address Porting (AEAP) [36]
+allows a user to switch to a new e-mail in Delta Chat and
+optionally set up forwarding from their old e-mail. When the
+user sends a message to an existing verified contact from the
+new address, the contact automatically changes the address
+for the user with minimal interruption to their chats.
+3.1
+Autocrypt
+Autocrypt [53] is a set of guidelines for e-mail clients to
+provide low-effort end-to-end e-mail encryption to users by
+automating key management. The current version, Autocrypt
+Level 1 (release 1.1.0), provides opportunistic encryption
+with OpenPGP. It is based on the trust on first use (TOFU)
+principle and does not support key verification, only aiming to
+defend against passive data collection attacks. In Autocrypt,
+an “encrypted” e-mail is always signed and encrypted.
+Autocrypt e-mail clients attach their public keys in
+the Autocrypt e-mail header. They may also include
+Autocrypt-Gossip MIME headers in e-mail messages to
+distribute the public keys of their peers. Autocrypt e-mail
+clients maintain states for communication peers in a table
+based on the Autocrypt-related headers in incoming e-mails,
+and use this to check whether encryption is possible or rec-
+ommended for a particular e-mail message.
+Delta Chat implements all functionalities in the Autocrypt
+standard. Other e-mail clients have, if any, only limited sup-
+port for Autocrypt headers. Where relevant, we describe
+Delta Chat’s additions to the standard Autocrypt features.
+3.1.1
+OpenPGP Keys
+We cover a subset of OpenPGP keys that have the same struc-
+ture as the OpenPGP transferable public key in the Autocrypt
+standard, which we call Autocrypt-compliant. An Autocrypt-
+compliant OpenPGP key consists of five parts: (i) a primary
+key for signing, (ii) a User ID, (iii) a self-signature that cer-
+tifies the User ID and the primary key, (iv) an encryption
+subkey, and (v) a signature that binds the subkey using the
+primary key [53, Section 3.1.1]. While Delta Chat only gener-
+ates Autocrypt-compliant OpenPGP keys, it actually supports
+the usage of most valid OpenPGP keys.
+The OpenPGP key fingerprint is a 20-byte SHA-1 digest
+derived from the the public part of the primary key. Other
+parts of the OpenPGP key do not contribute to the fingerprint.
+3.1.2
+Autocrypt Header
+The Autocrypt header is an e-mail header that contains the
+sender’s address addr and public key data keydata, as well
+as an optional prefer-encrypt attribute that indicates the
+agreement to perform encryption with peers having the same
+preference. Autocrypt e-mail clients should include these
+headers in every message for peers that also use Autocrypt.
+For this reason, Autocrypt traffic is easily recognisable.
+The keydata attribute represents an OpenPGP transferable
+public key (Section 3.1.1). The default signing and public-key
+encryption algorithms in Autocrypt are Ed25519 and ECDH
+over Curve25519 respectively, and RSA PKCS#1 v1.5 should
+also be supported. Delta Chat additionally supports NIST
+P-256 and P-384 curves. See [53, Section 7.2] for an example
+e-mail with an Autocrypt header.
+In Autocrypt, the party receiving a message with an
+Autocrypt header should check whether the addr attribute
+matches the From header in the e-mail, rejecting the header
+but keeping the message if not. Then, it should place the peer’s
+public key in the peer state table (Section 3.1.4) unless there
+is already an entry for the peer’s Autocrypt public key, and the
+effective date (sending time of the message, capped to now)
+of the message is less recent than that of the existing entry.
+3.1.3
+Autocrypt Key Gossip
+Autocrypt specifies the key gossip mechanism to allow users
+to send encrypted replies to a group of recipients without
+having to communicate with each of them in advance. Au-
+tocrypt e-mail clients may include Autocrypt-gossip head-
+ers in the outbound message, one for each of the intended
+recipients (excluding Bcc). They must be placed in the
+root MIME part of the encrypted message payload. Each
+Autocrypt-gossip header contains the address and the pub-
+lic key of a recipient. The public key is taken from the peer
+state table (Section 3.1.4), and for this purpose, Autocrypt
+prefers the peer’s public key (updated with the Autocrypt
+header) over the gossip key in the peer state table. In Delta
+6366    33rd USENIX Security Symposium
+USENIX Association
+
+Chat, the Autocrypt-gossip header has the same format as
+the Autocrypt header.
+Gossip keys in the peer state table are updated in a sim-
+ilar way to Autocrypt keys. Namely, the receiver checks if
+the address in an Autocrypt-gossip header matches some
+address in the e-mail’s To, Cc, or Reply-To header, ignoring
+the header if not, and updates the peer’s gossip key in the peer
+state table accordingly unless the peer’s current gossip key in
+the table has a more recent effective date.
+3.1.4
+Peer State Table
+Autocrypt e-mail clients maintain a state for each peer in a
+peer state table. A peer state records the encryption informa-
+tion of the peer, such as keys and the encryption preference,
+as well as metadata that can be used by the client to decide
+on whether to update the state. The client updates the peer
+states automatically based on the incoming e-mails, relieving
+the user from OpenPGP key management. When sending a
+message, the e-mail client uses the peer state table to check
+whether encryption is possible or preferred, and the client au-
+tomatically selects the appropriate keys for encryption based
+on the recipients’ states in the peer state table.
+Figure 1: Simplified overview of a peer state in Delta Chat.
+...
+peers[addr]
+...
+Autocrypt
+public_key
+public_key_timestamp
+gossip_key
+gossip_key_timestamp
+SecureJoin
+verified_key
+secondary_verified_key
+Other
+prefer_encrypt, ...
+Figure 1 gives an overview of a peer state in Delta Chat,
+which is augmented with fields for verified keys for the Se-
+cureJoin protocols (Section 3.2). Unlike Autocrypt keys, a
+network attacker should not be able to change verified keys in
+the peer state table to attacker-controlled keys by modifying
+network messages. Verified chats in Delta Chat, implemented
+as verified groups (Section 3.2.3), use exclusively verified
+keys for chat messages.
+Delta Chat also adds a secondary verified key column to the
+peer state table. This seems to be in place to enable a faster
+recovery from key changes.10 When marking a gossip key as
+verified, if there is already a verified key for the peer and the
+gossip key is different from the verified key, then Delta Chat
+sets the peer’s secondary verified key to be the gossip key.
+When receiving an encrypted message from the peer signed
+10https://github.com/deltachat/deltachat-core-rust/
+issues/4541
+with the verified key, Delta Chat removes the secondary veri-
+fied key for the peer; otherwise, if the message is signed with
+the secondary verified key, Delta Chat replaces the verified
+key with the secondary verified key. That is, depending on
+which key part is actually used by the peer, the two verified
+keys in the peer state table “resolve” into one.
+3.1.5
+Autocrypt Setup Message
+The Autocrypt specification defines a mechanism to transfer
+a user’s secret key between different Autocrypt e-mail clients
+via the Autocrypt Setup Message.
+The Autocrypt Setup Message is a self-addressed e-mail
+that contains the user’s OpenPGP transferable secret key,
+ASCII-armored and encrypted with a machine-generated ran-
+dom passphrase called the Setup Code. The user first gen-
+erates the Autocrypt Setup Message on the old Autocrypt-
+enabled e-mail client and writes down the Setup Code dis-
+played on screen. Then, the user logs into the new e-mail
+client with the same e-mail address. The new client finds the
+Autocrypt Setup Message in the inbox and checks it is well-
+formed. Then, the new client should ask the user for their
+approval of the import.11 If the user agrees, the new client
+prompts the user to enter the Setup Code for decryption. The
+new client tries to decrypt the message with the entered Setup
+Code, and if successful it imports the decrypted secret key.
+The
+Autocrypt
+Setup
+Message
+contains
+an
+Autocrypt-Setup-Message: v1
+header
+but
+not
+an
+Autocrypt header. The e-mail body contains instructions in
+plaintext, and an HTML attachment that contains the user’s
+ASCII-armored and symmetrically-encrypted secret key.
+Decryption with the correct Setup Code yields the user’s
+ASCII-armored OpenPGP transferable secret key. The Setup
+Code is used to both decrypt and authenticate the Autocrypt
+Setup Message. It contains 36 random digits, separated by
+dashes into blocks of four digits.
+3.2
+SecureJoin
+The SecureJoin protocols [23], namely the Setup Contact
+protocol and the Verified Group protocol, protect Autocrypt
+from active network attackers through key verification. They
+were originally developed as part of the CounterMITM proto-
+cols [46], but Delta Chat’s implementation has diverged from
+the original specification in non-trivial ways.12
+3.2.1
+Verification in Delta Chat
+A chat being verified indicates that it is a verified group (Sec-
+tion 3.2.3), while a contact being verified indicates that the
+one-on-one chat with the contact is verified, and the user can
+11In Delta Chat, users are not alerted directly but must click on the dis-
+played Setup Message.
+12Note that at the time of writing, the new specification for SecureJoin [23]
+was not complete with respect to the implementation in Delta Chat.
+USENIX Association
+33rd USENIX Security Symposium    6367
+
+add the contact to verified groups. In Delta Chat, key verifi-
+cation is invisible to the user, but it is an important building
+block for both chat and contact verification.
+A contact can become verified by performing the Setup
+Contact protocol (Section 3.2.2) with the user, or being intro-
+duced to a verified group in which the user is a member. Delta
+Chat marks a contact as verified if (i) it obtains a verified
+key of the contact, and (ii) it is convinced that the contact is
+currently using the verified key. For the latter, the contact’s
+verified key should have the same fingerprint as the contact’s
+Autocrypt key in the peer state table, or the gossip key if the
+Autocrypt key is unavailable. A chat is marked verified upon
+creation if all chat members are verified. Note that from ver-
+sion 1.133.0, Delta Chat separates contact verification into
+forward and backward verification (see Appendix B of the
+full version of the paper).
+3.2.2
+Setup Contact Protocol
+The Setup Contact protocol allows two peers to exchange
+e-mail addresses and public keys in a verified manner.
+A peer (Alice) first shows her invite code to the other peer
+(Bob) through a second, out-of-band channel. In Delta Chat,
+the invite code is usually a QR code, but it can also be a string
+that the QR code represents. Alice’s invite code contains
+her fingerprint, address, nickname, and two random tokens,
+INVITE and AUTH, taken from her token database. These
+tokens do not expire unless Alice manually revokes the corre-
+sponding QR code.
+After scanning Alice’s QR code, Bob’s device displays the
+name and address contained in the QR code, and asks Bob
+to manually accept the new contact. The rest of the protocol
+does not require further user interaction, and messages are
+automatically exchanged using Autocrypt through the chan-
+nel potentially controlled by the attacker. At the end of the
+protocol, both participants will have learned and validated the
+contact information and the public key of their peer. Delta
+Chat will mark the peer as verified.
+A detailed overview of the protocol flow can be found in
+Fig. 4 in Appendix A, however it is not necessary for the
+understanding of our attacks.
+The SecureJoin document gives an informal argument
+why the Setup Contact protocol is resistant to impersonation
+from active attackers that can modify, create and delete mes-
+sages [23, Section 2.1.2]. However, it acknowledges that an
+attacker could replay Bob’s messages in the protocol to Alice,
+which could potentially be used to make Alice switch to a
+compromised key of Bob [23, Section 2.1.3].
+3.2.3
+Verified Group Protocol
+The verified group in Delta Chat is a type of group chat that is
+secure against network attacks. Members in a verified group
+are verified to each other, and all messages in a verified group
+are signed and encrypted using verified keys.
+Initialisation.
+The SecureJoin document does not specify
+how to create a verified group. In Delta Chat, a user first
+creates the group locally with a random group identifier. If all
+members are verified to the creator, the group is automatically
+marked as verified. The group is invisible to other members
+until the creator sends the first message in the group. When a
+group member receives this message, Delta Chat creates the
+group locally for that member.
+Preparing for joining a verified group.
+Suppose Alice is
+a member in some verified group, while Bob is not. For Alice
+to add Bob to the verified group, Alice should have verified
+Bob’s key, e.g. by performing the Setup Contact protocol with
+Bob, or by being in another verified group with Bob. If this
+is not the case, Alice can perform a process very similar to
+the Setup Contact protocol to prepare for adding Bob to the
+group, which we summarise below.
+First, Alice shares the QR code of the verified group with
+Bob. The QR code contains Alice’s fingerprint and address,
+the group name and identifier, and two random tokens associ-
+ated with the group, INVITEg and AUTHg, taken from Alice’s
+token database. Tokens are associated with their groups, so
+different groups use separate tokens.
+Bob scans the QR code shared by Alice and manually con-
+firms joining the verified group specified in the QR code.
+No further user interaction is required for the rest of the pro-
+cess. After that, the peers’ clients perform a variant of the
+Setup Contact protocol. After verifying Bob’s key, Alice’s
+client adds Bob to the verified group similar to the process
+we describe below.
+Joining a verified group.
+Suppose Alice and Bob are veri-
+fied to each other. For Alice to add Bob to a verified group,
+Alice’s client first adds Bob to the group locally, and then
+sends a Chat-Group-Member-Added message to all mem-
+bers, including Bob. The message contains the verified keys
+of all members except Alice herself as Autocrypt-Gossip
+headers in the signed and encrypted payload.
+On receiving the message, Bob’s client creates the group
+locally and marks peers as verified using the gossip keys.
+Other group members’ clients check that Alice and they are
+both members of the group (while Bob may or may not be
+in the group in their views), mark the gossip keys as verified,
+and add Bob as a group member.
+4
+Attacks
+In this section, we describe our attacks within the Delta Chat
+threat model outlined in Section 2. Further attacks outside of
+their threat model can be found in Appendix B.
+6368    33rd USENIX Security Symposium
+USENIX Association
+
+4.1
+Gossip Key Injection
+Delta Chat’s implementation of the Verified Group protocol
+allows an attacker to trick the target into marking an attacker-
+controlled gossip key as verified. This attack does not require
+a network attacker: the attacker only needs to know the tar-
+get’s public key and send a future-dated e-mail to the target.
+Vulnerability.
+In a verified group, some messages contain
+one or more Autocrypt-Gossip headers in the protected
+payload. When adding a member to the group, the intro-
+ducer sends a Chat-Group-Member-Added group message
+that contains the verified keys of all members, including the
+new member. In addition, Delta Chat periodically attaches
+the gossips of other members’ verified keys to verified group
+messages, to allow for a faster recovery from key changes.
+The recipient’s client marks the gossiped keys as verified in
+the peer state table as described in Section 3.2.3.
+Since Autocrypt-Gossip headers should only be present
+in the signed and encrypted payload, the attacker cannot add
+or modify Autocrypt-Gossip headers in verified group mes-
+sages. However, it is possible for the attacker to trick the
+target’s client into marking a different gossip key than that in
+the message as verified.
+When marking a gossip key as verified, Delta Chat iterates
+over the intersection of addresses in the gossip headers and
+addresses in the To header.13 For each address, Delta Chat sets
+its verified key to be the gossip key in the peer state table, or
+sets a secondary verified key to be the gossip key if a different
+verified key is already present in the table. The problem is
+that there is no guarantee that the peer’s gossip key in the
+peer state table actually corresponds to the gossip key in the
+message, and it is possible that the peer’s gossip key does not
+get updated by the message.
+Delta Chat only updates the peer’s gossip key in the table if
+the gossip key in the message is more recent.14 When compar-
+ing the two timestamps, Delta Chat does not cap the send time
+of the e-mail as required by the Autocrypt standard [53, Sec-
+tion 3.3, 3.6]. Therefore, if the gossip key for some contact
+in the peer state table has a more recent timestamp than the
+verified group message with a gossip for the contact, then
+Delta Chat marks the gossip key in the table as verified. This
+is potentially different from the contact’s real key.
+Attack.
+Suppose Alice is a member of a verified group,
+while Bob is either a member in the verified group or is about
+to be added to the verified group by another member Carol
+with a Chat-Group-Member-Added message. Alice and Bob
+13https://github.com/deltachat/deltachat-core-rust/blob/
+1edd7045bec1f8fa0761e26a975cb9f07596feb8/src/receive_imf.
+rs#L2479
+14https://github.com/deltachat/deltachat-core-rust/blob/
+1edd7045bec1f8fa0761e26a975cb9f07596feb8/src/peerstate.rs#
+L332
+have not communicated in Delta Chat before. Mallory is an
+attacker outside the group that can send messages to Alice
+and knows Alice’s public key. Mallory does not need to be
+able to eavesdrop on, spoof or modify network messages, but
+these capabilities would be helpful in making use of the attack.
+Figure 2 illustrates the following attack.
+First, Mallory sends an e-mail message to Alice, with Bob
+also in the To header of the e-mail. The message includes a
+malicious gossip key for Bob in its protected payload. The e-
+mail is dated from the future, which is not expected behaviour
+but often occurs in practice since client time misconfiguration
+issues are common. Alice’s client parses the message and up-
+dates Bob’s gossip key in the peer state table accordingly. The
+malicious gossip key remains in Alice’s peer state table, even
+if Alice deletes the message or blocks Mallory afterwards.
+After a short while, suppose Alice receives a message in
+the verified group with a gossip key for Bob. Because the
+malicious gossip key for Bob has a more recent timestamp,
+the verified group message does not update Bob’s gossip key
+in Alice’s peer state table. Alice’s client then tries to mark
+the gossip key for Bob as verified, which has the effect of
+marking the malicious gossip key as verified instead.
+If Bob is a new member to be added to the group, then
+Mallory already controls Bob’s verified key in Alice’s view.
+Otherwise, Mallory controls a secondary verified key for Bob,
+and in order to promote the malicious key to a verified key,
+Mallory would need to spoof a message from Bob to Alice
+that is signed with the malicious gossip key.
+Mallory as a network attacker could also perform the attack
+without sending a future-dated e-mail to Alice. Mallory could
+intercept a verified group message to Alice that contains gos-
+sips, which is easily recognisable from the payload size or
+from new recipients in the To header, and, after sending an
+e-mail with the malicious gossip key, modify the Date header
+to an earlier time before forwarding the message to Alice.
+For Alice to mark Bob as verified, Alice’s client also needs
+to be convinced that Bob is actually using the verified key. If
+Alice already had Bob’s real public key in her peer state table,
+then Alice’s client would not mark Bob as verified, since Bob
+is potentially using a different key. In that case, to complete
+the attack, Mallory just needs to also spoof a message from
+Bob to Alice with the malicious key in the Autocrypt header.
+Consequences.
+By tricking Alice’s client to verify a mali-
+cious key for Bob, Mallory can eavesdrop on messages from
+Alice to Bob or in any verified group where Bob is a mem-
+ber. Mallory can also perform a machine-in-the-middle at-
+tack between Alice and Bob, despite Alice believing that her
+communications with Bob are protected with guaranteed end-
+to-end encryption. Furthermore, Mallory can cause Alice to
+mark any contact or key as verified by spoofing a message
+from Bob to Alice which adds Alice to a non-existent verified
+group with malicious gossips in the message.
+Using Delta Chat’s AEAP feature (Section 3), Mallory
+USENIX Association
+33rd USENIX Security Symposium    6369
+
+Mallory
+Alice
+Carol
+Bob
+pkAlice
+Members of a verified group
+Mutually verified
+(Dated from future)
+Bob’s key: pkevil
+peers[Bob].gossip_key ←pkevil
+peers[Bob].gossip_key_timestamp ←future
+Add Bob to the group;
+Bob’s key: pkBob
+Add Bob to the group;
+Bob’s key: pkBob
+Ignore pkBob for lower timestamp;
+peers[Bob].verified_key ←
+peers[Bob].gossip_key = pkevil
+Bob verified under pkevil
+Figure 2: The message sequence for the example gossip key injection attack. Note that the initial message from Mallory to Alice
+may or may not be actually sent to Bob.
+could change Bob’s address in Alice’s view by sending an
+e-mail to Alice from the new address. Indeed, Mallory could
+also use AEAP to make herself verified to Alice, avoiding the
+need for spoofing e-mails from Bob. However, AEAP would
+leave a visible user notification to Alice, which could alert
+her about the attack.
+Finally, Alice could unknowingly disseminate the mali-
+cious key further in verified groups where Alice is a member,
+causing more users to verify the malicious key for Bob.
+Mitigation.
+When marking gossiped keys as verified, Delta
+Chat should not rely on the untrusted gossip key entry in
+the peer state table. Instead, Delta Chat should directly mark
+the gossip keys contained in the protected e-mail payload
+as verified. Further, Delta Chat should use the effective date
+defined in the Autocrypt standard and cap the message date
+before updating the peer state table.
+4.2
+Group Member Removal
+By manipulating message headers, it is possible for a network
+attacker to change a normal group message into the special
+message for group member removal. As a result, the attacker
+can remove arbitrary members from a verified group, as if
+they were removed by some other member in the group.
+Vulnerability.
+Despite the signing and encryption of mes-
+sages, message headers are surprisingly malleable. By adding
+or modifying unprotected e-mail headers of an encrypted mes-
+sage, the attacker can drastically change the meaning and
+effect of that message. Table 1 lists the manipulatable headers
+relevant to our attacks. A header in Delta Chat may appear as
+an IMF header in the unprotected part of the e-mail, or as a
+MIME header in the possibly signed and encrypted payload.
+Delta Chat internally categorises headers into four types.
+Unprotected: these headers must appear as IMF head-
+ers, e.g. Date and Chat-Version. Hidden: these head-
+ers can be large and therefore must not appear as IMF
+headers, e.g. Chat-User-Avatar. Protected: these head-
+ers are encrypted whenever the message is encrypted,
+e.g.
+Chat-Group-Name. Secured: these headers should
+only be present in the signed and encrypted payload. The
+Chat-Verified and Secure-Join-Fingerprint headers
+are explicitly marked as secured. In addition, Delta Chat treats
+the Autocrypt-Gossip header as secured.
+The e-mail parser removes or ignores secured headers that
+appear in the unencrypted part. However, perhaps counterin-
+tuitively, a protected header can appear as an unencrypted
+IMF header even if the e-mail is signed and encrypted.
+This design choice is necessary for headers like Subject
+and From, which are generally required for well-formed e-
+mails, but is incorrect for other protected headers, such as
+Chat-Group-Member-Removed, which should only appear
+in the possibly encrypted e-mail body.
+The situation is more complicated when the same pro-
+tected header appears in both encrypted and unencrypted
+6370    33rd USENIX Security Symposium
+USENIX Association
+
+Table 1: The types and susceptibility to overwriting of the manipulatable headers in Delta Chat that
+are relevant to our attacks.
+Header
+Type
+Overwriting
+Reference
+Chat-Group-Avatar
+hidden
+no
+Section 4.2
+Chat-Group-Member-Removed
+protected
+no
+Section 4.2
+From
+protected
+yes
+Appendix B
+Message-ID
+protected
+yes
+Section 4.2
+Secure-Join
+protected
+yes
+Section 4.4
+Secure-Join-Auth
+protected
+yes
+full version of the paper (App. E)
+parts. Delta Chat parses the unencrypted headers before the
+encrypted headers, preferring a new header over an already
+parsed one if the header is considered as “known” or starts
+with Chat-. Therefore, the encrypted header generally takes
+precedence over the unencrypted header. For example, the
+encrypted Subject header is preferred over its unencrypted
+counterpart, which reflects a common practice in OpenPGP
+e-mail clients to hide e-mail subjects.
+However, because of several oversights in Delta Chat’s
+e-mail parser implementation, there
+are
+cases
+where
+the unencrypted header could overwrite the encrypted
+header, including Secure-Join, Secure-Join-Auth and
+Secure-Join-Group, which are not included in the list of
+known headers. Moreover, Secure-Join-Auth should have
+been treated as secured instead of protected, as it never ap-
+pears unencrypted in honest executions.
+In addition, the Message-ID header and the From
+header are in effect susceptible to overwriting.
+The
+Message-ID header, while not susceptible to overwrit-
+ing
+per se, can
+be
+overwritten
+by the
+unprotected
+X-Microsoft-Original-Message-ID header, which was
+used in older versions of Delta Chat and remains for com-
+patibility. For the From header, Delta Chat decided not to
+reject an e-mail whose encrypted From header is different
+from its unencrypted From header; however, Delta Chat con-
+siders such an e-mail as having an unsigned From, meaning
+that it cannot be used to initiate the AEAP mechanism.
+Attack.
+Suppose Alice and Bob are in the same verified
+group. If Alice wished to remove Bob from the group, Alice
+would send a message with a Chat-Group-Member-Removed
+header containing Bob’s e-mail address to the members of
+the verified group. Upon seeing the message, all members’
+clients, including Bob’s, would remove Bob from the verified
+group, and display a notification saying that Bob has been
+removed from the group by Alice.
+Suppose Mallory is an eavesdropping attacker outside the
+group that is also capable of spoofing messages to Alice; Mal-
+lory can also be a network attacker. First, Mallory captures
+a non-administrative message that Alice has sent to the veri-
+fied group at some point in the past. Mallory should be able
+to capture such a message with reasonable probability, and
+she can use some characteristics of the message, such as size
+and the To header, to help distinguish it from administrative
+messages. Mallory can easily distinguish messages in dif-
+ferent groups, since the group ID is a part of the plaintext
+Message-ID header.
+Then, Mallory modifies the captured message by adding
+a Chat-Group-Member-Removed header with Bob’s address
+to the unprotected IMF header section of the message. Mal-
+lory also modifies the unprotected Message-ID header so
+that the message will not be treated as a duplicate by Alice.
+Newer versions of Delta Chat place a copy of the Message-ID
+header in the protected payload, but the attacker can instead
+set the unprotected X-Microsoft-Original-Message-ID
+header, which takes precedence over Message-ID. (If Mal-
+lory could intercept and modify a non-administrative mes-
+sage from Alice to the verified group before it is de-
+livered to the group, she could instead directly add the
+Chat-Group-Member-Removed header with Bob’s address
+to its IMF headers.)
+After that, Mallory sends the modified message to all mem-
+bers of the verified group. The members’ clients incorrectly
+interpret the modified message as a group member removal
+message initiated by Alice. Mallory may choose to send this
+message to Alice too; her client would also remove Bob upon
+receiving the message.
+Consequences.
+While the attacker cannot read messages in
+the verified group, they are able to arbitrarily remove members
+of the group, which could create confusion about the group’s
+membership state or dissolve the group.
+There could be other potential attacks that leverage header
+manipulation. For example, it is possible to add or remove the
+avatar of a verified group by adding a Chat-Group-Avatar
+header to a normal group message. It is also possible to change
+the group name for two peers in a verified group by reusing
+another message from their one-on-one chat, where other
+members could not see the change.
+Mitigation.
+An immediate fix to the attack would disallow
+headers starting with Chat- to appear in the unencrypted part
+USENIX Association
+33rd USENIX Security Symposium    6371
+
+if the message is encrypted. However, it takes more careful
+checks to completely eliminate such attacks. In general, if a
+protected header appears in the plaintext part of an encrypted
+message, then Delta Chat should regard the message as invalid.
+There are a few exceptions for headers generally required for
+a well-formed e-mail message, such as Subject and From,
+in which case Delta Chat should prefer the encrypted header,
+and only reject the message if the encrypted header is meant
+to match the unencrypted header but does not.
+4.3
+Synchronisation Forgery
+Delta Chat verifies self-addressed messages with the user’s
+own Autocrypt public key in the peer state table. Conse-
+quently, an attacker capable of spoofing self-addressed e-mails
+could trivially forge self-addressed messages for the target,
+including synchronisation messages.
+Vulnerability.
+Delta Chat synchronises certain changes in
+the account across devices. These include the addition or
+deletion of QR invite code tokens for the SecureJoin protocols,
+changes to chat statuses like blocking contacts or archiving
+chats, and changes to a limited set of account configurations
+like display names. Synchronisation is enabled by default,
+even if the user only uses Delta Chat on one device.
+Delta Chat synchronises these changes by sending a syn-
+chronisation message, which is a self-addressed e-mail with
+a multi-device-sync.json file attached. The attachment
+contains the synchronisation items represented in JSON. Like
+other messages, the synchronisation message should be signed
+and encrypted. While Delta Chat encrypts the message cor-
+rectly with the user’s real public key, the verification of a
+self-addressed e-mail message uses the user’s Autocrypt pub-
+lic key as it appears in the peer state table, similarly as for
+other opportunistically protected one-on-one chats. As with
+other contacts, Delta Chat updates the user’s own Autocrypt
+key in the peer state table using the Autocrypt headers from
+the received self-addressed messages.
+Attack.
+An attacker in the possession of the target’s pub-
+lic key and capable of spoofing self-addressed e-mails for
+the target could make the target’s client execute malicious
+synchronisation items crafted by the attacker.
+To mount this attack, the attacker creates a message con-
+taining the malicious synchronisation items, signed with a
+key known by the attacker and encrypted with the target’s
+public key. This message contains an Autocrypt header that
+corresponds to the public part of the signing key. The attacker
+then sends the message to the target, spoofed to appear as if
+it was sent by the target.
+On receiving the message, the target’s Delta Chat client
+first updates the target’s own Autocrypt key entry in the peer
+state table to the public key in the Autocrypt header, then
+decrypts the message with the target’s own private key, and
+finally verifies the message with the target’s own Autocrypt
+key in the peer state table, which succeeds since the message
+is indeed signed with the private counterpart of the Autocrypt
+key; see Fig. 3. The target’s client now processes the message
+as a valid synchronisation message and proceeds to execute
+the malicious synchronisation items in the message.
+Autocrypt: pkevil
+Synchronisation message
+Parse
+Decrypt
+Verify
+Execute
+peers[self]
+Encrypt
+(pkreal,skreal)
+Sign
+Sync. items
+(pkevil,skevil)
+Attacker
+Target
+pkevil
+pkevil
+skreal
+pkreal
+skevil
+pkevil
+pkreal
+Figure 3: Keys involved in the synchronisation forgery attack,
+where (pkreal,skreal) is the target’s key pair, and (pkevil,skevil)
+is a key pair known by the attacker. Ideally, Delta Chat should
+use pkreal to verify the synchronisation message (dashed line).
+Consequences.
+By planting AUTH and INVITE tokens in
+the synchronisation items to the target, the attacker could ver-
+ify themselves to the target, or impersonate other contacts to
+the target in the Setup Contact protocol or the Verified Group
+protocol. The recent Delta Chat updates on synchronisation15
+equip the attacker with more capabilities. The attacker could
+now change chat statuses on the target’s device, such as block-
+ing contacts or muting chats, and force the target to change
+several configurations, such as the display name. Note that in
+most cases, executing synchronisation items does not result
+in a notification to the user.
+More generally, the attacker can forge self-addressed mes-
+sages with similar techniques, which appear to be encrypted in
+the “Saved Messages” chat on the victim’s client. While this
+chat does not bear a green checkmark, the target (e.g. a Delta
+Chat bot16) may still perceive it as verified and incorrectly
+regard the forged message as self-addressed.
+15See e.g. https://github.com/deltachat/deltachat-core-rust/
+pull/4843
+and
+https://github.com/deltachat/
+deltachat-core-rust/pull/5023.
+16https://bots.delta.chat/
+6372    33rd USENIX Security Symposium
+USENIX Association
+
+Mitigation.
+Delta Chat should handle self-addressed mes-
+sages separately from other messages, and in particular only
+use the user’s own key to verify self-addressed messages.
+Device synchronisation could be made more secure by
+notifying the user about the changes that were executed, and
+using timestamps to prevent synchronisation replays.
+4.4
+InsecureJoin Observer
+We describe another attack that leverages header manipulation
+(Section 4.2) to trick Delta Chat into marking an attacker-
+controlled key as verified. The attack relies on a mechanism
+in Delta Chat that observes the SecureJoin protocol instance
+on other devices.
+Vulnerability.
+When Delta Chat sees a self-sent SecureJoin
+message not originating from the current device to a peer,
+it interprets it as the user establishing contact with the peer
+on another device. If the message is correctly signed and
+encrypted, then Delta Chat tries to use the SecureJoin message
+in order to achieve some form of synchronisation between
+devices. Further, if the message indicates the final stages of
+the protocol, i.e. it can be deduced that the other device has
+verified or will shortly be able to verify the peer, then Delta
+Chat also marks the gossip key for the peer as verified on this
+device.
+Similar to the group member removal attack (Section 4.2),
+the vulnerability we exploit in this attack is the lack of pro-
+tection for headers in Delta Chat, and more specifically, the
+flexibility of the Secure-Join header. Delta Chat uses the
+Secure-Join header to indicate a SecureJoin message and
+denote its type (e.g. vc-request). The Secure-Join header
+is treated as protected, meaning that it should be encrypted
+whenever the message is encrypted. However, this header is
+incorrectly allowed to appear unencrypted even when the mes-
+sage is encrypted. Moreover, an unencrypted Secure-Join
+header overwrites an encrypted Secure-Join header in the
+same message.
+In addition to the attack we describe here, a variant of the
+gossip key injection attack (Section 4.1) still seems applicable
+in this context, because when marking a peer’s gossip key
+as verified based on the observed SecureJoin message, Delta
+Chat would look for the gossip key in the peer state table rather
+than in the protected message payload. Our attack does not
+exploit this vulnerability. An attacker cannot use the technique
+in the synchronisation forgery attack (Section 4.3) to forge
+a self-sent SecureJoin message, because Delta Chat would
+check that the message is signed with the user’s real key.
+Attack.
+Suppose the attacker is able to spoof messages sent
+from the target. In addition, we assume the attacker is able to
+eavesdrop on the communications of the target; alternatively,
+we could instead assume that the target replies to messages
+sent from the attacker. To make the target verify an attacker-
+controlled key, the attacker crafts a message perceived by the
+target’s Delta Chat client as a valid SecureJoin message from
+the target to the attacker or to an address of the attacker’s
+choice, which actually contains an attacker-controlled key as
+a gossip header.
+The general idea of crafting such a message is to first trick
+the target into signing a message that contains the attacker-
+controlled key as a gossip key, and then add a Secure-Join
+header indicating a SecureJoin message in a final protocol
+stage (e.g. vc-contact-confirm) to the unprotected IMF
+headers of the message.
+There are several possible ways of making the target sign
+the attacker-controlled gossip key. For example, the attacker
+could send messages to the target in unverified one-on-one
+chats or groups, hoping the target would reply. The first reply
+would carry a gossip of the attacker’s public key, and gos-
+sips would also occur in replies periodically. The attacker
+could also send a vc-request message to the target. The
+vc-request message is a cleartext message in the Setup
+Contact protocol that carries an INVITE token in the target’s
+QR invite code; the attacker can eavesdrop on past Setup Con-
+tact protocol instances to learn a valid INVITE for the target.
+The target replies with a vc-auth-required message, which
+contains a gossip of the attacker’s public key in the protected
+payload. Because the unprotected Secure-Join header takes
+precedence, adding an unprotected Secure-Join header to
+the target’s reply can change the SecureJoin message to a
+desired type.
+The attacker then sends the crafted message to the target via
+Bcc as if the target sent it from another device. The target’s
+Delta Chat client would recognize the message as a valid
+SecureJoin message on another device that indicates final
+stages of the protocol, and mark the attacker’s gossip key in
+the message as verified.
+The changes to Delta Chat core that introduce forward and
+backward verification would only impact the attack slightly
+– the attacker would need to send one more message to the
+target (see Appendix B of the full version of the paper).
+Consequences.
+The consequences for this attack largely
+overlap with the gossip key injection attack (Section 4.1).
+However, this attack is harder to mount, as it requires stronger
+capabilities for the attacker.
+Mitigation.
+As this attack stems from header flexibility,
+fixing the header manipulation vulnerability, and in particular,
+disallowing the Secure-Join header to appear unencrypted
+whenever the message is encrypted, would prevent the attack.
+4.5
+Autocrypt Setup Forgery
+The Autocrypt Setup Message transfers the user’s encrypted
+secret key over an insecure channel, which could make it
+USENIX Association
+33rd USENIX Security Symposium    6373
+
+vulnerable to key overwriting attacks [17]. However, the Au-
+tocrypt Setup Message includes the user’s public key, which
+prevents classical attacks of this type. Despite this, because
+the rPGP library has a bug that allows decryption using the
+“plaintext” algorithm, it is easy to forge a valid Autocrypt
+Setup Message under an unknown Setup Code.
+Vulnerability.
+The Setup Code plays an important role in
+guaranteeing the security of the Autocrypt Setup Message. To
+quote the Autocrypt specification: “The Code serves both for
+decryption as well as authenticating the message. Extra care
+needs to be taken with some PGP implementations that the
+Setup Code is actually used for decryption. For example, this
+is difficult to do correctly with GnuPG.” [53, Section 5.4.4]
+While RFC 4880 specifies “plaintext” as a symmetric-
+key algorithm with ID 0, the specification also stresses that
+the plaintext algorithm “may only be used to denote secret
+keys that are stored in the clear”, and that “Implementations
+MUST NOT use plaintext in Symmetrically Encrypted Data
+packets” [34, Section 13.4]. However, it is possible in rPGP
+to use the plaintext algorithm to “decrypt” session keys or
+data. In rPGP, the plaintext algorithm has a “key size” and a
+“block size” of 0. There are no checks on the key size for the
+plaintext algorithm. The algorithm simply strips the first two
+bytes of the data, which it perceives as the random block and
+“quick check” bytes, and returns the rest.
+Attack.
+The attack idea is straightforward: a network at-
+tacker can substitute the encrypted data in the target’s Au-
+tocrypt Setup Message with a secret key controlled by the
+attacker, encrypted under the plaintext algorithm. The mali-
+cious message “decrypts” correctly to the attacker-controlled
+key under the original Setup Code. This breaks the expecta-
+tion of the Autocrypt standard which claims that Setup Codes
+always authenticate the message. In the end, the target’s client
+imports and uses a key controlled by the attacker.
+Alternatively, if the attacker was only able to spoof self-
+addressed messages for the target, the attacker could still send
+the malicious message along with the honest one, hoping
+the target would click on the malicious message. As a last
+resort, since Delta Chat allows Setup Messages that are not
+self-addressed, the attacker could simply send the malicious
+message to the target in an unverified chat, possibly changing
+the avatar and name to resemble the chat “Saved Messages”
+so as to confuse the target. Details of how to construct the
+OpenPGP packets required to exploit the plaintext algorithm
+can be found in Appendix D of the full version of the paper.
+Consequences.
+The attacker can make the target accept a
+malicious Autocrypt Setup Message and start to use a key
+controlled by the attacker. The attacker is then able to read all
+of the target’s future communications as well as impersonate
+the target to others after the target verifies the malicious key to
+them. However, since the malicious key does not contain the
+secret key materials of the real key, if the target did not stop
+using their old Autocrypt e-mail client or Delta Chat client,
+they would soon notice a discrepancy in the messages seen
+on different devices.
+Mitigation.
+The rPGP library should disable the plaintext al-
+gorithm, and Delta Chat should update to the patched version
+of rPGP. In addition, Delta Chat should not allow Autocrypt
+Setup Messages that are not self-addressed, and should con-
+sider warning users about possible phishing attacks related to
+such messages.
+A Delta Chat user could also manually export and import
+the secret key or the whole backup, both unencrypted, or
+use an experimental Delta Chat feature to transfer encrypted
+account data between two devices within the same network.
+4.6
+Compression Quine
+We describe a known attack on OpenPGP libraries that we
+found applicable to rPGP. The rPGP library does not have a
+maximum recursion depth for OpenPGP messages, so it is
+possible to perform a denial-of-service attack on rPGP, and
+consequently Delta Chat.
+Vulnerability.
+First publicly identified by Campbell [19],
+it is known that some OpenPGP implementations could be
+vulnerable to a denial-of-service attack that leverages an
+OpenPGP compression quine, which is an OpenPGP Com-
+pressed packet that decompresses to itself. Trying to decom-
+press the compression quine may cause the program to ex-
+haust memory and crash, and, in the worst case, dump secret
+information upon crashing. This appears as an inherent is-
+sue in the OpenPGP standard that was not considered by
+Delta Chat. The draft on OpenPGP “crypto refresh” lists this
+attack as a security consideration for OpenPGP implemen-
+tors [57, Section 13.14].
+Attack.
+The attack is straightforward: an attacker with the
+knowledge of the target’s address and public key simply sends
+an OpenPGP compression quine to the target, encrypted un-
+der the target’s public key; there is no need for the target to
+recognize or manually accept the contact.
+Consequences.
+Delta Chat crashes almost immediately
+upon receiving the message, and the issue persists as long as
+Delta Chat is connected to the e-mail server. To recover from
+the attack, the target must manually delete the message from
+the server, switch to different keys or accounts while offline,
+or reinstall Delta Chat.
+6374    33rd USENIX Security Symposium
+USENIX Association
+
+Mitigation.
+The rPGP library should set a maximum recur-
+sion depth for OpenPGP messages. It is also a good idea for
+rPGP to check against some of the tests in the OpenPGP in-
+teroperability test suite.17 However, without further defenses,
+the attacker would still able to send a compressed message
+with an exorbitant compression ratio, also known as a “ZIP
+bomb”, to achieve a similar effect as a compression quine.
+Therefore, rPGP could consider treating Compressed packets
+that exceed a maximum compression ratio or contain data that
+is too large as invalid.
+5
+Discussion
+While it is difficult to estimate the size of Delta Chat’s user
+base, its promotion to users in high-risk contexts makes it a
+potential target for powerful real-life adversaries. We have
+shown that attacks are possible under the threat model envi-
+sioned by Delta Chat’s developers, raising several questions.
+Cause of the attacks.
+Most of the attacks we found lever-
+age deviations from the OpenPGP, Autocrypt, or SecureJoin
+specifications, rather than attack the protocols or standards
+themselves. However, the specifications can be unclear or
+even misleading in some cases, and attacks stemming from
+cross-protocol interactions can be notoriously difficult to pre-
+vent without a comprehensive understanding of the entire
+system. We believe that some of the attacks could have been
+found earlier if an attempt to prove the security of the Secure-
+Join protocols had been made.
+The SecureJoin protocols “consider usability, crypto-
+graphic and implementation aspects simultaneously, because
+they constrain and complement each other” [23]. However,
+balancing security and usability is a hard problem; for users
+in high-risk contexts, prioritising feature development may
+increase harm. For example, we found several vulnerabilities
+related to Delta Chat’s multi-device support. Other decen-
+tralised messaging applications used in high-risk contexts like
+Briar18 do not support multiple devices, thereby limiting their
+attack surface. Yet, without certain features, users may switch
+to other applications; indeed, multi-device support was iden-
+tified as a necessary feature in Delta Chat’s interviews with
+high-risk users [31].
+Appropriateness of Delta Chat’s threat model.
+While our
+attacks fall within the threat model outlined by Delta Chat,
+it is also important to assess whether this threat model is ap-
+propriate in the first place. Prior work [35] has questioned
+whether opportunistic encryption in the form of Autocrypt
+should be promoted to users who may not have a full un-
+derstanding of the implications of its use; on the other hand,
+Delta Chat has repeatedly incorporated feedback from groups
+17https://tests.sequoia-pgp.org/
+18https://briarproject.org/
+of high-risk users into its development process [31–33], an un-
+dertaking that is uncommon but vital for a secure messaging
+application. It is also useful to contrast Delta Chat’s explicit
+approach to verification with that of Signal, in which users
+who do not choose the option of verifying safety numbers are
+participating in de facto unverified chats.
+The threat model of verified chats, however, omits several
+categories of attacks such as attacks on privacy, insider attacks,
+but also attacks that are prevented by other messaging appli-
+cations as a matter of course. We give a detailed overview of
+attacks outside of Delta Chat’s threat model in Appendix B.
+Securing decentralised communications.
+What could be
+done to make Delta Chat, or decentralised messaging services
+more widely, more secure for the future? We argue that more
+analysis is necessary on multiple levels.
+Commercial security audits can increase trust in a partic-
+ular product by helping to eliminate implementation flaws
+and insecure configurations. Delta Chat’s two cryptographic
+audits showed overall positive results, having found only two
+“high-risk” issues. However, the scope of such audits is, by
+definition, limited. Our results demonstrate that passing a
+security audit cannot be seen as a security end-goal in itself.
+However, neither can analysis such as ours be seen as a
+definitive stamp of approval. Beyond immediate mitigation,
+questions arise about the future of open specifications such as
+Autocrypt and SecureJoin. Formal cryptographic proofs such
+as [5] can help in gaining a better understanding of the security
+guarantees given by a particular design; yet, in cases such as
+Delta Chat, it can be challenging to make formal statements
+about a design that lacks a protocol specification and whose
+cryptographic implementation changes frequently. The work
+on ClaimChain [41] in particular shows that even if a design
+with stronger security properties exists, circumstances may
+prevent it being adopted in practice.
+We do not intend to contribute to the already abundant
+discussion on whether OpenPGP should be considered inse-
+cure by modern standards. However, our attacks show that
+one should take great caution when using OpenPGP in non-
+standard scenarios as well as when validating OpenPGP
+messages. We believe Delta Chat should limit its usage of
+OpenPGP to a more secure subset, and consider upgrading to
+crypto-refresh [57] in the near future.
+Instead of further customising the SecureJoin protocols,
+pushing for and contributing to a specification of Autocrypt
+Level 2 could provide a way forward for Delta Chat. This
+was alluded to in the current Autocrypt specification [53] as
+providing protection against active attackers but work on it
+never began. However, such an undertaking would require
+participation from the wider community. In the meantime,
+the lack of viable alternative tools for secure decentralised
+messaging makes it a pressing problem for developers and
+researchers alike.
+USENIX Association
+33rd USENIX Security Symposium    6375
+
+References
+[1] David Adrian, Karthikeyan Bhargavan, Zakir Du-
+rumeric, Pierrick Gaudry, Matthew Green, J. Alex Hal-
+derman, Nadia Heninger, Drew Springall, Emmanuel
+Thomé, Luke Valenta, Benjamin VanderSloot, Eric Wus-
+trow, Santiago Zanella-Béguelin, and Paul Zimmermann.
+Imperfect forward secrecy: How Diffie-Hellman fails in
+practice. In Indrajit Ray, Ninghui Li, and Christopher
+Kruegel, editors, ACM CCS 2015, pages 5–17. ACM
+Press, October 2015.
+[2] Martin R. Albrecht, Jorge Blasco, Rikke Bjerg Jensen,
+and Lenka Mareková. Collective information security
+in large-scale urban protests: the case of Hong Kong. In
+30th USENIX Security Symposium (USENIX Security
+21), pages 3363–3380. USENIX Association, August
+2021.
+[3] Martin R. Albrecht, Jorge Blasco, Rikke Bjerg Jensen,
+and Lenka Mareková. Mesh messaging in large-scale
+protests: Breaking Bridgefy. In Kenneth G. Paterson,
+editor, CT-RSA 2021, volume 12704 of LNCS, pages
+375–398. Springer, Heidelberg, May 2021.
+[4] Martin R. Albrecht, Sofía Celi, Benjamin Dowling, and
+Daniel Jones. Practically-exploitable cryptographic vul-
+nerabilities in Matrix. In 2023 IEEE Symposium on
+Security and Privacy (S&P), pages 164–181, 2023.
+[5] Martin R. Albrecht, Benjamin Dowling, and Daniel
+Jones.
+Device-oriented group messaging: A formal
+cryptographic analysis of Matrix’ core. 2023. https:
+//eprint.iacr.org/2023/1300.
+[6] Martin R. Albrecht, Raphael Eikenberg, and Kenneth G.
+Paterson. Breaking Bridgefy, again: Adopting libsignal
+is not enough. In 31st USENIX Security Symposium
+(USENIX Security 22), pages 269–286, Boston, MA,
+August 2022. USENIX Association.
+[7] Martin R. Albrecht, Lenka Mareková, Kenneth G. Pa-
+terson, and Igors Stepanovs. Four attacks and a proof
+for Telegram. In IEEE S&P 2022 [38], pages 87–106.
+[8] Nadhem J. AlFardan and Kenneth G. Paterson. Lucky
+thirteen: Breaking the TLS and DTLS record proto-
+cols. In 2013 IEEE Symposium on Security and Pri-
+vacy, pages 526–540. IEEE Computer Society Press,
+May 2013.
+[9] Joël Alwen, Sandro Coretti, and Yevgeniy Dodis. The
+double ratchet: Security notions, proofs, and modular-
+ization for the Signal protocol. In Yuval Ishai and Vin-
+cent Rijmen, editors, EUROCRYPT 2019, Part I, volume
+11476 of LNCS, pages 129–158. Springer, Heidelberg,
+May 2019.
+[10] Joël Alwen, Sandro Coretti, Yevgeniy Dodis, and Yian-
+nis Tselekounis. Security analysis and improvements
+for the IETF MLS standard for group messaging. In
+Daniele Micciancio and Thomas Ristenpart, editors,
+CRYPTO 2020, Part I, volume 12170 of LNCS, pages
+248–277. Springer, Heidelberg, August 2020.
+[11] Joël Alwen, Sandro Coretti, Yevgeniy Dodis, and Yian-
+nis Tselekounis. Modular design of secure group mes-
+saging protocols and the security of MLS. In Vigna and
+Shi [55], pages 1463–1483.
+[12] Joël Alwen, Marta Mularczyk, and Yiannis Tselekou-
+nis.
+Fork-resilient continuous group key agreement.
+In Helena Handschuh and Anna Lysyanskaya, editors,
+CRYPTO 2023, Part IV, volume 14084 of LNCS, pages
+396–429. Springer, Heidelberg, August 2023.
+[13] Nimrod Aviram, Sebastian Schinzel, Juraj Somorovsky,
+Nadia Heninger, Maik Dankel, Jens Steube, Luke
+Valenta, David Adrian, J. Alex Halderman, Viktor
+Dukhovni, Emilia Käsper, Shaanan Cohney, Susanne
+Engels, Christof Paar, and Yuval Shavitt.
+DROWN:
+Breaking TLS using SSLv2.
+In Thorsten Holz and
+Stefan Savage, editors, USENIX Security 2016, pages
+689–706. USENIX Association, August 2016.
+[14] Richard Barnes, Benjamin Beurdouche, Raphael Robert,
+Jon Millican, Emad Omara, and Katriel Cohn-Gordon.
+The Messaging Layer Security (MLS) Protocol. RFC
+9420, July 2023.
+[15] Alexander Bienstock, Jaiden Fairoze, Sanjam Garg,
+Pratyay Mukherjee, and Srinivasan Raghuraman.
+A
+more complete analysis of the Signal double ratchet al-
+gorithm. In Yevgeniy Dodis and Thomas Shrimpton,
+editors, CRYPTO 2022, Part I, volume 13507 of LNCS,
+pages 784–813. Springer, Heidelberg, August 2022.
+[16] Simon Blake-Wilson and Alfred Menezes. Unknown
+key-share attacks on the station-to-station (STS) proto-
+col. In Hideki Imai and Yuliang Zheng, editors, PKC’99,
+volume 1560 of LNCS, pages 154–170. Springer, Hei-
+delberg, March 1999.
+[17] Lara Bruseghini, Daniel Huigens, and Kenneth G. Pa-
+terson. Victory by KO: Attacking OpenPGP using key
+overwriting. In Heng Yin, Angelos Stavrou, Cas Cre-
+mers, and Elaine Shi, editors, ACM CCS 2022, pages
+411–423. ACM Press, November 2022.
+[18] Chris Brzuska, Eric Cornelissen, and Konrad Kohbrok.
+Security analysis of the MLS key derivation. In IEEE
+S&P 2022 [38], pages 2535–2553.
+[19] Taylor R. Campbell. On compression in data formats.
+https://web.archive.org/web/20181116185051/
+6376    33rd USENIX Security Symposium
+USENIX Association
+
+https://mumble.net/~campbell/2013/10/08/
+compression.
+[20] Delta
+Chat.
+FAQ
+-
+Delta
+Chat.
+https:
+//web.archive.org/web/20240206093339/https:
+//delta.chat/en/help.
+[21] Delta Chat.
+Hardening guaranteed end-to-end
+encryption
+based on
+a
+security
+analysis
+from
+ETH
+researchers.
+https://delta.chat/en/
+2024-03-25-crypto-analysis-securejoin.
+[22] Delta Chat.
+User stories and voices.
+https:
+//web.archive.org/web/20240206093211/https:
+//delta.chat/en/user-voices.
+[23] Delta Chat.
+SecureJoin:
+Protecting chat mes-
+saging
+against
+network
+adversaries.
+https:
+//web.archive.org/web/20240110171400/https:
+//securejoin.readthedocs.io/en/latest/,
+2023.
+[24] Katriel Cohn-Gordon, Cas Cremers, Benjamin Dowling,
+Luke Garratt, and Douglas Stebila. A formal security
+analysis of the Signal messaging protocol. Journal of
+Cryptology, 33(4):1914–1983, October 2020.
+[25] Cas Cremers, Charlie Jacomme, and Aurora Naska.
+Formal analysis of session-handling in secure messag-
+ing: Lifting security from sessions to conversations.
+Cryptology ePrint Archive, Report 2022/1710, 2022.
+https://eprint.iacr.org/2022/1710.
+[26] Luca De Feo, Bertram Poettering, and Alessandro
+Sorniotti. On the (in)security of ElGamal in OpenPGP.
+In Vigna and Shi [55], pages 2066–2080.
+[27] Front
+Line
+Defenders.
+Guide
+to
+secure
+group
+chat and conferencing
+tools.
+https:
+//web.archive.org/web/20230922042917/
+https://www.frontlinedefenders.
+org/en/resource-publication/
+guide-secure-group-chat-and-conferencing-tools.
+[28] Christoph Döberl, Wolfgang Eibner, Simon Gärtner,
+Manuela Kos, Florian Kutschera, and Sebastian Ra-
+macher. Quantum-resistant end-to-end secure messag-
+ing and email communication. In Proceedings of the
+18th International Conference on Availability, Reliabil-
+ity and Security, ARES ’23, New York, NY, USA, 2023.
+Association for Computing Machinery.
+[29] Benjamin Dowling, Felix Günther, and Alexandre Poir-
+rier.
+Continuous authentication in secure messag-
+ing. In Vijayalakshmi Atluri, Roberto Di Pietro, Chris-
+tian Damsgaard Jensen, and Weizhi Meng, editors, ES-
+ORICS 2022, Part II, volume 13555 of LNCS, pages
+361–381. Springer, Heidelberg, September 2022.
+[30] Benjamin Dowling and Britta Hale. Secure messaging
+authentication against active man-in-the-middle attacks.
+In 2021 IEEE European Symposium on Security and
+Privacy (EuroS&P), pages 54–70, 2021.
+[31] Ksenia Ermoshina.
+Needfinding report – Multi-
+tool contexts and organizational features.
+https:
+//web.archive.org/web/20230521003456/https:
+//delta.chat/en/2020-03-31-needfinding_
+multidevice, 2020.
+[32] Ksenia Ermoshina and Vadym Hudyma.
+Needfind-
+ing report based on interviews in Ukraine.
+https:
+//web.archive.org/web/20231128092711/https:
+//delta.chat/en/2018-12-19-needfinding,
+2018.
+[33] Ksenia
+Ermoshina
+and
+Vadym
+Hudyma.
+Delta
+chat
+UX
+and
+needfinding
+final
+re-
+port.
+https://web.archive.org/web/
+20221225004507/https://delta.chat/assets/
+blog/Delta-Chat-UX-final-report-july2019.
+pdf, 2019.
+[34] Hal Finney, Lutz Donnerhacke, Jon Callas, Rodney L.
+Thayer, and Daphne Shaw. OpenPGP message format.
+RFC 4880, 2007.
+[35] Harry Halpin. SoK: why Johnny can’t fix PGP standard-
+ization. In Proceedings of the 15th International Confer-
+ence on Availability, Reliability and Security, ARES ’20,
+New York, NY, USA, 2020. Association for Computing
+Machinery.
+[36] hocuri
+and
+holga.
+Introducing
+Automatic
+E-mail
+Address
+Porting
+(AEAP).
+https:
+//web.archive.org/web/20231128100514/https:
+//delta.chat/en/2022-09-14-aeap.
+[37] holga.
+Guaranteed
+End-to-End
+encryp-
+tion
+and
+many
+other good
+news.
+https:
+//web.archive.org/web/20240111214108/https:
+//delta.chat/en/2023-11-23-jumbo-42.
+[38] 2022 IEEE Symposium on Security and Privacy. IEEE
+Computer Society Press, May 2022.
+[39] Fabian Ising, Damian Poddebniak, Tobias Kappert,
+Christoph Saatjohann, and Sebastian Schinzel. Content-
+Type: multipart/oracle - tapping into format oracles in
+email End-to-End encryption. In 32nd USENIX Security
+Symposium (USENIX Security 23), pages 4175–4192,
+Anaheim, CA, August 2023. USENIX Association.
+[40] Hugo Krawczyk, Kenneth G. Paterson, and Hoeteck
+Wee. On the security of the TLS protocol: A systematic
+analysis. In Ran Canetti and Juan A. Garay, editors,
+CRYPTO 2013, Part I, volume 8042 of LNCS, pages
+429–448. Springer, Heidelberg, August 2013.
+USENIX Association
+33rd USENIX Security Symposium    6377
+
+[41] Bogdan Kulynych, Wouter Lueks, Marios Isaakidis,
+George Danezis, and Carmela Troncoso. ClaimChain:
+Improving the security and privacy of in-band key dis-
+tribution for messaging. In WPES@CCS, pages 86–103.
+ACM, 2018.
+[42] Timo
+Longin
+and
+SEC
+Consult.
+SMTP
+smuggling
+-
+spoofing
+e-mails
+worldwide.
+https://web.archive.org/web/20240123001533/
+https://sec-consult.com/blog/detail/
+smtp-smuggling-spoofing-e-mails-worldwide/.
+[43] Paul Morrissey, Nigel P. Smart, and Bogdan Warinschi.
+A modular security analysis of the TLS handshake pro-
+tocol. In Josef Pieprzyk, editor, ASIACRYPT 2008, vol-
+ume 5350 of LNCS, pages 55–73. Springer, Heidelberg,
+December 2008.
+[44] Jens Müller, Marcus Brinkmann, Damian Poddebniak,
+Hanno Böck, Sebastian Schinzel, Juraj Somorovsky,
+and Jörg Schwenk. “Johnny, you are fired!” – spoof-
+ing OpenPGP and S/MIME signatures in emails. In
+28th USENIX Security Symposium (USENIX Security
+19), pages 1011–1028, Santa Clara, CA, August 2019.
+USENIX Association.
+[45] NEXTLEAP.
+NEXTLEAP project.
+https:
+//web.archive.org/web/20240111234949/https:
+//nextleap.eu/, 2018.
+[46] NEXTLEAP.
+Detecting
+and
+preventing
+active
+attacks
+against
+Autocrypt.
+https:
+//web.archive.org/web/20231208095502/https:
+//countermitm.readthedocs.io/en/latest/,
+2020.
+[47] Kenneth G. Paterson, Matteo Scarlata, and Kien Tuong
+Truong. Three lessons from Threema: Analysis of a
+secure messenger.
+In USENIX Security Symposium,
+pages 1289–1306. USENIX Association, 2023.
+[48] Damian Poddebniak, Christian Dresen, Jens Müller,
+Fabian Ising, Sebastian Schinzel, Simon Friedberger,
+Juraj Somorovsky, and Jörg Schwenk. Efail: Breaking
+S/MIME and OpenPGP email encryption using exfiltra-
+tion channels. In William Enck and Adrienne Porter
+Felt, editors, USENIX Security 2018, pages 549–566.
+USENIX Association, August 2018.
+[49] The dComms Project.
+dComms: Alternative com-
+munication methods during censorship, interruptions,
+and restrictions on the Internet in Ukraine.
+https:
+//web.archive.org/web/20240206093610/https:
+//dcomm.net.ua/en/.
+[50] Scott Ruoti, Jeff Andersen, Daniel Zappala, and Kent
+Seamons. Why Johnny still, still can’t encrypt: Eval-
+uating the usability of a modern PGP client. https:
+//arxiv.org/abs/1510.08555, 2016.
+[51] Include Security. Security assessment of DeltaChat’s
+RPGP and RustCrypto RSA libraries for the Open
+Tech Fund, 2019. https://web.archive.org/web/
+20230605134243/https://delta.chat/assets/
+blog/2019-first-security-review.pdf.
+[52] Include Security. Security assessment of Delta Chat’s
+primary Rust libraries on behalf of the Open Technol-
+ogy Fund, 2020.
+https://web.archive.org/web/
+20230605132024/https://delta.chat/assets/
+blog/2020-second-security-review.pdf.
+[53] Autocrypt team.
+Autocrypt Level 1 specification.
+https://web.archive.org/web/20231207173301/
+https://autocrypt.org/autocrypt-spec-1.1.0.
+pdf, 2020.
+[54] Elham Vaziripour, Justin Wu, Mark O’Neill, Daniel
+Metro, Josh Cockrell, Timothy Moffett, Jordan White-
+head, Nick Bonner, Kent Seamons, and Daniel Zappala.
+Action needed! helping users find and complete the
+authentication ceremony in Signal. In Fourteenth Sym-
+posium on Usable Privacy and Security (SOUPS 2018),
+pages 47–62, Baltimore, MD, August 2018. USENIX
+Association.
+[55] Giovanni Vigna and Elaine Shi, editors. ACM CCS 2021.
+ACM Press, November 2021.
+[56] Alma Whitten and J. Doug Tygar. Why johnny can’t en-
+crypt: A usability evaluation of PGP 5.0. In G. Winfield
+Treese, editor, USENIX Security 99. USENIX Associa-
+tion, August 1999.
+[57] Paul Wouters, Daniel Huigens, Justus Winter, and Ni-
+ibe Yutaka.
+OpenPGP draft-ietf-openpgp-crypto-
+refresh-13. https://datatracker.ietf.org/doc/
+draft-ietf-openpgp-crypto-refresh/13/, 2024.
+A
+Setup Contact Protocol Details
+We first introduce the notation and simplified primitives for
+the Setup Contact protocol (Section 3.2.2):
+• pk = (pkprim,σprim,pksub,σsub): an OpenPGP transfer-
+able public key, where pkprim is the primary public key
+for signing, σprim is a self-signature, pksub is the public
+subkey for encryption, and σsub is a binding signature
+on pksub by the primary key. We ignore fields like the
+User ID that are irrelevant for the protocol.
+6378    33rd USENIX Security Symposium
+USENIX Association
+
+• sk = (pk,skprim,sksub): an OpenPGP secret key, where
+skprim and sksub are private keys for pkprim and pksub in
+pk respectively.
+• fp = FP(pk): an OpenPGP key fingerprint, which is a 20-
+byte SHA-1 digest derived from the primary key pkprim.
+• Seal(skA,pkB,m): the Autocrypt “encrypt” process
+(sign-compress-encrypt), where the message m is signed
+with skA and encrypted with pkB.
+• Open(skB,pkA,c): the Autocrypt “decrypt” process
+(decrypt-decompress-verify).
+• From = (name,addr): a From header, where name is
+a name (e.g. "Alice") and addr is an e-mail address
+(e.g. "alice@example.org").
+• peers: the Autocrypt peer state table, which contains
+each peer’s Autocrypt public key, gossip key, verified key,
+and the timestamps for the keys (see Section 3.1.4). We
+use peers[addr] to refer to the peer state for the contact
+with address addr, and use peers.lookup(fp) to refer to
+the peer state whose Autocrypt key fingerprint is fp; both
+can uniquely identify a peer state in Delta Chat.
+• INVITE and AUTH: random tokens in the QR code.
+• tokens: the token database. We use tokens.top() to de-
+note selecting the most recently created INVITE and
+AUTH tokens from the token database.
+Figure 4 shows a simplified run of the Setup Contact proto-
+col. For the purpose of introducing the protocol, it suffices to
+treat the internals of OpenPGP as a black box. Alice’s invite
+code contains her fingerprint fpA, address addrA, nickname
+nameA, and two random tokens, INVITE and AUTH, taken
+from the tokensA database. These tokens do not expire unless
+Alice manually revokes the corresponding QR code. Accord-
+ing to the SecureJoin document, INVITE and AUTH should
+each be at least 8 bytes. In Delta Chat, both tokens are random
+strings of 11 Base64 characters.
+B
+Attacks Outside of the Threat Model
+Here we discuss attacks that are outside of Delta Chat’s speci-
+fied threat model. For example, some attacks may require that
+the attacker be verified to the target, or break some security
+properties that are not explicitly claimed to hold in Delta Chat.
+These attacks may or may not be considered as real threats to
+Delta Chat users. Note that attacks in the previous subsections
+may be used to gain privileges for some of these attacks.
+Missing standard properties.
+Note that the threat model
+outlined in Section 2 excludes attacks that would in general
+prevent making formal security claims standard in the aca-
+demic literature on messaging but also more fundamentally
+on key exchange and secure channels. For example, a more
+robust protocol would be able to prevent reordering, replay19
+and deletion attacks, but also unknown key-share [16] or iden-
+tity misbinding attacks such as the one below.
+Contact misbinding. In the Setup Contact protocol, while
+Bob’s message carries a protected From header, Alice’s client
+still accepts the message and ignores the protected From if
+it is different from the outer unprotected From. Therefore, a
+network attacker could perform an identity-misbinding attack
+between Alice and Bob, where the attacker modifies messages
+from Bob to Alice as if they were sent from another address
+controlled by the attacker, and forwards messages intended
+for the attacker-controlled address to Bob. Upon completion
+of the Setup Contact protocol, Alice’s client would mark the
+attacker-controlled address as verified with a green check-
+mark, but still under Bob’s public key.
+To fix this issue, Delta Chat should ensure that the protected
+From header is present in SecureJoin messages whenever
+possible, and reject the message with possible warnings to the
+user if it is missing or different from the unprotected From.
+Note that simply preferring the protected From would not be
+a correct mitigation as it would make spoofing easier for an
+attacker.
+Attacks on privacy.
+An eavesdropping attacker can eas-
+ily distinguish Autocrypt traffic by checking the Autocrypt
+header. The attacker can also distinguish messages from dif-
+ferent groups, since the group ID is a part of the plaintext
+Message-ID header. An attacker that can only observe and
+modify partial network traffic, e.g. a malicious e-mail server,
+may “taint” Autocrypt keys in order to to learn more about
+the social graph of the target. The attacker can do this by
+adding unhashed subpackets to OpenPGP keys in Autocrypt
+headers found in network messages, which is possible since
+these fields are not protected by signatures nor contribute
+to the key fingerprint. Afterwards, the attacker can interact
+with potential contacts and see from the Autocrypt-Gossip
+header whether they possess the tainted key.
+19Newer versions of Delta Chat do add limited replay protection by includ-
+ing a Message-ID header in the protected payload, see Section 4.2.
+USENIX Association
+33rd USENIX Security Symposium    6379
+
+Alice
+Bob
+(pkA,skA,addrA,nameA,tokensA,peersA)
+(pkB,skB,addrB,nameB,peersB)
+fpA ←FP(pkA)
+fpB ←FP(pkB)
+FromA ←(nameA,addrA)
+FromB ←(nameB,addrB)
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . Setup Contact . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+Step 1:
+(INVITE,AUTH) ←tokensA.top()
+fpA,addrA,nameA,
+INVITE,AUTH
+Step 2:
+if FP(peersB[addrA].public_key) = fpA then
+goto shortcut
+Step 3:
+pkB,FromB,INVITE,
+"vc-request"
+if (INVITE(B),·) /∈tokensA then ignore mail
+c3 ←$ Seal(skA,pkB,"vc-auth-required")
+pkA,FromA,c3
+Step 4:
+Open(skB,pkA,c3)
+if FP(pkA) ̸= fpA then abort
+shortcut :
+m4 ←("vc-request-with-auth",AUTH,fpB)
+c4 ←$ Seal(skB,pkA,m4)
+Step 5:
+pkB,FromB,c4
+m4 ←Open(skA,pkB,c4)
+if m4.fpB =⊥or FP(pkB) ̸= m4.fpB or
+m4.AUTH =⊥or (·,m4.AUTH) /∈tokensA then
+alert user and ignore mail
+Step 6:
+Mark peersA.lookup(fpB) verified
+c6 ←$ Seal(skA,pkB,"vc-contact-confirm")
+pkA,FromA,c6
+Step 7:
+Open(skB,pkA,c6)
+Mark peersB.lookup(fpA) verified
+Figure 4: A simplified description of the Setup Contact protocol in Delta Chat. We assume messages on the wire are correctly
+formatted. Delta Chat checks message labels before possible signature verification and ignores messages with incorrect labels. If
+Open fails on verification, then Alice’s client alerts the user and ignores the message, while Bob’s client aborts the protocol; for
+all other Open failures, including during decryption and decompression, Delta Chat ignores the message. We do not include
+fields that are sent by honest participants but are not checked by their peers’ clients. We also omit the Autocrypt key update
+process (Section 3.1), implicitly assuming that the effective dates for outbound messages are increasing for each participant.
+6380    33rd USENIX Security Symposium
+USENIX Association
+

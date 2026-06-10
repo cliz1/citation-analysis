@@ -1,0 +1,2801 @@
+The Algebraic FreeLunch:
+Ecient Gröbner Basis Attacks Against
+Arithmetization-Oriented Primitives
+Augustin Bariant1,2, Aurélien Boeuf2, Axel Lemoine2,4, Irati Manterola Ayala3
+Morten Øygarden3, Léo Perrin2, and Håvard Raddum3
+1 ANSSI, Paris, France
+2 Inria, Paris, France
+3 Simula UiB, Bergen, Norway
+4 DGA, France
+{irati,morten.oygarden,haavardr}@simula.no
+{augustin.bariant,aurelien.boeuf,axel.lemoine,leo.perrin}@inria.fr
+Abstract. In this paper, we present a new type of algebraic attack that
+applies to many recent arithmetization-oriented families of permutations,
+such as those used in Griffin, Anemoi, ArionHash, and XHash8, whose se-
+curity relies on the hardness of the constrained-input constrained-output
+(CICO) problem. We refer to the attack as the FreeLunch approach: the
+monomial ordering is chosen so that the natural polynomial system en-
+coding the CICO problem already is a Gröbner basis. In addition, we
+present a new dedicated resolution algorithm for FreeLunch systems of
+complexity lower than current state-of-the-art resolution algorithms.
+We show that the FreeLunch approach challenges the security of full-
+round instances of Anemoi, Arion and Griffin, and we experimentally
+conrm these theoretical results. In particular, combining the FreeLunch
+attack with a new technique to bypass 3 rounds of Griffin, we recover a
+CICO solution for 7 out of 10 rounds of Griffin in less than four hours
+on one core of AMD EPYC 7352 (2.3GHz).
+Keywords: Algebraic attacks · Gröbner basis · FreeLunch · Symmetric
+cryptanalysis · Griffin · Arion · Anemoi
+1
+Introduction
+Recent decades have seen the emergence of new directions in symmetric cryp-
+tography. The aim of symmetric primitives has always been to provide strong
+security guarantees along with stringent performance requirements. For instance,
+modern AES [1] implementations are able to process gigabytes of data in seconds.
+This has not changed, but the nature of the performance constraints considered
+0 ©IACR 2024. This article is the nal version submitted by the author(s) to the
+IACR and to Springer-Verlag.
+
+is evolving. While the focus has traditionally been on software and hardware
+footprints, new use cases bring an entirely dierent set of relevant metrics.
+Numerous such new settings exist, such as Homomorphic Encryption-friendly
+ciphers [18,19,42,21,8,37], ciphers designed to run eciently in Multi Party Com-
+putation protocols [4,3,24], block ciphers dened over modular rings enabling
+more ecient masking [41], and Arithmetization-Oriented [5] Permutations
+(AOP) operating on vectors over large eld elements to better integrate with
+modern Zero-Knowledge proof systems. Despite their dierences, there are gen-
+eral trends in the design of these primitives, which we group under a broad
+umbrella: Symmetric Techniques for Advanced Protocols (STAP).
+One noticeable change the STAPs have brought is the underlying alphabet
+on which these primitives operate. Until recently, the overwhelming majority
+of symmetric primitives were designed based on operations either on the vector
+space (F2)n, or using arithmetic over small binary elds of size 2m, for 3 ≤m ≤9.
+For STAP, the used mathematical structures can be elds of characteristic 2, but
+with a much larger size (typically m ≥128), large elds of prime characteristic
+(say, p > 2128), or possibly not even a eld (like Elisabeth [21] or Rubato [37]).
+Moreover, the performance metrics now primarily involve the number of mul-
+tiplications in the underlying structure. Some schemes are designed to have a low
+multiplicative depth, that is, few multiplications in sequence on any data path
+from input to output, while others are designed to merely have a low number of
+multiplications in total. These performance metrics have led designers to pro-
+pose schemes that are light on multiplications but compensate by dening the
+multiplication operations over large elds. The hope is that schemes constructed
+this way may still be secure.
+Resurgence of Algebraic Attacks. Despite its functionality, the constraints on
+multiplications signicantly impact the security analysis of STAP primitives.
+Key-recovery attacks can often be simplied to the resolution of a (system of)
+non-linear equation(s). While this general approach has been applied successfully
+to F2-based stream ciphers, traditional block ciphers and hash functions have
+mostly been resistant to algebraic attacks.
+However, since the constraints that STAP primitives must meet often aect
+their algebraic structure, algebraic attacks are one of the main threats to them.
+After an initial security analysis, most designers end up setting the number of
+rounds specically so as to prevent algebraic attacks. Unfortunately, this is not
+always sucient: to attack Jarvis [5], Albrecht et al. managed to re-write the
+equations considered by the designers in a simpler way, which made the resolution
+step much more ecient than initially thought [2]. When considering FHE- or
+MPC-oriented stream ciphers, FLIP [42] and its descendant Elisabeth [21] both
+fell [25,32] to linearization-based attacks: the system of equations to be solved
+ended up being simple enough that linear algebra-based approaches could be
+used.
+Despite their crucial impact (particularly on setting the number of rounds),
+algebraic attacks against symmetric primitives are not nearly as well understood
+as classical attacks. In particular, there is no consensus among designers on how
+2
+
+to provide solid and convincing arguments for the security of primitives against
+algebraic attacks.
+Principles of an Algebraic Attack. Let us describe the main phases involved in
+the setup of an algebraic attack against a symmetric cipher. We provide a more
+thorough presentation in Section 2.
+First, the problem of interest to the cryptanalyst is modelled as a system of
+polynomial equations: state variables are chosen, and equations linking them in
+a way that captures the round function constraints are dened.
+Second, this system of equations is solved, using one of a few existing strate-
+gies. If the system can be represented as a unique univariate equation, an ecient
+FFT-based algorithm can be used to retrieve its roots, as performed in [11,9]. If,
+on the other hand, the system consists of several non-linear equations, one may
+need to convert the system into a form that can be solved eciently.
+A common strategy, adopted in this paper, consists in deriving a univariate
+polynomial equation that shares its solution with the original system, and in
+eciently solving it afterwards. This is typically done via the computation of
+a Gröbner basis [22] for the system, using an algorithm such as F4 [30], or its
+follow-up F5 [31]. The Gröbner basis is then modied using a change of order
+algorithm, such as FGLM [29] or its variants [27,28,12], yielding a univariate
+polynomial equation sharing its solutions with the original system.
+In the past, cipher designers have adopted dierent approaches to prevent
+such an attack: the authors of Griffin bounded the complexity of an algebraic
+attack with an estimate of the theoretical cost of F5, but the authors of Arion [45]
+chose instead to bound the complexity of the change of order step5.
+Our Contributions. In this paper, we present a new type of algebraic attack that
+signicantly outperforms all known methods. It requires revisiting all steps of the
+general approach outlined above: the encoding, the Gröbner basis computation
+and the change of order steps are dierent. First, using a custom monomial
+ordering and a specic equation generation procedure, we get the Gröbner basis
+for free. Combining this with known techniques is already sucient to attack
+a few full-round instances of Arion and Griffin with a complexity lower than
+the security claim. We then further decrease the complexity of our attacks by
+improving the reordering step: we provide a novel and more ecient algorithm
+of our own design6 that, in practice, signicantly outperforms FGLM for our
+systems of equations. Unfortunately, the precise complexity analysis of one of
+the steps of this algorithm has remained beyond our reach. Nevertheless, we
+performed thorough experiments, implementing the full attack against several
+round-reduced primitiveswe published the code used to verify these results on
+GitHub.7 From these experimental results we can extrapolate the complexity of
+5 This seems to be a choice of pragmatism, as it seems easier to get tight bounds;
+nothing in their experiments suggests that F5 is faster.
+6 If the solving steps were meals of the day, the lunch would be free, hence FreeLunch.
+7 https://github.com/aurelbof/algebraic-freelunch
+3
+
+the dominating step, and get attack complexities as low as 264, 298, and 2118
+for the weakest variants of Griffin, Arion, and Anemoi, respectively, where all
+claim 128 bits of security. We can therefore condently claim to shave o tens
+of bits of security from some full-round Griffin instances.
+Outline of this Paper. We recall the necessary background on algebraic attacks
+based on Gröbner bases in Section 2. Our main contribution, the FreeLunch
+method, is introduced in a generic fashion in Section 3, and we show how it can
+be successfully applied to various primitives in Section 4. While it is a priori not
+possible to obtain a Gröbner basis for free in some cases, we show in Section 5
+that it may still be possible to derive one at a negligible cost and apply this
+nding to the AOP Anemoi. We conclude in Section 6 with a discussion on the
+impact of the FreeLunch approach in terms e.g. of design.
+2
+Algebraic Background
+We consider the case of an algebraic attack against a permutation intended for
+sponge [13] use. In this section, we will walk through the detailed inner workings
+of such an attack: it will allow us to introduce all the necessary mathematical
+background and state-of-the-art methods and to set the stage for our attacks
+by both providing all the theoretical tools we need and allowing to highlight
+the advantages of our method. Throughout the paper, we denote the base eld
+by F. Depending on context, this notion includes both Fp for a prime p and/or
+F2n. We will also use the notions of polynomials and polynomial mappings in-
+terchangeably.
+2.1
+From an Attack to a System of Equations
+We rst present the constrained-input constrained-output (CICO) problem, that
+we will focus on solving. It was initially proposed by the designers of Keccak [36]
+as a crucial problem for estimating the security of permutations used in sponge
+constructions. It can also be seen as a variant of the limited birthday prob-
+lem [33]. A natural instance in the context of algebraic cryptanalysis may be
+stated in the following form.
+Problem 1 (CICO problem). Let F : Ft −→Ft be a permutation and 1 ≤ℓ< t
+an integer. The goal is to nd x ∈{0}ℓ× Ft−ℓsuch that F(x) ∈{0}ℓ× Ft−ℓ.
+In this paper we will focus on the case ℓ= 1. An attacker able to solve the
+CICO problem has control over both the input and output of the permutation,
+which is precisely what a good permutation is supposed to prevent. Furthermore,
+in our case, the value 0 in the output could be replaced e.g., by a digest d to
+immediately obtain a preimage attack.
+4
+
+Encoding. To solve a CICO instance, we need to model or encode the problem
+into a system of polynomial equations. In symmetric cryptography, this is usu-
+ally done iteratively by modelling one round after another, possibly adding new
+variables to keep the degree of the initial system low. The main challenge is
+encoding the cipher's non-linear operations in a form that may be amenable for
+cryptanalysis. For STAP ciphers, the existence of low-degree models is usually
+possible by design: while such systems can be leveraged for cryptanalysis, they
+are also required for a fast verication in many ZK protocols.
+Consider a non-linear function S : Ft →Ft, and let S0, ..., St−1 be its coor-
+dinate functions. A trivial model of such a function would consist of t equations
+of the form yi = Si(x0, ..., xt−1). In this case, a tuple (x0, ..., xt−1, y0, ..., yt−1) is
+a solution of the system if and only if we indeed have y = S(x).
+This situation corresponds to the simplest case, where the model is simply
+the evaluation of the function. However, more sophisticated models can exist,
+as rst pointed out by the authors of Rescue [5,46]. Indeed, the non-linear layer
+of this permutation involves both x 7→xα and x 7→x1/α, where α is a small
+integer. In this case, even though a non-linear function has a very high degree
+(1/α being a dense integer of Z/(p −1)Z), it is possible to design a low-degree
+model by using the equation x = yα rather than y = x1/α.
+More generally, all that is needed from a model is that it describes the graph
+of S, i.e., the set ΓS =
+
+(x, y) | (x, y) ∈(Ft)2, y = S(x)
+	
+. In what follows, we
+focus on models corresponding to a system of multivariate polynomials P =
+{p0, . . . , pn−1} ⊂F[x0, . . . , xn−1], which is associated with the following system
+of polynomial equations:
+pi(x0, . . . , xn−1) = 0
+1 ≤i ≤n −1 .
+(1)
+The polynomial systems we consider have a nite number of solutions in the
+algebraic closure of F, and are such that there exists a solution of P which
+directly leads to a solution of an associated CICO problem (or to a preimage of
+a given hash). In the remainder of this paper, we call sysGen the procedure used
+to generate a system of equation.
+If n = 1, then P contains a unique equation of degree D in one variable, and
+we can use univariate techniques to solve the problem. In practice, such an at-
+tack needs a number of operations given by O ((D(log(D) + log(p)) log(log(D)))
+(see [11] for more details). We call the function returning the root(s) of a uni-
+variate polynomial uniSol.
+2.2
+Finding Structures in a System of Equations
+Once our attack is represented by a system of equations, we need to solve it. To
+this end, we need to better understand the structures implied by a system of
+polynomial equations. Indeed, in order to solve the system, we need to somehow
+derive equations sharing the solutions of the original system, and whose solu-
+tions can be computed in practice. We thus need to formally describe the set of
+multivariate polynomials that have the roots we are interested in.
+5
+
+This set of polynomials is in fact an ideal I = ⟨P⟩, contained in the ring
+R = F[x0, . . . , xn−1]. We denote di the degree of equation pi, and DI the ideal
+degree of I, i.e. the number of solutions of P in the algebraic closure of Fn,
+counted with multiplicity. In order to study this ideal, we need the notion of
+monomial order.
+Denition 1. A monomial order ≺is a total order on the set of monomials
+of R such that i) for any monomial m ∈R we have 1 ≺m; and ii) for any three
+monomials m1, m2, t ∈R we have
+m1 ≺m2 =⇒t · m1 ≺t · m2 .
+The typical monomial orders used in computations are the lexicographical
+(lex) order and the graded reverse lexicographical (grevlex) order. We now dene
+a particular weighted order which we will use throughout the paper.
+Denition 2. Consider a weight vector w = (w0, . . . , wn−1) ∈Rn, where
+w0 ̸= 0. We say that w is associated with the monomial order ≺, dened
+by:
+n−1
+Y
+i=0
+xαi
+i
+≺
+n−1
+Y
+i=0
+xβi
+i
+⇐⇒
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+n−1
+X
+i=0
+wiαi <
+n−1
+X
+i=0
+wiβi
+or
+∃k,
+n−1
+X
+i=0
+wiαi =
+n−1
+X
+i=0
+wiβi, ∀j > k, αj = βj and αk < βk.
+Technically speaking, this denes a weighted graded lexicographical (deglex) order
+with x0 ≺x1 ≺. . . ≺xn−1. The particularities of this choice will be needed in
+Section 5.
+Denition 3. The leading monomial of a nonzero polynomial f ∈R, relative
+to a monomial order ≺, is the largest monomial contained in f according to ≺.
+It is denoted LM(f). The leading coecient of f, LC(f), is the coecient
+associated with LM(f). Finally, the leading term of f, LT(f), is the product
+of its leading monomial and coecient.
+If S = {f1, f2, . . .} ⊆R, then we can extend the above denitions to the set
+S, e.g.,
+LT(S) = {LT(f1), LT(f2), . . .}. We may now dene the notion of a
+Gröbner basis of an ideal of R.
+Denition 4 (Gröbner basis [16]). Let I be an ideal of R. A nite set of
+polynomials G ⊂I is a Gröbner basis with respect to ≺if the leading monomial
+of every polynomial in I is a multiple of the leading monomial of some polynomial
+in G. A Gröbner basis G is said to be reduced if for all g ∈G, no monomial in
+g is divisible by an element of LT(G) \ {LT(g)} and LC(G) = {1}.
+An ideal I always contains a Gröbner basis. For a xed ≺there are usually many
+Gröbner bases, but only one reduced Gröbner bases. We will crucially rely on
+the following results throughout this paper.
+6
+
+Proposition 1 ([22, Chapter 2,9, Prop 4 and Thm 3]).
+Let G be a set
+of polynomials of R, G = {g1, ..., gm}. If the leading monomials of gi and gj are
+relatively prime for all 1 ≤i ̸= j ≤m, then G is a Gröbner basis for ⟨G⟩.
+Proposition 2 ([22, Chapter 2 6 Prop 1]). Let I be an ideal, ≺a mono-
+mial order, G a Gröbner basis of I w.r.t. ≺, and f ∈R. There exists a unique
+r ∈R such that:
+ LT(r) is not divisible by any element of LT(G).
+ ∃g ∈I, such that f = g + r.
+The polynomial r is called the remainder or normal form of f w.r.t. I and
+≺.
+2.3
+Exploiting a Gröbner Basis
+The characteristics of a Gröbner basis can vary greatly depending on the under-
+lying monomial order. For our goal, that is nding solutions of P, one typically
+wants to compute a Gröbner basis of ⟨P⟩in the lex order. However, computing
+a Gröbner basis directly in this order tends to be computationally expensive. In-
+stead, it is common to rst compute a Gröbner basis in the grevlex order  which
+tends to be signicantly faster  and then apply a dedicated order-changing al-
+gorithm, such as FGLM or its variants [29,27,28,44], to nally recover a basis in
+lex order. While we do not give a complete description of these algorithms, we
+nevertheless highlight some of the principles underpinning them, as they will be
+needed later for our own resolution algorithm.
+The Quotient Ring. Thanks to Proposition 2, we can dene the quotient ring
+R/I, where each class has a unique representative r such that LT(r) is not
+divisible by any element of a LT(I). The monomial order ≺does not aect the
+quotient ring R/I, but determines the representative of each class. Macaulay's
+theorem [26, Theorem 15.3] states that the set of monomials in R \ LT(I) form
+a basis for R/I.
+Denition 5. Let I be an ideal of R. We say that I is zero-dimensional if
+dimF(R/I) is nite. In this case, its ideal degree DI is dimF(R/I).
+The quotient ring R/I has a canonical basis with respect to ≺denoted
+B≺(R/I), where the basis elements are given by all the monomials in R that are
+not in the ideal ⟨LM(G)⟩, for G a Gröbner basis for I. If I is zero-dimensional,
+we have |B≺(R/I)| = DI. Each element r of R/I can then be written as a vector
+in the basis B≺(R/I), which we will call NormalForm(r). This allows us to dene
+the linear matrix Tj : R/I →R/I corresponding to the multiplication by xj.
+Denition 6 (Multiplication matrix of xj). The multiplication matrix
+Tj of xj relative to a zero-dimensional ideal I, a monomial order ≺, and the
+basis B≺(R/I) = (ϵ1, . . . , ϵDI) is dened as the square matrix which has each
+column dened as Ci = ϵi × xj represented in the basis B≺(R/I).
+7
+
+Said dierently, T0 is the DI × DI matrix mapping the basis elements ϵi 7→
+NormalForm(x0ϵi). The following result is well-known in the literature, but we
+have not been able to nd a reference that holds for nite elds (e.g., it is derived
+as Corollary 4.6 in [23] over C). For completeness, we provide a short proof that
+works over any eld.
+Proposition 3. Let I be a zero-dimensional ideal of R, ≺a monomial order,
+and T0 the multiplication matrix of the variable x0 with respect to ≺. We have
+det(x0I −T0) ∈I, where I is the identity matrix.
+Proof. Let C(x) = det(xI −T0) =
+XDI
+i=0 cixi be the characteristic polynomial
+of T0. By the Cayley-Hamilton theorem we have C(T0) =
+XDI
+i=0 ciT i
+0 = 0, where
+0 is the DI × DI zero-matrix. Letting ϵ denote the column vector representing
+the constant polynomial 1 in R/I, we then have C(T0)ϵ = 0. As T i
+0ϵ is the
+representation of NormalForm(xi
+0), this implies that NormalForm(C(x0)) = 0,
+hence C(x0) ∈I.
+⊓⊔
+The next denition is a very standard and common hypothesis for an ideal when
+implementing Gröbner basis polynomial solving algorithms.
+Denition 7 ([27], Denition 3.1).
+An ideal I of R is in shape position
+if its reduced Gröbner basis in the lexicographical order has the following form
+G = {f0(x0), x1 −f1(x0), . . . , xn−1 −fn−1(x0)}.
+In this case, it follows straightforwardly that DI = deg(f0), and the cost of
+nding solutions for I, given its lexicographic Gröbner basis, reduces to the
+problem of nding the roots of f0.
+3
+The Algebraic FreeLunch
+In this section, we present our own custom approach to algebraic attacks, which
+is applicable to solve CICO instances for some arithmetization-oriented per-
+mutations (see Section 4). As with the algebraic attacks we presented in the
+previous section, we rst need to describe our problem using a system of poly-
+nomial equations. We start with a description of the general form of systems
+for which a Gröbner basis can be obtained for free (see Section 3.1). Then, we
+show how to deduce a univariate polynomial from this system in Section 3.2.
+Means to create these polynomial systems for various primitives are discussed
+in Sections 3.3 and 3.4, where we reuse and generalize an encoding technique
+introduced by the authors of Griffin in a way that can be applied to iterated
+functions. The entire solving strategy is summarized in Section 3.5.
+3.1
+FreeLunch Systems
+We saw in Proposition 1 that there is a class of polynomial systems that admits
+a simple Gröbner basis. This is the motivation for the following denition.
+8
+
+Denition 8 (FreeLunch System). Let R be the ring F[x0, . . . , xn−1] and
+P = {p0, . . . , pn−1} be a sequence of polynomials of R. We say that P is a
+FreeLunch
+system
+if
+there
+exists
+a
+monomial
+order
+≺
+and
+integers
+(α0, . . . , αn−1) such that for all i ∈{0, . . . , n −1}, LM≺(pi) = xαi
+i . Any mono-
+mial order ≺that veries this property is said to be a FreeLunch order.
+Note that this is not the rst time Proposition 1 has been used in cryptography.
+In [17], the authors describe a polynomial modeling for AES that can be said
+to be a FreeLunch system in a graded lex order. However, the ensuing change of
+order computation to a lex order is too costly to threaten the security of AES.
+The following properties are now easy to verify, and were also used in [17].
+Proposition 4. A FreeLunch system P is a Gröbner basis for the ideal I = ⟨P⟩
+with respect to any of its FreeLunch orders. Moreover, I is zero-dimensional and
+of ideal degree DI =
+n−1
+Y
+i=0
+αi.
+Proof. The rst statement follows directly from Proposition 1. For the latter
+statement, note that the canonical basis of R/I (w.r.t. a FreeLunch order ≺) is
+B≺(R/I) = {xi0
+0 · · · xin−1
+n−1 | 0 ≤ij < αj, for 0 ≤j ≤n −1}.
+Counting all these basis elements yields DI.
+⊓⊔
+We conceived a dedicated algorithm for the resolution of FreeLunch systems,
+which has a competitive time complexity. The following result will be proven in
+Section 3.2, where 2 ≤ω ≤3 denotes the linear algebra exponent.
+Theorem 1. Given a FreeLunch system P, a FreeLunch order ≺, and the as-
+sociated multiplication matrix T0 of the variable x0, there exists an algorithm to
+compute a solution for x0 with time complexity
+˜O
+ 
+α0
+ n−1
+Y
+i=1
+αi
+!ω!
+.
+3.2
+Extracting a Univariate Equation from a FreeLunch System
+We now turn to the problem of solving a FreeLunch system, with the aim of
+showing Theorem 1. As we will see in later sections, a FreeLunch system is
+typically only already a Gröbner basis under specially crafted monomial orders.
+To easily retrieve the solutions of a FreeLunch system, we look for a univariate
+polynomial belonging to the ideal spawned by the system. To do so, a common
+approach is to compute a Gröbner basis in the lex order. Given an initial Gröbner
+basis, computing a lex Gröbner basis can be performed using a change of order
+algorithm.
+9
+
+Existing change of order algorithms. The FGLM algorithm [29] provides an
+ecient method for changing the monomial orders of Gröbner bases of zero-
+dimensional ideals, with a running time of O(nD3
+I) operations and no conditions
+on the Gröbner bases, on the monomial order or on the ideal. Note that this cost
+includes computing the multiplication matrix T0.
+Later algorithms [27,28,44,12] signicantly improve upon this running time,
+but require various assumptions on the input basis and underlying ideal. For
+instance, [27,28,12] assume that the multiplication matrix T0 is either given,
+or can be eciently computed. Note that the latter is a consequence of the
+stability property (see [12, Denition 2.1]), which is assumed in some of these
+works. Unfortunately, FreeLunch systems do not generally satisfy this property.
+In fact, the authors of [12] state that when the base eld is large enough and
+the ideal under consideration is radical, the stability property can be ensured
+through a generic linear change of coordinates. The issue is that doing so might
+transform the FreeLunch system into a dierent type of system that is not a
+Gröbner basis.
+We briey recall the eectiveness of the change of order algorithms assuming
+that T0 is given and that the ideal is in shape position. In this case, the algorithm
+of [28] runs in O(Dω
+I log(DI)) and supposes that the input order is grevlex and
+the output order is lex. [44] runs in O(nDω
+I log(DI)) with no additional hypoth-
+esis, and achieve O(Dω
+I log(DI)) when the ideal is in shape position. In our case,
+we are particularly interested in some algorithms that benet from the sparsity
+of T0, represented by its sparsity indicator t. The algorithm of [27, Theorem 3.2]
+for example runs in O(tD2
+I). The algorithm of [12] achieves an even better time
+complexity, of ˜O(tω−1DI), if the input order is grevlex and the output order is
+lex. However, it is not clear to us if the ideas as presented in [12] can be directly
+generalized to our setting, i.e. with a weighted input monomial order, even if T0
+is given. Instead, we will develop a dedicated resolution algorithm from a basis
+in a FreeLunch order when T0 is given, whose running time happens to coincide
+with that of [12] ( ˜O(tω−1DI)).
+A new approach. From the above discussion we see that while the original FGLM
+algorithm is applicable to the FreeLunch systems we are interested in, the im-
+proved variants are generally not. This motivated the design of a new dedicated
+algorithm for nding a univariate polynomial f0(x0) belonging to the ideal, ex-
+ploiting the sparsity of the multiplication matrix T0.
+Let I be a zero-dimensional ideal of R = F[x0, . . . , xn−1], ≺a monomial
+order giving a FreeLunch system, B≺= (ϵ1, . . . , ϵDI) the canonical basis of R/I,
+and T0 the multiplication matrix corresponding to the variable x0. Let H be the
+subspace of R/I containing the classes h of R/I where the unique representative
+of h with respect to ≺does not contain the variable x0. Let DH be the dimension
+of H and BH
+≺= [φ1, . . . , φDH] be a canonical basis for the subspace H. It is clear
+that BH
+≺exactly consists of the monomials m of B≺such that x0 ∤m. Thus, it
+10
+
+holds that DH =
+n−1
+Y
+i=1
+αi = DI/α0. We order the basis B≺specically as
+[φ1, . . . , φDH, x0φ1, . . . , x0φDH, x2
+0φ1, . . . , x2
+0φDH, . . . , xα0−1
+0
+φ1, . . . , xα0−1
+0
+φDH] ,
+and identify any polynomial f ∈R/I with its coecient vector vf of length DI.
+The coecient vector for the polynomial x0f ∈R/I can then be computed as a
+matrix/vector multiplication T0v⊤
+f for a xed matrix T0. The following lemma
+gives the structure of T0.
+Lemma 1. Under the basis B≺, the matrix T0 is of the following form, repre-
+sented as a block matrix with block sizes DH × DH:
+T0 =
+
+
+
+
+0
+0
+. . .
+0
+−M0
+I
+0
+. . .
+0
+−M1
+...
+...
+...
+...
+...
+0
+. . .
+0
+I
+−Mα0−1
+
+
+
+.
+The block matrices M0, . . . , Mα0−1 are a representation of the reduction of
+xα0
+0 BH
+≺modulo I. The exact entries in the Mi matrices depend on the particular
+polynomials making up the Gröbner basis for the FreeLunch system. We call
+matGen the procedure which, given a basis B≺, returns T0.
+From Proposition 3 it follows that det(x0IDI −T0) is a univariate polynomial
+belonging to the ideal I. Computing this determinant and using a root-nding
+algorithm to solve det(x0IDI −T0) = 0 will nally give us a value for x0 that
+solves the CICO problem. The following lemma shows that computing this de-
+terminant of this particularly structured matrix T0 can be done with much lower
+complexity than for a generic matrix of dimension DI.
+Lemma 2. Let M0, . . . , Mα0−1 be the matrices dened in Lemma 1. We have
+det(x0IDI −T0) = ± det
+ 
+xα0
+0 IDH +
+α0−1
+X
+i=0
+xi
+0Mi
+!
+.
+Proof.
+det(x0IDI −T0) = det
+
+
+
+
+
+
+x0I
+0
+. . .
+0
+M0
+−I
+x0I
+. . .
+0
+M1
+...
+...
+...
+0
+...
+0
+0
+−I
+x0I
+Mα0−2
+0
+0
+0
+−I
+x0I + Mα0−1
+
+
+
+
+
+
+.
+The rows of this matrix can be split into a set of α0 blocks of DH rows each.
+Denote these blocks as L0, . . . , Lα0−1 from top to bottom. We now do elementary
+row operations block-wise, from bottom to the top, with Li = Li + x0Li+1, for
+11
+
+i = α0 −2, . . . , 0. This does not change the value of the determinant, and after
+these row operations, the resulting determinant to compute is:
+det
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+0
+0
+. . .
+0
+xα0
+0 I +
+α0−1
+X
+i=0
+xi
+0Mi
+−I
+0
+. . .
+0
+xα0−1
+0
+I +
+α0−2
+X
+i=0
+xi
+0Mi+1
+...
+...
+...
+...
+...
+0
+. . .
+−I
+0
+x2
+0I +
+1
+X
+i=0
+xi
+0Mi+α0−2
+0
+. . .
+0
+−I
+x0I + Mα0−1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+.
+In this block matrix representation, the determinant of the full matrix is the
+determinant of the top right matrix, up to the sign (−1)α0+1.
+⊓⊔
+Complexity Analysis. We call polyDet the procedure returning the polynomial
+det(x0IDI −T0) using Lemma 2. This step has a complexity ˜O(DIDω−1
+H
+) =
+˜O(α0Dω
+H) with the algorithm of [40]. Note that this is precisely the complexity
+that was obtained with the algorithm of [12] for systems satisfying the stability
+and shape position properties. In order to estimate the logarithmic factors in
+the complexity formula, we bound the complexity with [34, Theorem 4.4], using
+a polynomial matrix multiplication algorithm of complexity O(Dω
+H log(α0) +
+D2
+H log(α0) log(log(α0))) [20]. This way, we bound the number of operations of
+polyDet with (when DH is large):
+O
+ α0 log(α0)2Dω
+H + α0 log(α0)2 log(log(α0))D2
+H
+
+≈O(α0 log(α0)2Dω
+H) .
+(2)
+The remaining task to show Theorem 1 is to recover the roots of a univari-
+ate polynomial of degree DI, a step we refer to as uniSol. This costs ˜O(DI)
+operations and is thus negligible in comparison with the polyDet step.
+We want to highlight that the complexity of the matGen step is hard to
+estimate precisely (recall that T0 is assumed known in Theorem 1). This step
+can be upper bounded by O
+ nD3
+I
+
+operations [29, Proposition 3.1] using the
+FGLM algorithm. However, this is likely to be a loose upper bound, as it does
+not take into account any of the underlying structure. Indeed, we have observed
+this in our experiments by naively taking some of this structure into account
+(see Appendix G). Still, as we will see later, the matGen step can sometimes be
+costlier than polyDet.
+3.3
+Ordering a FreeLunch
+Having seen how to eciently nd solutions for FreeLunch systems, we will focus
+in the next two subsections on the problem of actually nding them. Recall that
+FreeLunch systems rely on the existence of specic monomial orders. How can
+we gure out if such an order exists (and thus, if a system is a FreeLunch)? In
+12
+
+general, answering this question is not trivial. However, the systems we will be
+concerned with in Sections 4 and 5 naturally have a deeper structural property
+that allows for a procedural approach to this problem.
+Denition 9 (Triangular System).
+Let P = (p1, . . . , pn−1, g) be a poly-
+nomial system in F[x0, x1, . . . , xn−1]. We say that P is a triangular sys-
+tem if there exists polynomials q0, q1, . . . , qn−1, integers α0, α1, . . . , αn−1, and
+c0, . . . , cn−1 ∈F \ {0} such that
+(
+pi
+= cixαi
+i
++ qi(x0, . . . , xi−1)
+for 1 ≤i ≤n −1 ,
+g
+= c0xα0
+0 + q0(x0, . . . , xn−1) .
+A triangular system P can be assigned the following monomial order that is
+naturally motivated by the FreeLunch denition.
+Construction 1 For a triangular system P, we dene its triangular order, ≺T ,
+as the monomial order from Def. 2 associated with the weight vector dened
+recursively by:
+(
+wt(x0)
+= 1 ,
+wt(xi)
+= wt (LM≺T (qi(x0, x1, . . . , xi−1))) /αi
+for 1 ≤i ≤n −1 .
+The recursion is well-dened since the leading monomial of qi and its associated
+weight are only dependent on the weights of xj for j < i. The denition ensures
+that LM≺T (pi) = xαi
+i
+for 1 ≤i ≤n −1. Hence, a triangular system P is a
+FreeLunch system with respect to ≺T if the leading monomial of g is univariate
+in x0, which gives the following Proposition:
+Proposition 5 (Ordering a FreeLunch). Let P be a triangular system, and
+≺T be its triangular order. If α0 > wt(LM≺T (q0(x0, . . . , xn−1))) then P is a
+FreeLunch system and ≺T is one of its FreeLunch orders.
+As we will see below, such systems naturally occur when investigating some
+cryptographic permutations.
+3.4
+FreeLunch Systems From Iterated Functions
+The permutations we target share the same structure: a composition of a num-
+ber of round functions. The input and output of every round is a state of t
+elements8 from F and the round functions typically consist of a limited number
+of multiplications and α-th roots in F. Writing them out directly as polynomial
+functions yields polynomials of high degree, owing to the α-th root operations.
+A natural modeling strategy introduces a new variable for each of them to keep
+the degree growth manageable, as x = yα is of much lower degree than y = x1/α
+when α ∈{3, 5, ..., 257} and |F| is large. In this section, we take inspiration from
+an encoding suggested by the authors of Griffin [35] and show how to model
+this class of primitives as polynomials that form a low degree FreeLunch system.
+8 We say that the permutation has t branches, or as we like to think of them, brunches.
+13
+
+Fig. 1: Triangular system for a simple SPN with two branches and two rounds.
+Toy Example. Let us start with a toy SPN of two rounds, where the round
+function F is given by F = S ◦A : F2 →F2, for an invertible ane layer A
+and a non-linear layer S. Moreover, we write S = (S1, S2) where S1(y) = yd,
+for a small integer d, and S2(y) = y1/α. This simple construction is shown in
+Figure 1, where we also label the branches with variables and polynomials at
+dierent points. We consider a CICO problem with input (0, x0).
+As we assume d ≪p, we note that the round function F can only achieve
+a high degree as a polynomial function F2 →F2 due to the map S2. Thus, we
+introduce new variables x1 and x2 for the output of S2 in the rst and second
+rounds, respectively. The polynomials p1, p2 relate the symbolic input and output
+of the two S2-functions, where q1 is an ane polynomial in x0 that is input to
+S2 in the rst round, and q2(x0, x1) is the input to S2 in the second round and
+has degree d in the x0-variable and degree 1 in the x1-variable. Finally, we let
+g(x0, x1, x2) represent the rst output of the construction that is required to be
+0 by the CICO-problem. We can now write g as
+g(x0, x1, x2) = c0xd2
+0 + q0(x0, x1, x2),
+for a suitable constant c0 ∈F, and where q0(x0, x1, x2) has degree < d2 in x0,
+degree d in x1 and degree 1 in x2. If c0 ̸= 0 we observe that P = {p1, p2, g}
+forms a triangular system (Denition 9), whose solutions yield a solution to
+the specied CICO-problem. The weight vector of ≺T from Construction 1 is
+(1, 1/α, d/α), and it is straightforward to verify that P satises the condition of
+Proposition 5. Hence, P is a FreeLunch system.
+General Case. The above example shows the core idea for how a FreeLunch
+system can be made from a round function that relies on the functional inverse
+of low degree function to achieve a high degree. Let us generalize this insight.
+Let Fi : Ft →Ft, zi−1 7→zi, denote the i-th round of a primitive, where
+zi−1 = (zi−1,0, . . . , zi−1,t−1) is the state after i −1 rounds. Recall that Fi may
+itself have a high degree (in zi−1), but suppose there exists a set of variables
+xi = {xi,0, . . . , xi,ℓi−1} satisfying
+xαi,j
+i,j
+= Li,j(zi−1), for 0 ≤j < ℓi,
+(3)
+14
+
+where αi,j is an integer and Li,j an ane function. Moreover, suppose that there
+exists a polynomial function Gi : Ft+ℓi →Ft of low degree di, satisfying
+Fi(zi−1) = {Gi(zi−1, xi) | xi satises (3)}.
+(4)
+In other words, while Fi and Gi are dierent as polynomial functions, they yield
+the same output when xi is restricted by (3). For instance, in the toy example
+above, we used
+G1(z0, x1) =
+
+(A1(z0))d , x1
+
+,
+G2(z1, x2) =
+
+(A1(z1))d , x2
+
+,
+where A1 denotes the rst output of A.
+Polynomial Modeling. We now have an iterated function of t branches where
+each round can be described using the functions G = {G1, . . . , Gr} satisfying
+(3) and (4), and where Gi is of degree di. We introduce the shorthand d≤i =
+d1d2 · · · di, and we require that the exponents di are small enough to ensure that
+their composition will not exceed the maximal degree determined by the nite
+eld, i.e. d≤r < |F| −1.
+With this in place, we give the following blueprint for constructing a poly-
+nomial system. Recall that we focus on the variant of the CICO-problem where
+a single input in F is unknown, which we will symbolically denote by x0, and
+the output of the rst branch should be 0. The initial state is written as z0(x0),
+which consists of t ane polynomials in x0. The proceeding state is dened
+as z1(x0, x1) = G1(z0, x1), where we note that z1 is now t polynomials of
+at most degree d1 in the variables x0, x1. Furthermore, we create functions
+p1 = {p1,0, . . . , p1,ℓ1−1} to encode the relations (3) that we encounter in this
+step. That is, for x1 = {x1,0, . . . , x1,ℓ1−1}, we construct the polynomials
+p1,j = xα1,j
+1,j −L1,j(z0), for 0 ≤j < ℓ1 .
+This process of updating the state zi and constructing polynomials9 pi is re-
+peated for all rounds up to r −1. In the last round, we generate polynomials pr
+as before, but instead of updating the state, we compute the nal polynomial
+g(x0, x1, . . . , xr) = [Gr(zr−1, xr)]1,
+where [·]1 means the rst polynomial of Gr(zr−1, xr). This construction yields
+the polynomial system PG = {p1, . . . , pr, g} over the ring F[x0, x1, . . . , xr].
+PG as a FreeLunch system. It is easy to verify that PG is a triangular system
+if g contains a univariate monomial in x0. In fact, this is a stronger case than
+the generic triangular systems considered in Section 3.3, since we are also able
+9 If a single variable is introduced in a round, we will ease notation by writing xi = xi,
+pi = pi and αi.
+15
+
+to bound the degrees of the polynomials in PG by round degrees d1, . . . , dr.
+This allows us to give an analogous variant of Proposition 5 for PG. Instead of
+a condition on the entire system that could be computationally expensive to
+verify, we reduce the assumption to the condition of a single monomial in g.
+Proposition 6. Let PG be a polynomial system as constructed above, where all
+αi,j from (3) are at least 2, and the functions G = {G1, . . . , Gr} are of degrees
+d1, . . . , dr ≥2. Then PG is a FreeLunch system if g contains the monomial x
+d≤r
+0
+.
+Before proving the proposition, we start by dening ≺G, which is the monomial
+order from Denition 2 whose weight vector is given by
+(
+wt(x0)
+= 1 ,
+wt(xi,j)
+= d≤i−1/αi,j
+for 1 ≤i ≤r and 1 ≤j ≤ℓi ,
+where we dene d≤0 = 1. Recall that zi denotes the i-th state represented by t
+polynomials in x0, x1, . . . , xi. We will write wt(LM(zi)) for the maximal weight
+among the monomials of these t polynomials.
+Lemma 3. Let zi be the i-th state associated with a system G that satises the
+conditions of Proposition 6. Then the following inequality holds for ≺G:
+wt (LM(zi)) ≤d≤i .
+Proof. We proceed by induction. The base case of i = 0 is immediate since z0
+is ane in x0, and d≤0 = 1 by denition. For the induction step, we recall that
+zi = Gi(zi−1, xi), where Gi has degree di. Thus we have
+wt(LM(zi)) ≤di · max{wt(LM(zi−1)), wt(xi,1), . . . , wt(xi,ℓi)} .
+Now we have wt(xi,j) < d≤i−1, and wt(LM(zi−1)) ≤d≤i−1 by the induction
+hypothesis. Hence
+wt(LM(zi)) ≤did≤i−1 = d≤i .
+⊓⊔
+The proof of this lemma also implies that ≺G coincides with ≺T from Construc-
+tion 1 if all functions Li,j(zi−1) achieve their maximal weight d≤i−1. We now
+have all we need to show Proposition 6.
+Proof. (Proposition 6). From Lemma 3 we observe
+wt
+ xαi,j
+i,j
+
+= αi,jwt (xi,j) = d≤i−1
+≥wt(LM(zi−1)) ≥wt(LM(Li,j (zi−1))).
+Hence LM (fi,j) = xαi,j
+i,j . Moreover, Lemma 3 also guarantees that
+wt (LM(g)) ≤wt(LM(zr)) ≤d≤r.
+Due to the fact that αi,j ≥2, the factor 1/αi,j that appears in the weight of all
+variables xi, i ≥1, the above equality can only be achieved by the monomial
+x
+d≤r
+0
+. It then follows from the assumption that LM(g) = x
+d≤r
+0
+, which makes PG
+a FreeLunch system.
+⊓⊔
+16
+
+Computing a reduced Gröbner Basis for ⟨PG⟩(sysGen). We have just
+seen that computing a Gröbner basis for a given FreeLunch system PG is  as
+the name suggests  free. There are, however, two practical concerns worth ad-
+dressing. Firstly, while PG is itself a Gröbner basis, it is generally not the unique
+reduced Gröbner basis w.r.t. any of its FreeLunch orders. Secondly, generating
+the polynomials in PG may itself be hard.
+In practice we do not generate the polynomials in PG in the direct manner
+outlined earlier. Rather, we will use the fact that pi and g are constructed by
+composing certain round functions. This allows us to reduce by the polynomials
+p1, . . . , pi−1 introduced earlier in the process in order to suppress the growth
+of the number of monomials. This is detailed in Appendix A, where we show
+that when PG satises the conditions of Proposition 6, the polynomial system
+generated in this manner is also a FreeLunch system that is the unique reduced
+Gröbner basis for ⟨PG⟩w.r.t. ≺G. In [10, App. A] a complexity estimate for
+generating this latter polynomial system is also provided, under the assumption
+that reductions following every multiplication of multivariate polynomials can
+be done eciently.
+3.5
+Summary of the FreeLunch Attack
+The strategy of the attack presented in this section is summarized in Algo-
+rithm 1. The initial condition is that there exists a FreeLunch system associated
+1. sysGen: Generate a FreeLunch system (Section 3.4).
+2. matGen: Compute the multiplication matrix T0 (Section 3.2).
+3. polyDet: Compute f(x0) = det
+ 
+xα0
+0 IDH +
+α0−1
+X
+i=0
+xi
+0Mi
+!
+(Section 3.2).
+4. uniSol: Solve f(x0) = 0.
+Algorithm 1: Overview of the FreeLunch Attack.
+with the target primitives. Methods for constructing this FreeLunch system were
+presented in Section 3.3 and 3.4, and the complexities for sysGen using these
+methods are discussed in Appendix A. A dierent way of generating a FreeLunch
+system will also be shown in Section 5. We will estimate the complexity of
+polyDet by (2), but we do not have a clear estimate for matGen. The nal step
+uniSol recovers the roots of a univariate polynomial of degree DI. This costs
+˜O(DI) operations and is thus negligible in comparison with the earlier steps.
+We expect the complexity of the attack as a whole to be dominated by either
+matGen or polyDet for the primitives we have investigated. This is in line with
+our experiments (see Section 6.1), where matGen seems to be the dominating
+step for larger instances.
+17
+
+The numbers for the complexity of the polyDet step in our attacks against
+several AOPs are shown in10 Table 1. Details of how we obtained the complexities
+for the specic ciphers will be provided further in the paper. While we do not have
+a rigorous complexity estimate for the matGen step, recall that the complexity
+O(nD3
+I) of the FGLM algorithm serves as a loose upper bound. This upper
+bound is already sucient to break a few instances of Griffin and α-Arion.
+For Griffin we have FGLM complexities of 2108 and 2122 for t ≥12 and α = 3, 5,
+respectively, and 2127 for t = 8 and α = 3. For α-Arion with α = 121 and e = 3
+we get 2117 and 2127 for t = 4, 5 and for e = 5 we get complexities of 2114 and
+2124 for t = 3, 4.
+Name
+α/e
+Number of branches
+2
+3
+4
+5
+6
+8
+≥12
+Griffin
+3
+∅
+120 (16)
+112 (15)
+∅
+∅
+76 (11)
+64 (10)
+5
+∅
+141 (14)
+110 (11)
+∅
+∅
+81 (9)
+74 (9)
+Arion
+3
+∅
+128 (6)
+134 (6)
+114 (5)
+119 (5)
+98 (4)
+∅
+5
+∅
+132 (6)
+113 (5)
+118 (5)
+122 (5)
+101 (4)
+∅
+α-Arion
+3
+∅
+104 (5)
+84 (4)
+88 (4)
+92 (4)
+98 (4)
+∅
+5
+∅
+83 (4)
+87 (4)
+91 (4)
+94 (4)
+101 (4)
+∅
+Anemoi
+3
+118 (21)
+∅
+-
+∅
+-
+-
+-
+5
+156 (21)
+∅
+-
+∅
+-
+-
+-
+7
+174 (20)
+∅
+-
+∅
+-
+-
+-
+11
+198 (19)
+∅
+-
+∅
+-
+-
+-
+Table 1: Time complexity (log2) of polyDet in FreeLunch-based attacks against
+some full-round algorithms (aiming at 128-bit security). Number of rounds in
+parentheses, ∅corresponds to undened algorithms. The α/e column reports α
+for Griffin and Anemoi; and e for the Arion variants.
+4
+Using FreeLunch Systems Directly
+Experimental Verication In this section and in Section 5, we support theo-
+retical attacks with practical experiments on reduced-round versions. All exper-
+iments are performed on 1 core of AMD EPYC 7352 (2.3GHz) with 250 GB of
+memory, and on Fp with p = 0x64ec6dd0392073. The sysGen step is performed
+with SageMath [48], Magma [14] or the NTL [49] and Flint [38] libraries, the
+matGen step is performed with Flint, and the polyDet step is perfomed with the
+Polynomial Matrix Library [47,39].
+4.1
+A Detailed Example: Griffin
+Specication of Griffin. Griffin [35] is a family of sponge hash and com-
+pression functions proposed by Grassi et al. at Crypto 2023 designed to be used
+10 The complexities correspond to the number of basic Fp operations; writing them as
+number of calls to the primitive would yield lower but hard to compute numbers.
+18
+
+in Zero-Knowledge applications. As such, it makes use of the internal permuta-
+tion Griffin-π, which is dened over the nite eld F.
+Each round function of Griffin-π is composed of a non-linear layer, the
+addition of a round constant, and a linear layer dened by multiplication by an
+MDS matrix.The specic features of Griffin impose that the primitive is only
+suitable for Ft where t = 3 or t is a multiple of four.
+Denition 10 (Non-linear layer of Griffin-π). Let α ∈{3, 5, 7, 11} be the
+smallest integer such that gcd(α, p −1) = 1, p > 263 and let t be the number of
+branches. For 0 ≤i ≤t −1, let (δi, µi) ∈F2 \ {(0, 0)} be pairwise distinct such
+that δ2
+i −4µi is a quadratic nonresidue modulo p. Then, the non-linear layer of
+Griffin-π is S(x0, . . . , xt−1) = (y0, . . . , yt−1), where each yi is dened by the
+equations:
+yi :=
+
+
+
+
+
+
+
+
+
+x1/α
+0
+if i = 0
+xα
+1
+if i = 1
+x2 · (L2(y0, y1, 0)2 + δ2 · L2(y0, y1, 0) + µ2)
+if i = 2
+xi · (Li(y0, y1, xi−1)2 + δi · Li(y0, y1, xi−1) + µi)
+otherwise,
+for Li(z0, z1, z2) = (i −1) · z0 + z1 + z2.
+Denition 11 (Griffin-π). Let r be the number of rounds, and for 1 ≤i ≤
+r −1 let c(i) ∈Ft be a constant vector (we assume c(r) = 0). Then Griffin-π
+Gπ : Ft →Ft is dened as
+Gπ(·) := Fr ◦· · · ◦F2 ◦F1(M × ·),
+where for 1 ≤i ≤r, the i-th round function Fi is dened as
+Fi(·) = c(i) + M × S(·),
+for M ∈Ft×t a matrix, and S the non-linear layer of Griffin-π.
+The rst round function of Griffin-π for t = 4 is depicted in Fig. 2 where,
+to simplify the construction, we denote by Fi the last two equations of Deni-
+tion 10. The authors proposed various instances with a 128-bit security claim.
+The number of branches varies from 3 to 24 (though not all values are possible),
+and the number of rounds is computed for dierent degrees α based on the com-
+plexity of nding a Gröbner basis using the basic encoding as it was the most
+ecient attack they could nd.
+FreeLunch system for Griffin. We observe that the round function of
+Griffin readily lends itself to a naive construction of the system PG, as described
+in Section 3.4. Indeed, for each round i we can simply dene zi = Gi(zi−1, xi) by
+zi = c(i)+M ×z′
+i, where z′
+i,0 = xi and z′
+i,j given as yj, for 1 ≤j < t, in Denition
+10 of the i-th round. Note that Gi will be of degree at most di = 2α + 1. Under
+the assumption that the polynomial g in PG satises the monomial property of
+Proposition 6, we get an associated ideal degree of (α (2α + 1))r.
+19
+
+Fig. 2: First round function of Griffin-π with t = 4.
+Remark 1. Note that the naive modeling PG given above for Griffin is not new;
+in fact, it was proposed by the authors of this algorithm for their initial security
+analysis [35, Section 6.2]. However, the authors did not attempt to compute a
+Gröbner basis for ⟨PG⟩in a FreeLunch order, but rather in the usual grevlex
+order. They estimate that computing a Gröbner basis in this latter monomial
+order well exceeds the security level for the suggested number of rounds.
+Bypassing Several Rounds. A further improvement is constructing an ane
+input in x0 for the CICO problem that is tailored to bypass the inversion oper-
+ation for a few initial rounds. This eectively means that fewer variables xi are
+necessary, which in turn has a signicant impact on the resulting ideal degree.
+Observe that bypassing inversions ts seamlessly with the machinery introduced
+in Section 3.4. The only dierence is that we choose a dierent sequence of poly-
+nomial functions G∗, where G∗
+1 eectively spans several rounds but only depends
+on z0. The ensuing functions G∗
+i , i ≥2, can still be constructed as described for
+the naive method above (though there will now be fewer of them). The exact
+number of initial rounds we can bypass will depend on t, where a larger t gener-
+ally allows us to bypass more rounds11. All underlying details are given in [10,
+App. B].
+For t = 3, 4, we can bypass one round with linear functions in z0. For t = 8,
+we are able to bypass two rounds with cubic functions in z0, and three rounds
+can be bypassed with deg(z0) = 6α + 3 for t ≥12. Assuming all systems satisfy
+11 A similar observation of bypassing rounds was already considered in [35, Section
+6.2]. However, the authors only describe a method for bypassing a single round for
+t = 3 and do not consider the eect of having a larger t.
+20
+
+Table 2: Expected time complexity (log2) of polyDet for the dierent full-round
+instances of Griffin, where ω = 2.81. Number of rounds in parentheses.
+Branches
+Complexity (log2)
+α = 3
+α = 5
+3
+120 (16)
+141 (14)
+4
+112 (15)
+110 (11)
+8
+76 (11)
+81 (9)
+12,16,20,24
+64 (10)
+74 (9)
+Proposition 6, we get the following parameters:
+DI,t =
+
+
+
+
+
+(α (2α + 1))r−1 , for t = 3, 4,
+3 (α (2α + 1))r−2 , for t = 8,
+(6α + 3) (α (2α + 1))r−3 , for t ≥12 .
+(5)
+DH,t =
+
+
+
+
+
+αr−1, for t = 3, 4,
+αr−2, for t = 8,
+αr−3, for t ≥12 .
+(6)
+Complexity Analysis and Experimental Results. We can now use the
+machinery described in Section 3.2 to solve the FreeLunch system for Griffin.
+As noted in Section 3.2, it is hard to theoretically estimate the complexity of
+matGen where one computes the multiplication matrix T0. On the other hand,
+based on previous analysis, we estimate the complexity of polyDet by computing
+DI,tDω−1
+H,t = DI,t(DI,t/α0)ω−1 for the dierent values of DI,t. As a consequence,
+the running time for polyDet becomes
+˜O(DI,tDω−1
+H,t ) =
+
+
+
+
+
+˜O((αω (2α + 1))r−1), for t = 3, 4,
+˜O(3 (αω (2α + 1))r−2), for t = 8,
+˜O((6α + 3) (αω (2α + 1))r−3), for t ≥12 .
+(7)
+The resulting estimated time complexities of running polyDet for the proposed
+instances of Griffin are listed in Table 2. Experimental results are presented in
+Table 3 and discussed in Section 6.1. One example of concrete input and output
+values solving the CICO problem for 7 rounds of Griffin can be found in [10,
+App. C].
+4.2
+Applicability Beyond Griffin: the Example of ArionHash
+Specication of ArionHash. ArionHash [45] is an arithmetization-oriented
+hash function proposed by Roy et al. that, much like Griffin, uses a permutation
+as its core primitive. Called Arion-π, this permutation utilizes in each round a
+polynomial of very high degree in one branch and low degree polynomials in the
+remaining branches to signicantly decrease the number of necessary rounds to
+achieve the desired security.
+21
+
+Table 3: Experimental results on Griffin with (t, α) = (12, 3). sysGen uses Flint
+and NTL with the fast multivariate multiplication algorithm of App. A .
+Number of
+Complexity
+Time (s)
+Memory
+rounds
+of polyDet
+sysGen
+matGen
+polyDet
+(MB)
+5
+26
+0.17
+0.02
+0.53
+14
+6
+34
+4.0
+6.67
+50.78
+471
+7
+41
+2, 558
+3, 361
+5, 727
+27, 600
+Denition 12 (Non-linear layer of Arion-π).
+Let p ≥5 be a prime, t the
+number of branches, e the smallest positive integer be such that gcd(e, p−1) = 1,
+and 121 ≤α ≤257 an integer such that gcd(α, p −1) = 1.
+For 0 ≤i ≤t−2, let δi,1, δi,2, µi ∈Fq be such that gi(x) = x2 +δi,1 ·x+δi,2
+is a quadratic function without zeroes in Fq and dene hi(x) = x2 + µi · x. Then
+the non-linear layer of Arion-π is S = {f0, . . . , ft−1}, where each fi is dened
+from-right-to-left by the equations:
+ft−1(y0, . . . , yt−1) = y1/α
+t−1,
+fi(y0, . . . , yt−1) = ye
+i · gi(σi,t) + hi(σi,t),
+t −2 ≥i ≥0,
+where σi,t represents the sum of all previously computed inputs and outputs
+σi,t =
+t−1
+X
+j=i+1
+yj + fj(y0, . . . , yt−1) .
+Denition 13 (Arion-π). Let r be the number of rounds, and for 1 ≤i ≤
+r let ci ∈Ft be a constant vector. Then Arion-π is dened as the following
+composition over Ft:
+Arion-π : (y0, . . . , yt−1) 7→(Lcr ◦Sr) ◦· · · ◦(Lc1 ◦S1) ◦L0(y0, . . . , yt−1),
+where Lci is the ane map of [45, Denition 3] and Si is the non-linear layer
+of Arion-π, for 1 ≤i ≤r.
+We illustrate the construction of the rst round of Arion-π in Fig. 3 for t = 4
+where, for the sake of clarity, we only represent the function fi of the non-linear
+layer of Arionwithout the details of gi and hi.
+We provide the parameters for Arion-π and ArionHash as well as for their
+additionally proposed aggressive versions α-Arion and α-ArionHash with e =
+3, 5 and α = 121 in Table 4 (number of rounds are in parenthesis). The authors
+claim 128-bit security for each parameter set.
+FreeLunch system for ArionHash. Due to the similarities in construction be-
+tween Arion-π and Griffin-π, it comes as no surprise that the round function of
+Arion-π also ts the naive construction of the system PG described in Section 3.4.
+22
+
+Fig. 3: First round function of Arion-π with t = 4.
+In this case, we start with a constrained input z0 depending linearly on a vari-
+able x0, and for each round i we dene zi = Gi(zi−1, xi) by zi = Lci(z′
+i), where
+z′
+i,t−1 = xi and z′
+i,j = fj(zi−1,0, . . . , zi−1,t−2, xα
+i ) for t−2 ≥j ≥0. Note that each
+component of z′
+i (and thus of zi) will have degree at most di = (2t−1(e+1)−e)i
+in x0. Assuming that the polynomial g in PG satises the monomial property of
+Proposition 6, we get an associated ideal degree of
+ α
+ 2t−1(e + 1) −e
+r.
+In addition, one can further improve this technique by generating a set of
+input states constructed so that the inversion operation for the rst round is
+bypassed, reducing the number of necessary variables and, consequently, the
+associated ideal degree. This is done analogously to Griffin, and all underlying
+details can be found in Appendix B. For Arion we are only able to bypass a
+single round with deg(z0) = 3e, independent of t. Assuming all systems satisfy
+Proposition 6, we get the following parameters:
+DI = 3e
+ α
+ 2t−1(e + 1) −e
+r−1 ,
+DH = αr−1 .
+Complexity Analysis and Experimental Results. We can now apply the
+new methods introduced in Section 3.2 to solve the FreeLunch system for
+ArionHash. Based on the general complexity analysis of the attack, we list the
+estimated time complexities of polyDet for the dierent proposed ArionHash
+parameters in Table 4. Note that here DH = DI/α0 = αr−1, so that the running
+time for polyDet becomes
+˜O(DIDω−1
+H
+) = ˜O
+
+3e
+ αω  2t−1(e + 1) −e
+r−1
+.
+Experimental results are presented in Table 5 and discussed in Section 6.1.
+4.3
+Last Example: XHash8
+XHash8 is a permutation proposed by Ashur, Kindi and Mahzoun in [6]. Along
+with XHash12, it is a follow-up of RPO [7], itself a follow-up of Rescue-Prime [46].
+23
+
+Arion-π & ArionHash
+α-Arion& α-ArionHash
+Branches
+Complexity (log2)
+Complexity (log2)
+e = 3
+e = 5
+e = 3
+e = 5
+3
+128 (6)
+132 (6)
+104 (5)
+83 (4)
+4
+134 (6)
+113 (5)
+84 (4)
+87 (4)
+5
+114 (5)
+118 (5)
+88 (4)
+91 (4)
+6
+119 (5)
+122 (5)
+92 (4)
+94 (4)
+8
+98 (4)
+101 (4)
+98 (4)
+101 (4)
+Table 4: Expected time complexity (log2) of polyDet for the dierent full-round
+instances of ArionHash, where α = 121 and ω = 2.81. Number of rounds in
+parentheses.
+Number of
+Complexity
+Time (s)
+Memory
+branches
+of polyDet
+sysGen
+matGen
+polyDet
+(MB)
+3
+32
+1.31
+< 0.01
+6.8
+3, 387
+4
+33
+1.46
+0.07
+18.7
+7, 551
+5
+35
+9.54
+0.08
+64.5
+15, 903
+6
+36
+247
+0.31
+215
+32, 626
+8
+39
+24, 872
+4.86
+2, 545
+134, 165
+Table 5: Experimental results on 2-round Arion, with (e, α) = (3, 121). sysGen is
+performed using SageMath. polyDet uses an evaluation/interpolation algorithm
+of pml [47] since the algorithm of [40] implemented in pml does not work for the
+non-generic polynomial matrix in input of polyDet.
+XHash8 features a layer with inversion operations in eight out of twelve branches.
+Thus we need to introduce polynomials pi = (pi,0, . . . , pi,7) and variables
+xi = (xi,0, . . . , xi,7) in these layers. We can, by adjusting for this minor dif-
+ference, directly dene a FreeLunch system as we have seen in the previous two
+subsections. Since this is very similar to what we saw for Griffin and Arion,
+we will give the details for this analysis in Appendix F and only limit ourselves
+to a short discussion of the highlights in the immediate following. We note that
+the related constructions XHash12, RPO and Rescue-Prime all contain a layer
+of inversion operations in all branches, and hence we cannot directly obtain a
+FreeLunch from them.
+Complexity and Impact on Security Analysis. In contrast to the exible
+constructions of Griffin-π and Arion-π, XHash8 is only dened for a xed prime
+p ≈264 and a xed sponge setting with state size t = 12, where the rate is 8 and
+capacity 4. Although this does not directly lend itself to a CICO problem with
+a single zero in input and output, we applied the FreeLunch approach to this
+setting. We generate a FreeLunch system with α0 = 76, DH = 724, and DI = 730,
+whose time complexity of polyDet is approximately 2214 for ω = 2.81. As this is
+24
+
+signicantly higher than brute force for the chosen p, we conclude that XHash8
+seems very secure against the techniques presented in this paper.
+That said, we note that the current security estimates for XHash8 are (con-
+servatively) extrapolated from scaled-down experiments with t = 3 using a single
+unknown input [6, App. B]. While the FreeLunch framework cannot currently
+be extrapolated in a similar manner for the full construction, we still hope it
+could provide a basis for future insights into the security of XHash8.
+5
+Forcing the Presence of a FreeLunch for Anemoi
+We have just seen three examples where the FreeLunch machinery of Section 3.4
+could be readily applied. Anemoi is another class of permutations that rely on the
+inverse of low degree monomials in a nite eld to achieve a high degree and so it
+would, a-priori, seem like another candidate where we can apply the FreeLunch
+techniques. However, we will see that this is not as straightforward as it may
+appear because a direct application of the technique creates a polynomial system
+PG where g does not satisfy the assumption of Proposition 6. Instead, we will
+show how to compute a modied polynomial system PG∗that retains the valid
+solution to the CICO problem, which will turn out to be a FreeLunch system.
+This comes at the cost of a somewhat larger, yet still comparable, ideal degree
+than what was given in Conjecture 2 of [15]. We start by describing Anemoi.
+Description of Anemoi. The Anemoi permutations [15] operate on F2ℓ
+q for ℓ≥1,
+and either q = 2n with n odd, or q = p for any prime p ≥3. There are dierences
+between the operations for the odd and even characteristic cases that will impact
+our later modeling. Thus, we focus on the setting of ℓ= 1 and p prime, leaving
+the even case as future work. In odd characteristic, Anemoi takes a parameter α
+such that x 7→xα is a permutation of Fp, usually α = 3, 5, 7 or 11. The original
+paper gives two specic hash function instances based on Anemoi with ℓ= 1:
+AnemoiSponge-BN-254, with a 254-bit prime p, AnemoiSponge-BLS12-381, with
+a 381-bit prime p. 127 bits of security are claimed for both of these.
+Denition 14 (Odd Anemoi with ℓ= 1). For a given p, α and number of
+rounds r, Anemoi is a permutation of F2
+p dened as
+Anemoip,α,r(x, y) = M ◦Rr ◦· · · ◦R1(x, y).
+For 1 ≤i ≤r, the i-th round function Ri is dened as
+Ri(x, y) = H ◦M(x + ci, y + di)
+and
+M(x, y) = (2x + y, x + y),
+for constants ci, di ∈Fp. H is the nonlinear operation over F2
+p that is described
+in Figure 4b for a non-zero constant a ∈F.
+25
+
+zi−1,0
+zi−1,1
+⊞
+ci
+di
+⊞
+M
+H
+Pi−1
+Qi−1
+zi,0
+zi,1
+(a) Anemoi round function.
+Pi−1
+Qi−1
+zi,0 = −2axiQi−1
++ax2
+i + Pi−1 −a−1
+zi,1 = Qi−1 −xi
+a(·)2 + a−1
+⊟
+(·)1/α
+⊟
+a(·)2
+⊞
+xi
+(b) H in odd characteristic.
+Fig. 4: Description of Anemoi over prime elds with ℓ= 1.
+Failure of the Direct FreeLunch Approach. As a starting point, we consider
+the following slight modication12 of the polynomial system PG for Anemoi, for
+1 ≤i ≤r.
+pi(x0, . . . , xi) = xα
+i + aQi−1(x0, . . . , xi−1)2 −Pi−1(x0, . . . , xi−1) + a−1,
+(8)
+g(x0, . . . , xr) = Pr(x0, . . . , xr) .
+(9)
+A rst observation is that zi,0 must have a larger leading term than zi,1 under any
+monomial order. Since this leading term gets distributed to both branches under
+M (without the possibility of cancelling the leading term), we have LM(Qi) =
+LM(Pi). Now note from the output shown in Figure 4b that in the computation
+of zi,0, the terms aQ2
+i−1 and −aQ2
+i−1 will both occur and cancel each other.
+Hence, the leading monomial of g must be either xrLM(Qr−1) or x2
+r, so there is
+no possible choice of monomial order where g will have a leading monomial in
+only x0.
+In order to circumvent this issue, we will multiply g by suitable monomials in
+x1, . . . , xr that leads to a reduction by the polynomials p1, . . . , pr. This process
+will ultimately lead to a new polynomial g∗, whose leading monomial will be
+univariate in x0. To briey illustrate the idea, we consider the rst step of this
+procedure. Writing out g in terms of Pr−1, Qr−1 and xr, we have
+g(Pr−1, Qr−1, xr) = (1 −4axr)Qr−1 + (2axr −1)xr + 2(Pr−1 −a−1)
+= (−4aQr−1 + 2axr −1)xr + Qr−1 + 2Pr−1 −2a−1 ,
+12 The only dierence from the description in Section 3.4 is that we allow Li,j from (3)
+to be quadratic, due to the term Q2
+i−1.
+26
+
+taking into account the nal M-transformation. In order to cancel out the prod-
+uct xrQr−1 using pr, we construct the following polynomial:
+g′ = xα−1
+r
+g + (4aQr−1 −2axr + 1)pr
+= xα
+r (−4aQr−1 + 2axr −1) + xα−1
+r
+(Qr−1 + 2Pr−1 −2a−1)
++ (4aQr−1 −2axr + 1)(xα
+r + aQ2
+r−1 −Pr−1 + a−1)
+= xα−1
+r
+(Qr−1 + 2Pr−1 −2a−1) + 4a2Q3
+r−1 + aQ2
+r−1
++ 4Qr−1(1 −aPr−1) −Pr−1 + a−1 −2xr(a2Q2
+r−1 −aPr−1 + 1) .
+Hence, we have successfully eliminated xr from the leading monomial of g′ under
+any monomial order that satises
+wt
+ LM
+ Q3
+r−1
+
+> wt
+ LM
+ xα−1
+r
+Qr−1
+
+,
+wt
+ LM
+ Q3
+r−1
+
+> wt
+ LM
+ xα−1
+r
+Pr−1
+
+,
+wt
+ LM
+ Q3
+r−1
+
+> wt
+ LM
+ xrQ2
+r−1
+
+,
+wt
+ LM
+ Q3
+r−1
+
+> wt (LM (xrPr−1)) ,
+which, since α ≥3 and LM(Pr−1) = LM(Qr−1), can be simplied further to:
+wt
+ LM
+ Q2
+r−1
+
+> wt
+ xα−1
+r
+
+= (α −1)wt(xr) .
+Constructing FreeLunch Systems From Anemoi. We now turn our atten-
+tion to the general construction of g∗that will allow us to apply the FreeLunch
+machinery for solving the CICO problem for Anemoi. Here, we will not only be
+interested in the leading monomials of the intermediate states and pi, but also in
+the second and third monomials. To this end, we dene ≺A to be the monomial
+order associated with the weight vector dened recursively by
+
+
+
+wt(x0) = 1,
+wt(xi) = 2
+αwt(x0 · · · xi−1), for 1 ≤i ≤r .
+Indeed, this choice of monomial order allows us to prove the following two lem-
+mas. For a polynomial h, we let Monj(h) denote the j-th monomial of h accord-
+ing to ≺A. As usual, we write LM(h) = Mon1(h). To avoid pathological cases,
+we always consider an ane input in x0 for the CICO-problem such that x0 is
+not eliminated after the initial linear operation M. Finally, remember that two
+monomials may have equal weight, and only get sorted by their lexicographic
+order.
+Lemma 4. Let Qi(x0, . . . , xi) be as dened in Figure 4a and ordered according
+to ≺A. Then the following holds for α ≥3.
+LM(Qi) = x0 · · · xi,
+and
+wt(LM(Qi)) > wt(Mon(Qi)) .
+27
+
+Proof. We proceed by induction. The statements are clearly true for i = 0, as Q0
+is an ane polynomial in x0 by our CICO setting. Now assume it holds for i−1.
+As mentioned above, leading terms cannot be canceled under M, and the leading
+terms come from the rst output of M. Thus, we can restrict ourselves to the two
+largest monomials in the rst output from M, that is 2axiQi−1+ax2
+i +Pi−1−a−1.
+From the induction hypothesis we have LM(xiQi−1) = x0 · · · xi, and it follows
+from the denition of ≺A that this has a strictly higher weight than x2
+i when
+α ≥3.
+⊓⊔
+Lemma 5. Let pi(x0, . . . , xi) be as dened in (8) and ordered according to ≺A,
+and let α ≥3. Then for all 1 ≤i ≤r the following holds.
+1. LM(pi) = xα
+i .
+2. Mon2(pi) = (x0 · · · xi−1)2.
+3. wt(LM(pi)) = wt(Mon2(pi)) > wt(Mon3(pi)) .
+Proof. We see from the denition of pi that LM(pi) must be either xα
+i or LM(Q2
+i ).
+From Lemma 4, we have wt(LM(Q2
+i )) = 2wt(x0 · · · xi−1), so these two monomi-
+als have the same weight by denition of ≺A. LM(pi) = xα
+i then follows from
+Denition 2. Finally, Mon3(pi) = Mon2(Q2
+i ) and thus has a strictly smaller
+weight than the initial two monomials (Lemma 4).
+⊓⊔
+Before we can dene g∗, we also need a way to predict the powers of xi we
+will use in the multiplication of g prior to the reductions by p1, . . . , pr. This is
+handled by the following integer sequences.
+Denition 15. We dene two integer sequences {ui}0≤i≤r and {kj}1≤j≤r,
+where ur = 1, and the remaining sequences are recursively dened as follows:
+ ki is the unique integer 0 ≤ki < α such that ki ≡−ui mod α;
+ ui−1 = ui + 2(ui + ki)/α.
+In the following, we will denote u = u0.
+Note that in the above denition, ui + ki is always a multiple of α; hence ui−1
+is indeed an integer.
+For a polynomial h and sequence of polynomials H, we write Red(h, H) to
+denote the reduction of h by H w.r.t. ≺A. More specically, Red(h, H) is the
+remainder after performing multivariate division of h by H (see [22, Ch. 2, 3]).
+We are now in a position to dene g∗. Let g′
+r = g, and recursively dene
+g′
+i−1 = Red(xki
+i g′
+i, {pi, pi+1, . . . , pr}), for i = r, r −1, . . . , 1 .
+We set g∗= g′
+0, and IA = ⟨PG∗⟩, where PG∗= {p1, . . . , pr, g∗}. It is clear from
+the construction that IA is a subideal of ⟨PG⟩. The following result guarantees
+that PG∗is a FreeLunch system generating this subideal.
+Proposition 7. The polynomial system PG∗is a FreeLunch system, where
+LM≺A(g∗) = xu
+0. Moreover, the variety of the associated ideal IA contains all
+valid solutions of the underlying instance of Anemoi.
+28
+
+Proof. By Lemma 5 we have LM(pi) = xα
+i , so we need only show that LM(g∗)
+is a univariate monomial in x0 to guarantee that PG∗is a FreeLunch system. To
+this end, we will show by induction on descending i that LM(g′
+i) = (x0 · · · xi)ui,
+and wt(LM(g′
+i)) > LM(Mon2(g′
+i)).
+For i = r, we have g′
+r = g = Qr, and the statement holds by Lemma 4.
+Suppose the hypothesis holds for a given i and consider i −1. If we denote
+si = (ui + ki)/α, we have LM(xki
+i g′
+i) = (x0 · · · xi−1)uixαsi
+i
+. We now reduce this
+monomial by pi. Write c for the leading coecient of xki
+i g′
+i. From Lemma 5, we
+have that the rst two monomials in pi have the same weight, while all other
+monomials have smaller weights. Moreover, the induction hypothesis ensures
+that Monj(xki
+i g′
+i) will a have smaller weight than LM(xki
+i g′
+i) for j ≥2. Hence,
+LM
+
+xki
+i g′
+i −c(x0 · · · xi−1)uixα(si−1
+i
+)pi
+
+= (x0 · · · xi−1)ui+2xα(si−1)
+i
+,
+following from the fact that wt((x0 · · · xi−1)ui+2xα(si−1)
+i
+) = wt(LM(xki
+i g′
+i)) =
+wt (LM ((x0 · · · xi−1)uipi)), and the weight of all other monomials are guaranteed
+to be strictly smaller. Repeating this process si −1 times, we get LM(g′
+i−1) =
+(x0 · · · xi−1)ui+2si, which proves the induction statement. Since this implies that
+LM(g∗) = LM(g′
+0) = xu
+0, it also concludes the proof of the rst part of the
+proposition. The second part holds since IA is a subideal of ⟨PG⟩, where the
+variety of the latter ideal will contain all solutions of Anemoi.
+⊓⊔
+Ideal Degree. Based on experiments, the authors of Anemoi conjectured a tight
+upper bound on the ideal degree of one modeling of the CICO-problem to be
+(α + 2)r [15, Conjecture 2]. As IA is a FreeLunch system, we have DIA = αru,
+where we recall that u is an integer depending on r and α. As IA is a subideal of
+⟨PG⟩, we generally expect DIA to be strictly larger than (α + 2)r. The following
+result proved in Appendix E guarantees that DI can at most dier by a factor
+close to α, which in practical instances will be a small constant.
+Proposition 8. Let u be as dened in Denition 15 for integers r, α ≥1. Then
+α + 2
+α
+r
+≤u ≤(α + 1)
+α + 2
+α
+r
+−α .
+From experiments for α = 3 and large r, we nd u ≈2.1 (5/3)r.
+Summary. For Anemoi, we get a polynomial system with r equations of respec-
+tive leading terms xα
+1 , . . . xα
+r and one equation of leading term xu
+0. This gives the
+following parameters:
+DI = αru,
+DH = αr.
+29
+
+Security claim
+α = 3
+α = 5
+α = 7
+α = 11
+128
+118 (21)
+156 (21)
+174 (20)
+198 (19)
+256
+203 (37)
+270 (37)
+307 (36)
+358 (35)
+Table 6: Expected time complexity (log2) of polyDet against dierent full-round
+instances of Anemoi over Fp, where ℓ= 1 and ω = 2.81. Number of rounds in
+parentheses.
+Number of
+Complexity
+Time (s)
+Memory
+rounds
+of polyDet
+sysGen
+matGen
+polyDet
+(MB)
+3
+20
+< 0.01
+< 0.01
+0.02
+< 400
+4
+26
+< 0.01
+0.34
+0.24
+< 400
+5
+32
+0.07
+23.3
+7.6
+< 400
+6
+37
+2.52
+2, 127
+292
+2, 863
+7
+43
+128
+156, 348
+10, 725
+42, 337
+Table 7: Experimental results on Anemoi with (ℓ, α) = (1, 3). sysGen is performed
+with Magma and refers to the generation of the polynomial system PG∗from
+scratch, including the computation of PG.
+Complexity Analysis and Experimental Results. The FreeLunch system
+PG∗consists of r polynomials of degree α and one polynomial of degree u. The
+algorithm of Section 3.2 has a complexity of ˜O(αrωu). We plugged in the numbers
+for odd Anemoi (ℓ= 1), see Table 6. We also ran experiments for Anemoi with
+(ℓ, α) = (1, 3) and dierent number of rounds to verify the theory presented
+above. The results are presented in Table 7.
+6
+Conclusions
+We have presented the FreeLunch approach, an algebraic attack particularly
+ecient against arithmetization-oriented permutations. We conclude this paper
+with some comments regarding our experiments as well the consequences of
+our results, in particular regarding the areas we believe are worth investigating
+further.
+6.1
+Discussion on Experimental Results
+Figure 5 depicts the runtimes of each step of our attack that we obtained ex-
+perimentally when targeting Griffin and Anemoi. A rst observation is that
+the running time of a full FreeLunch-based attack is hard to predict: there are
+three steps (sysGen, matGen, and polyDet), and we experimentally found situ-
+ations where each of them was the slowest. The case of sysGen is a bit pecu-
+liar: using SageMath, Magma or Flint/NTL yields very dierent results and a
+deeper understanding seems out of our grasp. We nevertheless would argue (see
+Appendix A) that, should their implementations use similar tools, sysGen will
+always be of lower complexity than that of the rest of the attack.
+30
+
+Assuming that the dominating step is either matGen or polyDet, it then
+seems easy to extrapolate: as we can see in Figure 5, their logarithm increases
+linearly with the number of rounds. Even better: for Griffin, Equation (7)
+predicts that adding a round multiplies the complexity of polyDet by αω(2α +
+1) ≈109.5, which closely matches our observations as 5727/50.79 ≈112.7. For
+matGen, we see that adding a round multiplies the time complexity by about
+500. Extrapolating from this, an attack against full-round Griffin should take
+about 4.2 · 1011s on a single CPU (around 13, 000 years), or around 270 clock
+cycles at 2.3 GHz. Similarly, for Anemoi with Fp and (l, α) = (1, 3), adding
+a round multiplies the time complexity of matGen by about 75. Extrapolating
+gives respectively 2104 seconds (or 2135 clock cycles) and 2204 seconds (2235 clock
+cycles) for full-round Anemoi with 128 and 256 bits of security.
+(a) Griffin complexity (from table 3).
+(b) Anemoi complexity (from table 7).
+Fig. 5: Experimental time complexity of our attacks on Griffin and Anemoi.
+6.2
+Preventing the FreeLunch Attack
+Our attack breaks full-round instances of symmetric primitives built using state-
+of-the-art security arguments, which consequently must be revisited: one must
+learn how to prevent the relevant applicability of the FreeLunch approach.
+At the Primitive Level. An obvious but perhaps costly countermeasure consists
+of simply adding more rounds. This is particularly tempting as we are able to
+tightly estimate the complexity of polyDet, a step which we have found to often
+be the most expensive in practice. Choosing a number of rounds high enough to
+prevent it would be a simple yet convincing argument. Primitive designers must
+also be mindful of classical tricks, i.e., symmetric cryptanalysis techniques (a
+priori) unrelated to root nding that can be used to enhance its eciency. In
+the case of 12-branch Griffin, the fact that we can bypass 3 out of 10 rounds
+using some kind of subspace trail is a problem we deem worth studying.
+At the Mode of Operation Level. The FreeLunch systems are multivariate, but
+a single variable (x0) plays an inherently dierent role. This makes them par-
+ticularly well suited to CICO instances whereby a single output word has to be
+31
+
+set to 0, but they will not work if more 0's are needed in the output. Thus, a
+simple countermeasure against the FreeLunch approach (and univariate ones)
+consists of forcing the capacity of the sponge to have at least two words set to
+0, even if one word would a priori be enough. Still, while easy to implement, the
+eciency of this countermeasure in the long term is uncertain. Indeed, as argued
+below, inventing a variant of the FreeLunch that can handle multiple words is
+an interesting open problem.
+6.3
+Open Problems for Future Work
+Time Taken by Polynomial Reductions. A roadblock in our complexity estimates
+is the number of operations needed to perform certain reductions of a polynomial
+modulo an ideal. This is crucial for understanding the complexity of the matGen
+step and, to a lesser degree, sysGen (see Appendix A). A tighter estimate for
+these computations would greatly benet our analysis: we would be able to
+gure out which step of our attack is the actual bottleneck without the need
+for experiments or assumptions, and designers could then be able to use fewer
+rounds to achieve a given security level against FreeLunch-based attacks. For
+instance, estimating the complexity of a reduction by a FreeLunch triangular
+system (Denition 9) would be a big step forward.
+Other Custom Approaches. The FreeLunch approach is, to the best of our knowl-
+edge, the rst custom root nding method designed specically for use in sym-
+metric cryptanalysis. There is, of course, no reason to believe that it is the only
+one possible, and we consider it a direction worth pursuing. As a rst step, a
+multivariate variant of FreeLunch where several variables play the role of x0,
+and where several words need to be set to 0, would be an interesting target.
+Acknowledgements
+This work has been facilitated through the COSINUS associate team between
+Inria and Simula. The authors would like to thank Gaëtan Leurent for the helpful
+insights on the new dedicated Gröbner basis solving algorithm, and Pierre Briaud
+and Carlos Cid for the good discussions in the early stages of this work. The
+authors would also like to thank Vincent Neiger for the proof-reading and the
+discussions on the algorithmic aspects of the Gröbner basis theory. The research
+in this paper was supported in part by the French DGA, and by the French
+grant 22-PECY-0010 (project CRYPTANALYSE). The work of Aurélien B÷uf,
+Axel Lemoine, and Léo Perrin was supported by the European Research Council
+(ERC, grant agreement no. 101041545 ReSCALE). Morten Øygarden has been
+supported by the Norwegian Research Council through the project qsIo2.
+References
+1. Advanced Encryption Standard (AES). National Institute of Standards and Tech-
+nology, NIST FIPS PUB 197, U.S. Department of Commerce (Nov 2001)
+32
+
+2. Albrecht, M.R., Cid, C., Grassi, L., Khovratovich, D., Lüftenegger, R., Rechberger,
+C., Schofnegger, M.: Algebraic Cryptanalysis of STARK-Friendly Designs: Appli-
+cation to MARVELlous and MiMC. In: Galbraith, S.D., Moriai, S. (eds.) Advances
+in Cryptology - ASIACRYPT 2019 - 25th International Conference on the Theory
+and Application of Cryptology and Information Security, Kobe, Japan, December
+8-12, 2019, Proceedings, Part III. Lecture Notes in Computer Science, vol. 11923,
+pp. 371397. Springer (2019). https://doi.org/10.1007/978-3-030-34618-8_13
+3. Albrecht, M.R., Grassi, L., Rechberger, C., Roy, A., Tiessen, T.: MiMC: Ecient
+Encryption and Cryptographic Hashing with Minimal Multiplicative Complexity.
+In: Cheon, J.H., Takagi, T. (eds.) Advances in Cryptology - ASIACRYPT 2016 -
+22nd International Conference on the Theory and Application of Cryptology and
+Information Security, Hanoi, Vietnam, December 4-8, 2016, Proceedings, Part I.
+Lecture Notes in Computer Science, vol. 10031, pp. 191219 (2016). https://doi.
+org/10.1007/978-3-662-53887-6_7
+4. Albrecht, M.R., Rechberger, C., Schneider, T., Tiessen, T., Zohner, M.: Ciphers for
+MPC and FHE. In: Oswald, E., Fischlin, M. (eds.) Advances in Cryptology - EU-
+ROCRYPT 2015 - 34th Annual International Conference on the Theory and Appli-
+cations of Cryptographic Techniques, Soa, Bulgaria, April 26-30, 2015, Proceed-
+ings, Part I. Lecture Notes in Computer Science, vol. 9056, pp. 430454. Springer
+(2015). https://doi.org/10.1007/978-3-662-46800-5_17
+5. Aly, A., Ashur, T., Ben-Sasson, E., Dhooghe, S., Szepieniec, A.: Design of
+Symmetric-Key Primitives for Advanced Cryptographic Protocols. IACR Transac-
+tions on Symmetric Cryptology 2020(3), 145 (Sep 2020), https://tosc.iacr.org/
+index.php/ToSC/article/view/8695
+6. Ashur, T., Kindi, A., Mahzoun, M.: XHash8 and XHash12: Ecient STARK-
+friendly Hash Functions. Cryptology ePrint Archive, Paper 2023/1045 (2023),
+https://eprint.iacr.org/2023/1045
+7. Ashur, T., Kindi, A., Meier, W., Szepieniec, A., Threadbare, B.: Rescue-Prime
+Optimized. Cryptology ePrint Archive, Paper 2022/1577 (2022), https://eprint.
+iacr.org/2022/1577
+8. Ashur, T., Mahzoun, M., Toprakhisar, D.: Chaghri - An FHE-friendly Block Ci-
+pher. In: Yin, H., Stavrou, A., Cremers, C., Shi, E. (eds.) Proceedings of the
+2022 ACM SIGSAC Conference on Computer and Communications Security, CCS
+2022, Los Angeles, CA, USA, November 7-11, 2022. pp. 139150. ACM (2022).
+https://doi.org/10.1145/3548606.3559364
+9. Bariant, A.: Algebraic Cryptanalysis of Full Ciminion. Cryptology ePrint Archive,
+Paper 2023/1283 (2023), https://eprint.iacr.org/2023/1283
+10. Bariant, A., Boeuf, A., Lemoine, A., Ayala, I.M., Øygarden, M., Perrin, L.,
+Raddum, H.: The Algebraic Freelunch Ecient Gröbner Basis Attacks Against
+Arithmetization-Oriented Primitives. Cryptology ePrint Archive, Paper 2024/347
+(2024), https://eprint.iacr.org/2024/347, https://eprint.iacr.org/2024/347
+11. Bariant, A., Bouvier, C., Leurent, G., Perrin, L.: Algebraic Attacks against Some
+Arithmetization-Oriented Primitives. IACR Transactions on Symmetric Cryptol-
+ogy 2022(3), 73101 (Sep 2022), https://tosc.iacr.org/index.php/ToSC/article/
+view/9850
+12. Berthomieu, J., Neiger, V., Safey El Din, M.: Faster change of order algorithm for
+Gröbner bases under shape and stability assumptions. In: Proceedings of the 2022
+International Symposium on Symbolic and Algebraic Computation. pp. 409418
+(2022)
+13. Bertoni, G., Daemen, J., Peters, M., Assche, G.V.: Cryptographic Sponge Func-
+tions (2011), https://keccak.team/les/CSF-0.1.pdf (accessed 23.05.2024)
+33
+
+14. Bosma, W., Cannon, J., Playoust, C.: The Magma algebra system, I. The User
+Language. J. Symbolic Comput. 24(3-4), 235265 (1997), http://dx.doi.org/10.
+1006/jsco.1996.0125, computational algebra and number theory (London, 1993)
+15. Bouvier, C., Briaud, P., Chaidos, P., Perrin, L., Salen, R., Velichkov, V., Willems,
+D.: New Design Techniques for Ecient Arithmetization-Oriented Hash Functions:
+Anemoi Permutations and Jive Compression Mode. In: Handschuh, H., Lysyan-
+skaya, A. (eds.) Advances in Cryptology  CRYPTO 2023. Lecture Notes in Com-
+puter Science, vol. 14083, pp. 507539. Springer Nature Switzerland, Cham (2023)
+16. Buchberger, B.: A theoretical basis for the reduction of polynomials to canonical
+forms. ACM SIGSAM Bulletin 10(3), 1929 (1976)
+17. Buchmann, J., Pyshkin, A., Weinmann, R.P.: A Zero-Dimensional Gröbner Basis
+for AES-128. In: Robshaw, M. (ed.) Fast Software Encryption. Lecture Notes in
+Computer Science, vol. 4047, pp. 7888. Springer Berlin Heidelberg, Berlin, Hei-
+delberg (2006)
+18. Canteaut, A., Carpov, S., Fontaine, C., Lepoint, T., Naya-Plasencia, M., Paillier,
+P., Sirdey, R.: Stream Ciphers: A Practical Solution for Ecient Homomorphic-
+Ciphertext Compression. In: Peyrin, T. (ed.) Fast Software Encryption - 23rd In-
+ternational Conference, FSE 2016, Bochum, Germany, March 20-23, 2016, Re-
+vised Selected Papers. Lecture Notes in Computer Science, vol. 9783, pp. 313333.
+Springer (2016). https://doi.org/10.1007/978-3-662-52993-5_16
+19. Canteaut, A., Carpov, S., Fontaine, C., Lepoint, T., Naya-Plasencia, M., Paillier,
+P., Sirdey, R.: Stream Ciphers: A Practical Solution for Ecient Homomorphic-
+Ciphertext Compression. J. Cryptol. 31(3), 885916 (2018). https://doi.org/10.
+1007/S00145-017-9273-9
+20. Cantor, D.G., Kaltofen, E.: On Fast Multiplication of Polynomials over Arbitrary
+Algebras. Acta Informatica 28(7), 693701 (1991)
+21. Cosseron, O., Homann, C., Méaux, P., Standaert, F.: Towards Case-Optimized
+Hybrid Homomorphic Encryption - Featuring the Elisabeth Stream Cipher. In:
+Agrawal, S., Lin, D. (eds.) Advances in Cryptology - ASIACRYPT 2022 - 28th
+International Conference on the Theory and Application of Cryptology and In-
+formation Security, Taipei, Taiwan, December 5-9, 2022, Proceedings, Part III.
+Lecture Notes in Computer Science, vol. 13793, pp. 3267. Springer (2022).
+https://doi.org/10.1007/978-3-031-22969-5_2
+22. Cox, D., Little, J., OShea, D.: Ideals, Varieties, and Algorithms: An Introduction to
+Computational Algebraic Geometry and Commutative Algebra. Springer Science
+& Business Media (2013)
+23. Cox, D.A., Little, J.B., O'Shea, D.: Using Algebraic Geometry, Graduate
+Texts
+in
+Mathematics,
+vol.
+185.
+Springer
+(1998).
+https://doi.org/10.1007/
+978-1-4757-6911-1
+24. Dobraunig, C., Eichlseder, M., Grassi, L., Lallemand, V., Leander, G., List, E.,
+Mendel, F., Rechberger, C.: Rasta: A Cipher with Low ANDdepth and Few ANDs
+per Bit. In: Shacham, H., Boldyreva, A. (eds.) Advances in Cryptology - CRYPTO
+2018 - 38th Annual International Cryptology Conference, Santa Barbara, CA, USA,
+August 19-23, 2018, Proceedings, Part I. Lecture Notes in Computer Science, vol.
+10991, pp. 662692. Springer (2018). https://doi.org/10.1007/978-3-319-96884-1_
+22
+25. Duval, S., Lallemand, V., Rotella, Y.: Cryptanalysis of the FLIP Family of
+Stream Ciphers. In: Robshaw, M., Katz, J. (eds.) Advances in Cryptology -
+CRYPTO 2016 - 36th Annual International Cryptology Conference, Santa Bar-
+bara, CA, USA, August 14-18, 2016, Proceedings, Part I. Lecture Notes in Com-
+34
+
+puter Science, vol. 9814, pp. 457475. Springer (2016). https://doi.org/10.1007/
+978-3-662-53018-4_17
+26. Eisenbud, D.: Commutative Algebra: With a View Toward Algebraic Geometry,
+vol. 150. Springer Science & Business Media (2013)
+27. Faugère, J.C., Mou, C.: Sparse FGLM algorithms. Journal of Symbolic Computa-
+tion 80, 538569 (2017)
+28. Faugère, Jean-Charles and Gaudry, Pierrick and Huot, Louise and Renault, Gué-
+naël: Sub-cubic change of ordering for Gröbner basis: a probabilistic approach.
+In: Proceedings of the 39th International Symposium on Symbolic and Algebraic
+Computation. pp. 170177 (2014)
+29. Faugère, Jean-Charles and Gianni, Patrizia and Lazard, Daniel and Mora, Teo:
+Ecient computation of zero-dimensional Gröbner bases by change of ordering.
+Journal of Symbolic Computation 16(4), 329344 (1993)
+30. Faugère, J.C.: A new ecient algorithm for computing Gröbner bases (F4). Journal
+of pure and applied algebra 139(1-3), 6188 (1999)
+31. Faugère, J.C.: A new ecient algorithm for computing Gröbner bases without
+reduction to zero (F5). In: Proceedings of the 2002 international symposium on
+Symbolic and algebraic computation. pp. 7583 (2002)
+32. Gilbert, H., Boissier, R.H., Jean, J., Reinhard, J.: Cryptanalysis of Elisabeth-4.
+In: Guo, J., Steinfeld, R. (eds.) Advances in Cryptology - ASIACRYPT 2023 -
+29th International Conference on the Theory and Application of Cryptology and
+Information Security, Guangzhou, China, December 4-8, 2023, Proceedings, Part
+III. Lecture Notes in Computer Science, vol. 14440, pp. 256284. Springer (2023).
+https://doi.org/10.1007/978-981-99-8727-6_9
+33. Gilbert, H., Peyrin, T.: Super-Sbox Cryptanalysis: Improved Attacks for AES-
+Like Permutations. In: Hong, S., Iwata, T. (eds.) Fast Software Encryption, 17th
+International Workshop, FSE 2010, Seoul, Korea, February 7-10, 2010, Revised Se-
+lected Papers. Lecture Notes in Computer Science, vol. 6147, pp. 365383. Springer
+(2010). https://doi.org/10.1007/978-3-642-13858-4_21
+34. Giorgi, P., Jeannerod, C.P., Villard, G.: On the Complexity of Polynomial Matrix
+Computations. In: Proceedings of the 2003 international symposium on Symbolic
+and algebraic computation. pp. 135142 (2003)
+35. Grassi, L., Hao, Y., Rechberger, C., Schofnegger, M., Walch, R., Wang, Q.: Horst
+Meets Fluid-SPN: Grin for Zero-Knowledge Applications. In: Handschuh, H.,
+Lysyanskaya, A. (eds.) Advances in Cryptology - CRYPTO 2023 - 43rd Annual
+International Cryptology Conference, CRYPTO 2023, Santa Barbara, CA, USA,
+August 20-24, 2023, Proceedings, Part III. Lecture Notes in Computer Science, vol.
+14083, pp. 573606. Springer (2023). https://doi.org/10.1007/978-3-031-38548-3_
+19
+36. Guido, B., Joan, D., Michaël, P., Gilles, V.: Cryptographic sponge functions (2011),
+https://keccak.team/les/CSF-0.1.pdf
+37. Ha, J., Kim, S., Lee, B., Lee, J., Son, M.: Rubato: Noisy Ciphers for Approximate
+Homomorphic Encryption. In: Dunkelman, O., Dziembowski, S. (eds.) Advances in
+Cryptology - EUROCRYPT 2022 - 41st Annual International Conference on the
+Theory and Applications of Cryptographic Techniques, Trondheim, Norway, May
+30 - June 3, 2022, Proceedings, Part I. Lecture Notes in Computer Science, vol.
+13275, pp. 581610. Springer (2022). https://doi.org/10.1007/978-3-031-06944-4_
+20
+38. Hart, W.B.: Flint: Fast Library for Number Theory. Computeralgebra-Rundbrief:
+Vol. 49 (2011)
+35
+
+39. Hyun, S.G., Neiger, V., Schost, É.: Implementations of Ecient Univariate Polyno-
+mial Matrix Algorithms and Application to Bivariate Resultants. In: Proceedings
+ISSAC 2019. pp. 235242. ACM (2019). https://doi.org/10.1145/3326229.3326272,
+https://github.com/vneiger/pml
+40. Labahn, G., Neiger, V., Zhou, W.: Fast, deterministic computation of the Hermite
+normal form and determinant of a polynomial matrix. Journal of Complexity 42,
+4471 (2017)
+41. Masure, L., Méaux, P., Moos, T., Standaert, F.: Eective and Ecient Mask-
+ing with Low Noise Using Small-Mersenne-Prime Ciphers. In: Hazay, C., Stam,
+M. (eds.) Advances in Cryptology - EUROCRYPT 2023 - 42nd Annual Interna-
+tional Conference on the Theory and Applications of Cryptographic Techniques,
+Lyon, France, April 23-27, 2023, Proceedings, Part IV. Lecture Notes in Com-
+puter Science, vol. 14007, pp. 596627. Springer (2023). https://doi.org/10.1007/
+978-3-031-30634-1_20
+42. Méaux, P., Journault, A., Standaert, F., Carlet, C.: Towards Stream Ciphers for Ef-
+cient FHE with Low-Noise Ciphertexts. In: Fischlin, M., Coron, J. (eds.) Advances
+in Cryptology - EUROCRYPT 2016 - 35th Annual International Conference on the
+Theory and Applications of Cryptographic Techniques, Vienna, Austria, May 8-
+12, 2016, Proceedings, Part I. Lecture Notes in Computer Science, vol. 9665, pp.
+311343. Springer (2016). https://doi.org/10.1007/978-3-662-49890-3_13
+43. Moenck, R.T.: Practical fast polynomial multiplication. In: Proceedings of the third
+ACM symposium on Symbolic and algebraic computation. pp. 136148 (1976)
+44. Neiger, V., Schost, É.: Computing syzygies in nite dimension using fast linear alge-
+bra. J. Complex. 60, 101502 (2020). https://doi.org/10.1016/J.JCO.2020.101502,
+https://doi.org/10.1016/j.jco.2020.101502
+45. Roy, A., Steiner, M.J., Trevisani, S.: Arion: Arithmetization-Oriented Permuta-
+tion and Hashing from Generalized Triangular Dynamical Systems (2023), https:
+//arxiv.org/abs/2303.04639
+46. Szepieniec, A., Ashur, T., Dhooghe, S.: Rescue-Prime: a Standard Specication
+(SoK). Cryptology ePrint Archive, Paper 2020/1143 (2020), https://eprint.iacr.
+org/2020/1143
+47. The PML team: PML: Polynomial Matrix Library (2023), version 0.3, https://
+github.com/vneiger/pml
+48. The Sage Developers: SageMath, the Sage Mathematics Software System (2022),
+https://www.sagemath.org
+49. V. Shoup, et al.: NTL: A Library for Doing Number Theory. https://libntl.org/
+50. Von Zur Gathen, J., Gerhard, J.: Modern Computer Algebra. Cambridge university
+press (2013)
+A
+Computing a Reduced Gröbner Basis for ⟨PG⟩
+As noted at the end of Section 3.4, we do not generate the polynomial system PG
+directly in practice. Rather, we construct a related polynomial system iteratively
+while reducing as many monomials as possible along the way. More formally, for
+a polynomial h and an ordered sequence of polynomials H, we let Red(h, H)
+denote the operation of reducing h by H (according to a specied monomial
+order). That is, Red(h, H) is the remainder after performing multivariate division
+of h by H (see [22, Ch. 2, 3]). For a tuple of polynomials h = (h1, . . . , ht), we
+36
+
+write Red(h, H) = (Red(h1, H), . . . , Red(ht, H)). Now x a monomial order,
+and dene z′
+0 = z0. We generate p′
+i = (p′
+i,1, . . . , p′
+i,li) and the reduced states z′
+i
+recursively as follows for 1 ≤i ≤r and 1 ≤j ≤li.
+p′
+i,j = Red
+ xαi,j
+i,j
+−Li,j(z′
+i−1), {p′
+1 . . . , p′
+i−1}
+
+,
+z′
+i = Red
+ Gi(z′
+i−1, xi), {p′
+1, . . . , p′
+i}
+
+,
+where Li,j is the polynomial from (3). Finally, we dene
+g′ = Red
+ [Gr(z′
+r−1, xr)]1, {p1, . . . , pr}
+
+,
+and write P ′
+G = {p′
+1, . . . , p′
+r, g′}. Since the construction of P ′
+G only diers from
+that of PG by reductions with generators in the ideal IG = ⟨PG⟩their ideals
+should, intuitively speaking, be identical. This intuition is conrmed by the
+following lemma.
+Lemma 6. For any xed monomial order we have
+IG = ⟨PG⟩= ⟨P ′
+G⟩.
+Proof. For any polynomial h and polynomial sequence H, we can write the
+reduction operation as Red(h, H) = h + W, for some polynomial W ∈⟨H⟩.
+Since the Gi's used in the construction of p′
+i and z′
+i are polynomial functions,
+one can show by induction that
+p′
+i,j ∈pi,j + ⟨{p1 . . . , pi−1}⟩,
+z′
+i,j ∈zi,j + ⟨{p1, . . . , pi}⟩
+(10)
+holds for all 1 ≤i ≤r and 1 ≤j ≤li. In particular, we have g′ ∈g +
+⟨{p1, . . . , pr}⟩. Thus it is clear that PG and P ′
+G generate the same polynomial
+ideal.
+⊓⊔
+The following result relates P ′
+G and PG when Proposition 6 holds. Recall that we
+write d≤i = d1 · · · di, where di = deg(Gi).
+Proposition 9. Let PG satisfy the condition of Proposition 6. Then constructing
+P ′
+G w.r.t. ≺G is also a FreeLunch system. Moreover, replacing g′ in P ′
+G with
+g′/LC(g′) yields the unique reduced Gröbner basis for IG w.r.t. ≺G.
+Proof. By denition of polynomial division, we have wt(LM(Red(h, H))) ≤
+wt(LM(h)). Since LM(pi,j)′ cannot be reduced by {p′
+1 . . . , p′
+i−1} under ≺G, it
+follows from (10) and the prior discussion that LM(p′
+i,j) = LM(pi,j). For the
+similar statement on LM(g′), we note that the condition LM(g) = x
+d≤r
+0
+can only
+hold if for every i there exist a ji such that LM(zi,ji) = x
+d≤i
+0
+. By construction of
+≺G, this monomial will not be reduced by {p′
+1 . . . , p′
+i−1}. Again, it follows from
+(10) that LM(z′
+i,ji) = x
+d≤i
+0
+. In particular, LM(g′) = LM(g), hence P ′
+G is also a
+FreeLunch system.
+For the last assertion, one observes from the way pi,j only depends on the
+variables x0, x1, . . . , xi−1, xi,j that
+Red(p′
+i,j, P ′
+G \ {p′
+i,j}) = Red(p′
+i,j, {p1 . . . , pi−1}) ,
+37
+
+holds for ≺G. Hence P ′
+G is already fully reduced, and replacing g′ with g′/LC(g′)
+makes all polynomials monic.
+⊓⊔
+Remark 2. Recall from Proposition 2 that if H is a Gröbner basis for ⟨H⟩, then
+Red(h, H) does not depend on the order of the sequence H. It follows from
+Proposition 9 that if PG satises the condition of Proposition 6, then the reduc-
+tions in the construction of p′
+i,j, z′
+i and g′ are independent of the order of the
+sequence {p1, . . . pi}, w.r.t. ≺G.
+Complexity of computing P ′
+G. We are left with bounding the complexity of
+computing P ′
+G, which will yield our estimate for the sysGen step. In the setting
+we will be interested in, this is expected to be dominated by the cost of applying
+the last round function Gr to compute g′, and its reduction by {p′
+1 . . . , p′
+r}. Our
+insight is that the reductions involved in the sysGen process are cheaper than the
+reductions required in matGen, since the reductions are performed on a smaller
+Gröbner basis; but we do not have a proof for such a statement. However, it is
+possible to bound the cost of the multiplications performed on the state z′
+r−1
+when applying Gr. Let m denote the number of these multiplication, where
+we recall that m is typically small by design. We reduce by {p′
+1 . . . , p′
+r} after
+each multiplication, and will assume that this reduction is negligible compared
+to the cost of the multiplications themselves. Thus we have m multiplications
+of multivariate polynomials of maximal degree d≤r in x0 and αi,j −1 in xi,j,
+for 1 ≤i ≤r, 1 ≤j ≤li. We can then use the Kronecker trick presented by
+Moenck [43, Section 3.4] to perform these multiplications in an ecient manner.
+In short, the Kronecker trick starts by transforming the multivariate polynomials
+to univariate polynomials. This allows us to perform the multiplication using an
+ecient univariate multiplication algorithm, before converting the result back
+to a multivariate polynomial. Moenck describes the algorithm and proves its
+correctness for any bound on the degree of each variable in both polynomials
+in the input of multiplication, but only gives a complexity estimate when all
+bounds are equal. It is, however, easy to verify that the complexity formula for
+the multivariate multiplication algorithm in our setting will be:
+˜O(d≤r
+Y
+1≤i≤r
+1≤j≤li
+2αi,j) ,
+when applying either the Fast Fourier Transform, or Schönhage & Strassen's
+algorithm to perform the univariate multiplication [50, Chapter 8]. Repeating
+this m times yields our estimate for cost of multiplications in the sysGen step:
+˜O(md≤r
+Y
+1≤i≤r
+1≤j≤li
+2αi,j) .
+In comparison, recall that the polyDet step of our analysis is expected by
+Theorem 1 to require
+˜O(d≤r(
+Y
+1≤i≤r
+1≤j≤li
+αi,j)ω)
+38
+
+operations in F. Thus, when m remains small, we do not expect the multiplica-
+tions in sysGen to be the bottleneck of the overall attack.
+Use in Experiments. We implemented the Kronecker trick for the experiments
+we ran with the Flint library [38], using the NTL library [49] for the univariate
+multiplication; the mapping between int and NTL polynomial representations
+was performed by hand. The multivariate multiplications performed for experi-
+ments with Magma and SageMath used their own built-in functionalities.
+B
+Bypassing the rst rounds of Griffin
+The number of rounds that can be bypassed before we need to introduce x1
+depends on the number of branches. For t ≥12 branches we can nd an easily
+computable set of input states that allows to bypass the rst three rounds of
+Griffin, so x1 only appears in the fourth round. We explain in detail how this
+can be done for t = 12. After that it will become clear that three rounds can
+also be bypassed for t ∈{16, 20, 24}, and how to determine how many rounds
+can be bypassed for t < 12.
+Denote the input state to Griffin as
+(a0x0 + b0, a1x0 + b1, a2x0 + b2, . . . , a10x0 + b10, 0).
+The ai and bj are constants in F that we now proceed to determine. Once the
+ai and bj are xed the variable x0 can be varied freely over F, generating a set
+of input states for the CICO problem that all have constant input to the x1/α
+function in the three rst rounds. Figure 6 illustrates the evolution of one of the
+chosen input states up to the start of round 3.
+The values of ai and bj in Figure 6 can be determined as follows. After the
+initial linear transformation before the rst round, all branches can be expressed
+as li(a)x0 + li(b) for 0 ≤i ≤11, where li(·) is a known linear combination. To
+get 0 on the branches indicated in Figure 6, the ai's and bj's need to satisfy the
+following linear equations
+l0(a) = 0
+l0(b) = 0
+l1(a) = 0
+l1(b) = 0
+l3(a) = 0
+l3(b) = 0
+l5(a) = 0
+l5(b) = 0
+l7(a) = 0
+l7(b) = 0
+l9(a) = 0
+l9(b) = 0
+l10(a) = 0
+l10(b) = 0.
+With 0 on any two adjacent branches, the input to F will either be all 0,
+with F(0, 0, 0) being equal to a constant, or the output of F will be multiplied
+with 0, making sure the value on the branch remains 0. This ensures that the
+algebraic expressions on the branches stay linear in x0, a and b after the ane
+transformation at the start of the second round. The need to have input 0 to
+x1/α and xα in the second round gives four more linear constraints
+39
+
+Fig. 6: Evolution of chosen set of input states to Griffin with 12 branches. Red
+values give conditions on the ai and bj such that the input of x1/α in the third
+round becomes a known constant independent of x0.
+40
+
+l17(a) = 0
+l17(b) = 0
+l18(a) = 0
+l18(b) = 0,
+where the γi are known constants.
+Before the ane transformation in the second round, most branches will have
+cubic polynomials in x0 as their values (the hi(x0) in Figure 6). These are again
+linearly mixed in the ane transformation at the end of round two, producing
+the cubic polynomial
+h9(x0) = c3(a, b)x3
+0 + c2(a, b)x2
+0 + c1(a, b)x0 + c0(a, b)
+on the rst branch. We want to enforce that c3(a, b) = c2(a, b) = c1(a, b) = 0
+such that the input to the x1/α function in round three becomes a known constant
+independent from x0. The expressions for the coecients are cubic in the ai and
+bj, but note that all the polynomials hi(x0) for 0 ≤i ≤8 are made as products
+of linear factors as
+(li(a)x0 + li(b))(lj(a)x0 + lj(b))(lk(a)x0 + lk(b)),
+and that h9(x0) is a sum of these. By calculating the coecients for the x3
+0, x2
+0,
+and x0 terms, we see that c3(a, b) is cubic in a, but does not contain b at all.
+Similarly, c2(a, b) is quadratic in a and linear in b and c1(a, b) is linear in a
+and quadratic in b.
+We can now use the 9 linear equations in a introduced above to eliminate
+a2, . . . , a10 from c3(a). This leaves c3 as c3(a0, a1), a cubic expression in a0 and
+a1. Next we x a1 to an arbitrary non-zero value (to avoid the trivial solution
+a0 = . . . = a10 = 0) and solve for c3(a0) = 0 using a root-nding algorithm for
+univariate polynomials. With a0 and a1 xed, all the other ai gets xed as well
+from the linear constraints from rounds 1 and 2.
+Once all ai have been found, c2(a, b) = 0 just becomes a linear equation in
+b. Using this linear equation together with the 9 from above, we can eliminate
+b1, . . . , b10 from the last coecient c1(a, b). With all the ai xed, c1 then just
+becomes c1(b0), a quadratic expression in b0 and we easily solve c1(b0) = 0. This
+determines all the values for the bi.
+With the ai and bj now xed, we know that the input state from our chosen
+set will generate polynomials in x0 of degree 6α + 3 on the branches at the start
+of round 4. We can then start the basic attack from there, adapting the weighted
+order of the variables accordingly. When the number of xi-variables is reduced
+by 3 and with the degree of x0 bounded to 6α + 3 until the fourth round, the
+dimension of the Gröbner basis ideal becomes much smaller, which again reduces
+the overall attack complexity signicantly.
+When there are more than 12 branches we can do the exact same trick as
+explained above. The only dierence is that there will be more values of ai and bj
+that can be chosen arbitrarily when solving for c3(a, b) = c2(a, b) = c1(a, b) =
+0. When there are less than 12 branches, there is not enough degrees of freedom
+to make it through the third round. For t = 8 we can bypass the two rst rounds,
+so x1 only needs to be introduced in round 3, and for t = 3, 4 it is possible to
+bypass the rst round and introduce x1 in round 2.
+41
+
+C
+Solutions to the CICO problem with respect to Griffin
+In this section we give explicit solutions to the CICO problem related to a
+Griffin permutation whose characteristics are specied below. Everything dis-
+cussed here can be checked by the reviewers using the supplementary material
+provided in verify.zip.
+Parameters of Griffin instances
+• Prime number: p = 28407454060060787 (55 bits);
+• Exponent: α = 3;
+• Number of rounds: r ∈{5, 6, 7};
+• Number of branches: t = 12 (corresponds to 10 rounds in the real version);
+• Parameters of the quadratic functions: δi = 4(i + 1), µi = 7(i + 1)2, i =
+0, . . . , r −1;
+• Round constants13 (up to 7 rounds):
+13 Our Griffin with r ≤7 rounds will use constants (c0, . . . , cr−2, c6).
+42
+
+c0 = (24948861045225956, 21203603017242449, 5137804740880040,
+17203989140901077, 15884693750499599, 202426034695061,
+21925627314327927, 14915791625715646, 2270637844838412,
+19287066862534400, 23053628619630528, 20205234482325465)
+c1 = (1953994697959081, 13694436956212586, 2244645965787647,
+20803493439220167, 13296675195272853, 18296898451764242,
+20376008308269607, 10239947264048958, 1116873941458788,
+19425600591729552, 20854422412323996, 10085561279368253)
+c2 = (16905640598099854, 25230133406843513, 8957962046730991,
+14294289436907403, 10949906559535418, 28179662462119909,
+20848690834284278, 5962920227944130, 15129107418293752,
+6002695762195648, 6114627516150292, 22521669951514122)
+c3 = (13008050022403386, 28091350245684079, 23189230572909585,
+8101795236077784, 3593606052472638, 11330866710107896,
+9840541134611106, 13915746912957553, 19822110644988410,
+24750875289653592, 25496607366081073, 2269647499797729)
+c4 = (15770582149454036, 4472996328290429, 8197094411507273,
+14151116175893923, 19977244056516294, 22071066831282832,
+10912395968228633, 28293903648852908, 15600461636809584,
+16248565278833955, 23850742575902912, 12384888390231181)
+c5 = (24731271392756981, 4234794164011219, 5709721189329773,
+23115678305163655, 11185048660199721, 21406367947811616,
+14929808901464726, 14209993563715217, 19373914823111461,
+12307896526346864, 16319890415782340, 19440350754040851)
+c6 = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+The round constants listed above were generated randomly using the following
+code in SageMath:
+p = 28407454060060787
+Fp = F i n i t e F i e l d (p)
+R = 6
+b = 12
+set_random_seed ( int . from_bytes (b" G r i f f i n " , " l i t t l e " ) )
+RC = [ random_vector (Fp ,
+b)
+f o r _ in
+range (R) ]
+43
+
+Solutions to the CICO problem
+Solutions of the CICO problem for r ∈{5, 6, 7} are presented here. Griffinr
+denotes r-round Griffin.
+Griffin5(0, 3490692521816093, 23601145558450866,
+12269607430774150, 9967688977125539, 6082447726448232,
+5654276540748670, 3202643372242143, 14009612926527540,
+18297056060918841, 3219981769736554, 1403954519004962)
+= (0, 5621630451433068, 19970363721022544,
+26741918912648639, 19340983417234439, 703450676999922,
+28208520610521445, 25436703150515389, 27364572020087999,
+24554342355067488, 12423823785589327, 9583319713824981)
+Griffin5(0, 20508905520120247, 23936168820965785,
+23455122418677455, 17553236564762600, 3639182016432478,
+17868020430519088, 3713757452078792, 5123533774106823,
+15978370877576178, 18526890154199809, 7146019784219766)
+= (0, 398957666284762, 14158444455164092,
+23271855932022231, 21234778660794826, 254005063154066,
+20580021469733731, 20943402370356289, 5582293336098692,
+4611071270038675, 18302255515509522, 26476200309584297)
+Griffin6(0, 15940424764849354, 15734551202904841,
+2252716448242183, 24464738475171520, 22965208929786740,
+9160692692879124, 10856186368261439, 8227155735266026,
+27520010287112407, 2695459349798501, 26535488466949249)
+= (0, 28084819548111304, 27440009447766981,
+18719426192325148, 15867588640423583, 21846560125606713,
+6096085299560336, 3230042720230543, 8933226700213982,
+16946922076875842, 4787108825372316, 24658818061833687)
+Griffin6(0, 13453267118668680, 16821847582014700,
+16088365946216368, 5399506335051336, 27388226484505332,
+23347730487451583, 17984517745797377, 8860239602618916,
+21421104166559501, 2200106791585633, 4277034158946419)
+= (0, 15056970863769267, 16790578228924700,
+8672008243997393, 19887571512638539, 26391726423500753,
+20727079056917053, 20813391870109600, 20843251064205404,
+18441611384455618, 7490737291933204, 20355381094708976)
+44
+
+Griffin7(0, 471901030567494, 19368389705049758,
+6207658171606065, 13611402711597287, 12429039749894833,
+22884233714242756, 18540641300363820, 25230426657954964,
+17547513396056919, 15871260254068404, 5181585218256522)
+= (0, 24311659110177349, 24245222836079936,
+1360999973748497, 25535756342488541, 10834064085568113,
+2487598456547217, 22567275155120838, 2042666706826108,
+694695024982032, 10782435475712749, 20264250160050251)
+D
+Bypassing the rst round of Arion-π
+We can use a trick similar to that used for Griffin to bypass the rst round of
+Arion-π such that the variable x1 is only rst introduced in the second round.
+Unlike Griffin, this method can be applied to any number of branches in Arion-
+π. However, we can only bypass a single round.
+Denote the input state to Arion as
+(a0x0 + b0, a1x0 + b1, a2x0 + b2, . . . , at−2x0 + bt−2, 0).
+The ai and bj are constants in F that will be determined. Once the ai and bj
+are xed, the variable x0 can be varied freely over F, generating a set of input
+states for the CICO problem that all have input 0 to the x1/α function in the
+rst round. Figure 7 illustrates the evolution of one of the chosen input states
+up to the start of round 2.
+The values of ai and bj can, in general, be determined as follows. After the
+initial matrix multiplication, all branches can be expressed as li(a)x0 + li(b) for
+0 ≤i ≤t −1, where li(a) and li(b) are known linear combinations. To get 0
+on the last t −2 branches, the ai's and bj's need to satisfy the following linear
+equations
+l2(a) = 0
+l2(b) = 0
+...
+...
+lt−1(a) = 0
+lt−1(b) = 0.
+With 2t−4 equations on 2t−2 variables, these constraints leave two degrees
+of freedom for the variables in a and b. Naively, one could think of additionally
+imposing the constraints l1(a) = 0 and l1(b) = 0 such that only the rst branch
+is nonzero and the degree on x0 is further reduced. However, the unique solution
+to this system is the trivial solution (a, b) = (0, 0), which is not of interest. Thus,
+we avoid this by instead imposing arbitrary conditions for two variables ak and
+bl (as long as ak is set to be a non-zero value to avoid the trivial solution). With
+ak and bl xed, all the other variables get xed, too, from the previous linear
+constraints. For simplicity, one could x the values a0 = 1 and b0 = 0, leading
+to an input state of the form (x0, a1x0, a2x0, . . . , at−2x0, 0), where all ai's are
+xed.
+45
+
+Fig. 7: Evolution of chosen set of input states to Arion-π with 4 branches. Red
+values give conditions on the ai and bj.
+With 0 on the last t −2 input branches, the output of the non-linear layer
+of Arion-π will be of the form (A(x0), B(x0), 0, . . . , 0), where A and B are poly-
+nomials in x0 of degree 3e and e, respectively. Thus, the input state from our
+chosen set will generate polynomials in x0 of degree 3e on the branches after the
+ane transformation in round 1. We can then start the basic attack from there,
+adapting the weighted order of the variables accordingly. When the number of
+xi-variables is reduced by 1 and with the degree of x0 bounded to 3e until the
+second round, the dimension of the Gröbner basis ideal becomes smaller, which
+again reduces the overall attack complexity.
+E
+Proof of Proposition 8
+Proof. Recall from Denition 15 that u is dened as u = u0 through the sequence
+{ui}0≤i≤r. To simplify the exposition, we will work with the sequence {vi}0≤i≤r
+dened by v0 = 1, and
+vi+1 = vi + 2
+lvi
+α
+m
+, for 0 ≤i < r.
+Note that vi = ur−i and, in particular, vr = u. Dene two more integer sequences
+{ai}0≤i≤r and {bi}0≤i≤r dened by a0 = b0 = 1 and for 0 ≤i < r
+ai+1 = α + 2
+α
+ai,
+bi+1 = α + 2
+α
+bi + 2.
+As a rst step, we will prove ai ≤vi ≤bi. This is clearly true for i = 0. Supposing
+it holds up to some i, then using the identity x ≤⌈x⌉< x + 1, we have
+α + 2
+α
+vi ≤vi + 2
+lvi
+α
+m
+< α + 2
+α
+vi + 2,
+46
+
+Thus, using the induction hypothesis and the denitions of {ai} and {bi},
+ai+1 ≤vi+1 ≤bi+1.
+Observe that ai =
+α + 2
+α
+i
+, which proves the left-hand side of the inequality
+in the proposition. For the right-hand side we note that {bi} can be written as
+bi = (α + 1)
+α + 2
+α
+i
+−α, when i ≥1. Indeed, this can be veried for i = 1.
+Supposing it holds up to some i, then
+bi+1 = α + 2
+α
+bi + 2
+= (α + 1)
+α + 2
+α
+i+1
+−α(α + 2)
+α
++ 2
+= (α + 1)
+α + 2
+α
+i+1
+−α,
+and the bounds on u stated in Proposition 8 follows.
+⊓⊔
+F
+FreeLunch Systems for XHash8
+Description of XHash8. XHash8 is an SPN with nonlinear S-boxes, multiplica-
+tion by a xed MDS matrix M, and addition by round constants Ci. Its state
+contains t = 12 elements in Fp where p = 264 −232 + 1. The rate is xed to
+8 and capacity 4. There are 3 rounds in total, and each round consists of 3
+steps, for a total of 9 steps (plus the initial ane layer (I)). With the cipher
+state denoted as z = (z0, . . . , z11), one round of XHash8 is constructed from the
+following functions (excluding (P3)(k) which is specied below):
+(I) : z 7→M × (C0 + z),
+(F)(k) : z 7→C3k + M × (z7
+0, . . . , z7
+11),
+(B′)(k) : z 7→C3k+1 + (z
+1
+7
+0 , z1, z
+1
+7
+2 , z
+1
+7
+3 , z4, z
+1
+7
+5 , z
+1
+7
+6 , z7, z
+1
+7
+8 , z
+1
+7
+9 , z10, z
+1
+7
+11).
+The last step of a round, (P3)(k), consists of naturally mapping z to a state
+of four elements in a cubic expansion Fp3, denoted (S0,1,2, S3,4,5, S6,7,8, S9,10,11),
+and then computing S7
+i,i+1,i+2 and mapping the result back to Fp. After that,
+like with (F)(k), an MDS layer is applied, and the round constant C3k+2 is
+added. Eectively, (P3)(k) is equivalent to mapping each z3q+r to a multivariate
+polynomial of degree 7 in z3q, z3q+1, z3q+2 (see also the detailed description in
+[6, Appendix A]), which is the way we modelize it.
+The steps are applied in the following order, from left to right:
+(I) (F)(1)(B′)(1)(P3)(1)(F)(2)(B′)(2)(P3)(2)(F)(3)(B′)(3)(P3)(3).
+One round preceded by (I) is shown in gure 8, taken from [6].
+47
+
+Fig. 8: Round i of XHash8 preceded by an (I) step: (I)(F)(i)(B′)(i)(P3)(i).
+FreeLunch System for XHash8 Our resolution allows us to solve the CICO
+problem on one branch. However, since the size of one branch is roughly 64
+bits, this CICO problem could simply be solved by making 264 queries to the
+permutation, for which our solving algorithm does not give us an advantage. On
+top of that, the real capacity of XHash8 is c = 4 for a security claim of 128 bits.
+Rather than claiming a full attack on XHash8, we show a special case where a
+FreeLunch system can be easily extracted. However, the later solving steps, in
+particular the polyDet step, will still have a very high complexity.
+Following the construction of FreeLunch systems from Section 3 we dene the
+initial state as z0 = (x0, 0, . . . , 0) and add a new variable xi,j for 0 ≤i ≤2 and
+j ∈{0, 2, 3, 5, 6, 8, 9, 11} after every (·)1/7. All other nonlinear operations can
+be represented as polynomials of degree 7, xing the weights of the introduced
+variables to
+wt(x0) = 1,
+wt(xi,j) = 72i + 1 .
+We end up with 25 polynomials in 25 variables; 24 of these polynomials have x7
+i,j
+as leading monomials and the last polynomial has x76
+0
+as a leading monomial.
+The coecient of the x76
+0 -term in the last polynomial will be non-zero with a
+very high probability, ensuring we get a FreeLunch system, with DH = 724 and
+α0 = 76.
+Complexity of solving the system. We can solve the system using the al-
+gorithm described in Section 3. The complexity of matGen is hard to estimate
+precisely. The complexity of the polyDet step is:
+O(Dω
+1 α0 log(α0)2) ≈2240
+when ω = 2.81. Note that this is signicantly higher than 264, the brute force
+complexity for solving this CICO problem.
+48
+
+G
+Implementation of the matGen Step
+To the best of our knowledge, the matGen step has not been studied in the litera-
+ture beyond [29]. Let φi, i ∈{1, . . . D1}, denote the elements in the standard basis
+of R/I that is not divisible by x0. Then, naively, matGen requires the reductions
+of xα0
+0 φi by the FreeLunch system (which is a Gröbner basis). The bound on the
+number of steps in a reduction by a Gröbner basis in a weighted monomial order
+is not clear, but experiments suggest that the complexity grows with the degree
+of the polynomial to reduce. In order to give an estimation of the complexity of
+this step, we implemented matGen along with the FreeLunch attack in section 4
+and section 5, and benchmarked it. We implemented a variant of the naive ap-
+proach: we observed that the computation of NormalForm(xα0
+0 φi) can be sped
+up if φi is not a single variable xi. If φi = a×b (a and b being non-trivial monomi-
+als), compute NormalForm(xα0
+0 a), and then NormalForm(NormalForm(xα0
+0 a)b).
+The intermediary normal form corresponds to another columns of T0 and can
+be considered free if the columns of T0 are computed in the right order. In our
+implementations, we chose b = xi with αi as low as possible; this seemed to be
+the fastest approach.
+49
+

@@ -1,0 +1,1543 @@
+Caveat Implementor! Key Recovery
+Attacks on MEGA
+Martin R. Albrecht1, Miro Haller2
+, Lenka Marekov´a3(B)
+,
+and Kenneth G. Paterson2
+1 King’s College London, London, UK
+martin.albrecht@kcl.ac.uk
+2 Applied Cryptography Group, ETH Zurich, Zurich, Switzerland
+miro.haller@ethz.ch, kenny.paterson@inf.ethz.ch
+3 Information Security Group, Royal Holloway, University of London, London, UK
+lenka.marekova.2018@rhul.ac.uk
+Abstract. MEGA is a large-scale cloud storage and communication
+platform that aims to provide end-to-end encryption for stored data.
+A recent analysis by Backendal, Haller and Paterson (IEEE S&P 2023)
+invalidated these security claims by presenting practical attacks against
+MEGA that could be mounted by the MEGA service provider. In
+response, the MEGA developers added lightweight sanity checks on the
+user RSA private keys used in MEGA, suﬃcient to prevent the previous
+attacks.
+We analyse these new sanity checks and show how they themselves
+can be exploited to mount novel attacks on MEGA that recover a target
+user’s RSA private key with only slightly higher attack complexity than
+the original attacks. We identify the presence of an ECB encryption ora-
+cle under a target user’s master key in the MEGA system; this oracle
+provides our adversary with the ability to partially overwrite a target
+user’s RSA private key with chosen data, a powerful capability that we
+use in our attacks. We then present two distinct types of attack, each type
+exploiting diﬀerent error conditions arising in the sanity checks and in
+subsequent cryptographic processing during MEGA’s user authentication
+procedure. The ﬁrst type appears to be novel and exploits the manner
+in which the MEGA code handles modular inversion when recomputing
+u = q−1 mod p. The second can be viewed as a small subgroup attack
+(van Oorschot and Wiener, EUROCRYPT 1996, Lim and Lee, CRYPTO
+1998). We prototype the attacks and show that they work in practice.
+As a side contribution, we show how to improve the RSA key recov-
+ery attack of Backendal-Haller-Paterson against the unpatched version
+of MEGA to require only 2 logins instead of the original 512.
+We conclude by discussing wider lessons about secure implementation
+of cryptography that our work surfaces.
+c
+⃝International Association for Cryptologic Research 2023
+C. Hazay and M. Stam (Eds.): EUROCRYPT 2023, LNCS 14008, pp. 190–218, 2023.
+https://doi.org/10.1007/978-3-031-30589-4_7
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+191
+1
+Introduction
+MEGA is a cloud storage and communication platform with over 265 million
+user accounts and more than 10 million daily users [14], advertising itself as
+secure and private by design. The platform distinguishes itself from other major
+providers by oﬀering end-to-end encryption for stored data. On MEGA, user ﬁles
+should remain conﬁdential even if the storage provider is malicious or has been
+compromised through a breach, implying security in a strong threat model. The
+security of MEGA in this setting was recently analysed in detail by [2], which
+describes ﬁve attacks on the cryptographic protocol used by MEGA to authenti-
+cate users and encrypt user data. The ﬁrst two of these attacks completely broke
+the conﬁdentiality of user ﬁles. Shortly after, [29] signiﬁcantly improved the ﬁrst
+attack in [2], reducing its requirement of 512 user logins to just 6.
+At their heart, the attacks in [2] exploit the lack of both key separation and
+integrity protection for stored keys in the MEGA design: a single user mas-
+ter key is used to encrypt both the user’s RSA private key (used during user
+authentication) and the user’s ﬁle encryption keys themselves; meanwhile AES
+in ECB mode is used for the encryption. This allowed the authors of [2] to cor-
+rupt the RSA private key in certain ways that leaked useful information during
+the authentication protocol, as well as to “cut and paste” AES-ECB blocks from
+ﬁle encryption keys into the RSA private key.
+The authors of [2] proposed an immediate and non-invasive mitigation step
+in the form of adding a MAC to the existing construction.1 In response, MEGA
+chose to not implement this or any of the other originally suggested counter-
+measures. Instead, MEGA added extra sanity checks in the client software to do
+more validation of payloads during or after decryption [17]. These checks were
+suﬃcient to prevent the speciﬁc attacks of [2,29].
+Shortly after MEGA released their patch addressing the attacks of [2], they
+made one other change which (as we will show below) further increased the attack
+surface of their code: they added detailed error reporting during the decryption
+and sanity checking processes done by the client as part of the authentication
+protocol [18]. The errors produced during these steps are mostly distinguishable
+from one another and the error messages are sent to the server in place of the
+usual authentication response. A malicious storage provider can exploit this
+verbose behaviour, triggering the errors by supplying specially crafted inputs
+in an attempt to learn something about the decrypted data.
+1.1
+Contributions
+In the MEGA infrastructure, each user has a master key kM that is used with
+AES-ECB mode to encrypt multiple items, including the user’s RSA private
+1
+This by itself does not suﬃce for authenticated encryption security, but presents
+the “immediate” level of countermeasures, i.e. the most easily achievable solution
+in the short term. [2] outlines further levels of countermeasures termed “minimal”
+and “recommended”, which provide better guarantees but require more fundamental
+changes to the MEGA platform.
+
+192
+M. R. Albrecht et al.
+key and individual ﬁle encryption keys (in a special obfuscated format). In this
+work we describe two new attacks on the patched MEGA infrastructure in the
+malicious server setting which achieve an AES-ECB decryption capability under
+kM. These attacks can be used to recover individual 128-bit blocks of a target
+user’s RSA private key. Combining this with lattice techniques, we can eﬃciently
+recover the entirety of the target user’s RSA private key after recovering four
+speciﬁc blocks. Once this private key is recovered, the adversary can trivially
+decrypt the RSA ciphertexts appearing in ﬁle sharing messages to recover the
+keys needed to decrypt any ﬁles shared with the target user. The attacks can
+also be used to recover individual ﬁle encryption keys directly. As with [2], these
+attacks exploit the lack of key separation and integrity protection in the MEGA
+design, showing that the patch and further changes made by MEGA in response
+to [2] were not only insuﬃcient but actively harmful.
+Both attacks make use of an ECB encryption oracle that is present in the
+MEGAdrop feature, a part of the MEGA system that is supposed to be inde-
+pendent of the authentication protocol, yet uses the same master key kM. This
+feature enables the receiving of shared ﬁles from unregistered users. In short,
+MEGAdrop encrypts a newly shared ﬁle’s encryption key to a user’s public RSA
+key, but the user’s client then silently re-encrypts that ﬁle encryption key under
+kM using AES-ECB whenever the user is logged in. Since a malicious server can
+arbitrarily choose the ﬁle encryption key when sharing ﬁles with the user and
+then observe the resulting AES-ECB ciphertext, this provides the ECB encryp-
+tion oracle that we need. For technical reasons explained later, we obtain two
+AES-ECB encrypted 128-bit blocks for each use of the oracle. Notably, the ECB
+encryption oracle can be realised without any user interaction. Details can be
+found in Sect. 2.
+The attacks also exploit the distinguishable errors arising during user authen-
+tication. We describe the individual errors in detail in Sect. 2. Both attacks can
+be seen as key overwriting attacks, since they rely on manipulating the values
+that are interpreted as the RSA private key by the client, and on including
+the target AES-ECB ciphertext block in a particular position in the encoded
+and encrypted RSA private key. This causes the errors that are triggered dur-
+ing client-side cryptographic processing to depend on the target plaintext block.
+User interaction is formally required for these attacks, which is why we measure
+their cost in terms of the number of login attempts they need (they are otherwise
+computationally inexpensive). As a secondary measure of attack complexity, we
+account for the number of ECB encryption oracle calls needed.
+The ﬁrst attack, described in Sect. 3, exploits an implicit error in the com-
+putation of modular inverses when sanity checking the RSA private key. It is an
+(un)fortunate consequence of an otherwise harmless bug in the code (not check-
+ing whether an inverse exists) which is caught by the client and reported to the
+server. The malicious server can use this oracle repeatedly to learn the value of
+the target AES-ECB plaintext block modulo a number of small primes, which
+enables recovery of the full block using the CRT. The attack requires on aver-
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+193
+age 29.29 login attempts per recovered AES-ECB plaintext block and 66 ECB
+encryption oracle queries per attacked user.
+The second attack, described in Sect. 4, relies on how RSA decryption is
+carried out by the client during user authentication. It exploits a legacy artefact
+in the code that changes the resulting RSA plaintext length if a certain byte
+condition on the plaintext does not hold, in combination with an explicit error
+arising from a plaintext length check that is again reported to the server. The core
+idea is as follows. Because the user’s RSA private key is encrypted as a sequence
+of AES-ECB blocks, we can use the ECB encryption oracle to overwrite parts
+of that key – including p, q, and d – on the granularity of 128-bit blocks. The
+attack exploits this capability to mount a small order subgroup attack [12,34] by
+overwriting the RSA primes p, q with values such that (p −1)(q −1) has known
+small prime factors. The attack also overwrites d with a value that is completely
+known except in the target plaintext block. By also choosing the RSA ciphertext,
+the server can force the client’s RSA decryption to take place in any one of the
+small subgroups corresponding to each of the small prime factors of (p−1)(q−1).
+Then, the malicious server can use the length check oracle repeatedly to learn
+the overwritten value of d, and hence the target plaintext block, modulo each of
+the small primes. The ﬁnal step again combines these values using the CRT to
+recover the target block.
+We present two main versions of the second attack: one that is simpler but
+which requires a large amount of precomputation and one that is more complex
+but only requires negligible precomputation. On average, these versions require
+211.24 and 211.63 login attempts per block, respectively. In both versions, this
+second attack requires a smaller number (up to 15) of ECB encryption oracle
+queries per attacked user than our ﬁrst attack does. Further, this second attack
+exploits diﬀerent errors from the ﬁrst one and also relies on behaviours resulting
+from the “legacy” check on the second byte of plaintext. We include this attack
+to showcase that the existence of such checks and diﬀerentiated error reporting
+increases the attack surface.
+Since the two attacks work on a per-block basis, we discuss how best to
+recover the entire RSA private key of the target user with the help of lattice
+techniques in Sect. 5. This reduces the number of blocks that need to be recovered
+using either of the two attacks to 4 instead of the 9 that would be required if
+the attacks were used directly to e.g. recover all of p. The attack complexity
+of recovering the full RSA private key using our ﬁrst attack is then 211.29 login
+attempts on average.
+As a side contribution, we show in Sect. 6 how to combine the ECB encryption
+oracle obtained from the MEGAdrop feature with the second attack in [2] to
+recover a target user’s RSA private key from an unpatched MEGA client using
+only 2 logins (compared to the 512 logins needed in [2] and the 6 needed in [29]).
+This shows that the original, unpatched MEGA system was even weaker than
+previously thought.
+We conclude by brieﬂy discussing attack mitigation in Sect. 7, noting the
+problematic nature of relying on easy-to-implement countermeasures that do
+
+194
+M. R. Albrecht et al.
+not properly address the core security vulnerabilities. In that section, we also
+draw wider lessons from our work.
+1.2
+Related Work
+The work of [2] provided a detailed overview of the MEGA infrastructure as well
+as attacks on conﬁdentiality and integrity of user data stored on the platform.
+The follow-up work [29] signiﬁcantly reduced the amount of user interaction
+required by the ﬁrst attack of [2] but was already prevented by MEGA’s patches.
+The attacks in this work draw inspiration from the small-order subgroup attacks
+on DH [12,34] and the key overwriting attacks on OpenPGP [5,10]. The use of
+a plaintext checking oracle is reminiscent of Bleichenbacher’s attack on RSA
+with PKCS#1 v1.5 encoding [4] but we target private key recovery rather than
+plaintext recovery.
+1.3
+Validation
+We have veriﬁed the presence of the ECB encryption oracle, implemented the
+attacks and veriﬁed them in practice on test account data, using a TLS-MitM
+setup with mitmproxy [33] to minimise interaction with the real MEGA servers
+and a locally-run MEGA web client (version 4.21.4) [15]. We made a single
+modiﬁcation to the web client to automatically simulate repeated client login
+attempts after one initial manual login. The attacks were able to recover arbi-
+trary AES-ECB-encrypted blocks of the test user’s RSA private key with query
+costs consistent with our analysis (averaging 29.30 login attempts for the ﬁrst
+attack). We also implemented a proof of concept for recovering the entire RSA
+private key given four known blocks using lattice techniques. The code is avail-
+able as supplementary material.
+1.4
+Disclosure
+We contacted MEGA to inform them of the vulnerabilities in their system on
+29.09.2022. We suggested a 90-day disclosure period. We also suggested mitiga-
+tions, stressing the importance of providing proper cryptographic integrity for
+data stored under users’ master keys. MEGA acknowledged receipt of our dis-
+closure on 30.09.2022. They said they would begin working on ﬁxes and liaise
+with us before deploying them. On 28.11.2022, MEGA informed us that they
+were working on hardening their client software, which would include chang-
+ing how private keys are stored, removing the ECB encryption oracle as well as
+replacing the asmcrypto.js library. We provided high-level feedback on the pro-
+posed changes. The upgrade should mitigate against our speciﬁc attacks as well
+as potential future attacks, though we have not reviewed the changes in detail.
+Given the scale of the changes, we agreed to move the disclosure to 06.03.2023 to
+coincide with the rolling-out of the upgraded client software and the publication
+of this paper. MEGA awarded a bug bounty.
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+195
+2
+Oracles
+2.1
+Notation
+We begin by establishing some notation that we use throughout. Concatenation
+is denoted by
+∥. [m]k denotes an encryption of m under the key k, where
+the algorithm is determined by the context. B denotes bytes, and for x, |x|B
+denotes the length of x in bytes and |x|b denotes the length of x in bits.2 For
+a tuple X = (x0, . . . , xn−1), |X | = n denotes its size. For a byte string m =
+b0 ∥b1 ∥. . . ∥bn−1 of length n and s, t ∈N, we deﬁne m[s] := bs, and m[s :
+t] := bs ∥. . . ∥bt−1 for s < t. An empty object is denoted by null, and a zero
+byte by 00. ZeroPad(m, n) := 00 ∥00 ∥. . . ∥m such that |m|B = n, i.e. left-pad
+m with zero bytes. If it is necessary to distinguish between a byte representation
+and other types, m (as opposed to m) denotes a byte string. Conversion between
+byte strings and integers remains implicit, so we may write m ←m and vice-
+versa. (Z/nZ)× denotes the multiplicative group of integers modulo n. By x ←$ S
+we denote x sampled uniformly at random from S. In our attacks, B denotes a
+target plaintext block, which is a byte string with |B|b = 128. To diﬀerentiate it
+from a value computed while attempting to recover this block (which could be
+diﬀerent if the attack is not correct), we denote the computed value by B∗.
+2.2
+ECB Encryption Oracle
+MEGA’s webclient exposes an ECB encryption oracle under a user’s master
+key kM. This oracle allows MEGA, or anyone controlling their infrastructure, to
+encrypt 32 bytes of chosen plaintext in AES-ECB mode under the target user’s
+master key kM in a single query. Since AES-ECB without any additional measures
+does not provide any integrity protection, ciphertexts containing blocks that the
+adversary queried to the oracle cannot be distinguished without additional tests
+on the expected structure of the plaintext.
+The oracle stems from code related to the MEGAdrop feature as shown in
+Fig. 1. MEGAdrop enables anyone to upload ﬁles to a folder in the cloud storage
+of the recipient without needing an account on MEGA. The recipient activates
+MEGAdrop for one of their folders and obtains a link that they can share with
+others. Unlike shared folders, senders do not see any ﬁle stored in the MEGAdrop
+upload folder.
+2
+For x ∈Z, the value of |x|b as understood by the MEGA client implementations
+is not always exact. In the big integer representation used by the web client, |x|b is
+normally rounded up to the closest multiple of 8 or 32.
+
+196
+M. R. Albrecht et al.
+Fig. 1. Overview of the ECB encryption oracle under a user’s master key kM.
+The left algorithm of Fig. 2 describes the upload feature of MEGAdrop. The
+adversary can pick some ﬁle key kF, nonce NF, and ﬁle F during the upload process
+for the MEGAdrop folder at the link L. The upload feature locally encrypts the
+ﬁle with AES-CCM using kF and some nonce NF picked by the client. Backendal
+et al. describe MEGA’s encryption in more detail3 on lines 2–11 of Fig. 2 in [2].
+MEGAdrop.upload(kF, NF, F, L)
+1 :
+[F]kF , Tcond ←File.enc(kF, NF, F)
+2 :
+kobf
+F
+←ObfKey(kF, NF, Tcond)
+3 :
+pk ←Server.lookup(L)
+4 :
+
+kobf
+F
+
+pk ←RSA.Enc(pk, kobf
+F )
+5 :
+Server.upload([F]kF ,
+
+kobf
+F
+
+pk)
+Webclient.update()
+1 :
+while true do
+2 :
+τ ←Server.fetch update(kM, sk)
+3 :
+if τ ̸= ⊥then
+4 :
+[F]kF ,
+
+kobf
+F
+
+pk ←τ
+5 :
+kobf
+F
+←RSA.Dec(sk,
+
+kobf
+F
+
+pk)
+6 :
+
+kobf
+F
+
+kM ←AES-ECB.Enc(kM, kobf
+F )
+7 :
+Server.upload(
+
+kobf
+F
+
+kM)
+8 :
+endif
+9 :
+endwhile
+Fig. 2. MEGAdrop pseudocode. MEGAdrop.upload encrypts a ﬁle F with key kF and
+nonce NF, uploaded to the MEGAdrop folder with link L. Webclient.update shows how
+active clients regularly poll for updates and re-encrypt node keys immediately.
+To instantiate an ECB encryption oracle, the adversary sets kobf
+F
+to 32 bytes
+of its choosing. Since kobf
+F
+= (kF ⊕x) ∥x for x = NF ∥Tcond, the obfuscated
+key deﬁnes the values for kF, NF, and Tcond used in the ﬁle encryption (cf.
+Fig. 4 in [2]). The adversary can use the ﬁle reconstruction part of the fram-
+ing attack described in [2] to obtain a ﬁle F that, when encrypted with kF
+and NF, produces the MAC tag value Tcond. Consequently, the adversary can
+run MEGAdrop.upload(kF, NF, F, L) to upload kobf
+F , encrypted under the receiver’s
+public RSA key, to the server.
+Section 9.12 of MEGA’s security white paper [16] states that to “conserve
+CPU cycles, RSA-encrypted keys are transformed into AES-encrypted keys when
+3 For instance, we omit the ﬁle attributes in our description for simplicity.
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+197
+encountered”. Indeed, the webclient regularly polls for new ﬁles in the back-
+ground and, when encountering an RSA-encrypted key [kobf
+F ]pk, re-encrypts kobf
+F
+with kM and AES-ECB to produce an AES-ECB ciphertext that we denote by
+[kobf
+F ]kM. It then uploads this updated key to the server (cf. [24]) as shown in
+the right half of Fig. 2. Therefore, the malicious server can learn the AES-ECB
+plaintext-ciphertext pair (kobf
+F , [kobf
+F ]kM).
+While testing this oracle in mitmproxy [33], we noticed that the server can
+pretend that a new ﬁle was uploaded to a MEGAdrop folder. The webclient
+re-encrypts the key as described in Fig. 2 even if the recipient does not use
+MEGAdrop and the ﬁle has an invalid path. Thus, we have an eﬃcient ECB
+encryption oracle that does not require any user interaction and leaves no per-
+sistent traces in the user’s cloud storage. It encrypts 32 B per query and can be
+accessed repeatedly.
+2.3
+Oracles from Decoding and Decryption Error Reports
+Consider the authentication and session ID exchange that takes place every time
+a user logs into their account, summarized in Fig. 3 and described in more detail
+in [2]. Let ke be the user’s 128-bit symmetric encryption key derived from their
+password, kM the user’s 128-bit symmetric master key and (pk, sk) the user’s
+2048-bit RSA keypair.
+Fig. 3. Simpliﬁed overview of the MEGA login procedure.
+Here, we focus on one part of this exchange, namely when the server responds
+to the user’s request with the tuple ([kM]ke , [privk]kM , [m]pk , uh), where [kM]ke
+and [privk]kM are AES-ECB-encrypted, [m]pk is RSA-encrypted and uh is in
+plaintext. Then, privk encodes the secret key sk for RSA-CRT as shown in
+Fig. 4, m encodes the session ID sid and uh is an 11-byte user handle string.
+The exact alignments of the ﬁelds in privk with respect to the AES-ECB block
+boundaries will be important in our attacks. The processing done by the client
+after it decrypts [kM]ke is shown in Fig. 5. This is the updated behaviour resulting
+from the patches described in Sect. 1 and converted into pseudocode as faithfully
+as possible, i.e. in some cases surfacing lower-level processing if it is relevant.
+In Fig. 5, we adopt the notation “require condition else error” to mean that
+the client checks the condition and if it is not satisﬁed, it aborts and outputs
+
+198
+M. R. Albrecht et al.
+Fig. 4. Encoding of the RSA secret key together with the block boundaries marking
+the start of diﬀerent 16-byte AES-ECB blocks. Each length encoding ﬁeld consists of
+2 bytes, meaning that data ﬁelds start progressively further into AES-ECB blocks.
+the error to the server. Decoding between base64-strings, bytes and integers is
+left implicit unless relevant to some error. Computation of a−1 mod b should be
+understood to return null if gcd(a, b) ̸= 1.
+In DecodePrivk(privk), the function Parse(privk) sequentially reads through
+the bytes of privk whose expected form, shown in Fig. 4, is len(q) ∥q ∥len(p) ∥p
+∥len(d) ∥d ∥len(u) ∥u ∥pad where len(x) denotes the two-byte big-endian
+length encoding of the byte-length of x and pad is padding, and returns the
+tuple of integers P = (q, p, d, u). If DecPrivkAndSid(·) returns successfully, then
+sid is sent to the server in the requests that follow. Notice that in addition to
+DecPrivkAndSid(·) returning a range of diﬀerent error messages depending on
+the processing of secret values, it also modiﬁes the resulting plaintext depending
+on whether the second byte of the RSA-decrypted value is 00 or not (line 9
+of DecryptSid(·, ·)), a quirk that is explained in the original code only with the
+comment “Old bogus padding workaround” [23].
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+199
+DecPrivkAndSid(kM, [privk]kM , [m]pk , uh):
+1 :
+require |uh|B = 11 else ⊥1
+2 :
+privk ←AES-ECB.Dec(kM, [privk]kM)
+3 :
+sk ←DecodePrivk(privk)
+4 :
+m ←DecryptSid(sk, [m]pk)
+5 :
+require |m|B = 255 else (⊥2, |m|B)
+6 :
+require m[16 : 27] = uh else ⊥3
+7 :
+sid ←m[0 : 43]
+8 :
+return sid
+DecryptSid(sk, [m]pk):
+1 :
+N , e, d, p, q, dp, dq, u ←sk
+2 :
+c ←[m]pk
+3 :
+require c < N else ⊥7
+4 :
+x ←cdp mod p; y ←cdq mod q
+5 :
+t ←x −y mod p
+6 :
+h ←u · t mod p
+7 :
+m ←h · q + y mod 2|N|b
+8 :
+m ←ZeroPad(m, |N |B)
+9 :
+if m[1] ̸= 00 then
+10 :
+m′ ←00 ∥m
+11 :
+else
+12 :
+m′ ←m
+13 :
+return m′[2 : |m′|B]
+DecodePrivk(privk):
+1 :
+P, pad ←Parse(privk)
+2 :
+require |P| = 4 ∧|pad|B < 16 else ⊥4
+3 :
+q, p, d, u ←P
+4 :
+N ←p · q
+5 :
+e ←d −1 mod (p −1)(q −1)
+6 :
+dp ←d mod p; dq ←d mod q
+7 :
+u′ ←q−1 mod p
+8 :
+require u′ ̸= null else ⊥5
+9 :
+cond ←|p|b, |q|b, |u|b > 1000 ∧|d|b > 2000
+10 :
+require cond ∧(u′ = u) else ⊥4
+11 :
+sk ←N , e, d, p, q, dp, dq, u
+12 :
+require e ̸= null else ⊥6
+13 :
+return sk
+Fig. 5. Client decoding and decryption to process the session ID, derived from [23,25–
+27].
+Caught and Uncaught Exceptions. Some of the errors shown in Fig. 5 are
+implicit, i.e. they are a result of lower-level exceptions caught at a higher level
+(the ones corresponding to ⊥5 and ⊥6). In all cases, they are shown at the exact
+place where the code aborts.
+Further, due to some lower-level bugs in asmcrypto.js [19], the bigint and
+crypto library used by the web client, there are cases where the implementation
+never terminates:
+
+200
+M. R. Albrecht et al.
+– In DecodePrivk(privk) during Parse(privk), if one of q, p, d, u is 0.
+– In DecodePrivk(privk) during the computation of q−1 mod p [21], if q mod
+p = 0. We observed that this is because the implementation of gcd(0, p) never
+terminates. The same issue arises during the computation of d−1 mod (p −
+1)(q −1) if d mod (p −1)(q −1) = 0.
+Similarly, there are cases when the implementation returns incorrect output:
+– In DecryptSid(sk, c) during the computation of x ←cdp mod p (and likewise
+y ←cdq mod q), there are several issues.
+• If p is even, the code computes x = 0 regardless of the other input val-
+ues, because modular power computations were not implemented for even
+moduli [20].
+• If |p|b > 1024, the implementation of Montgomery reduction [22] does
+not return correct values, and so the output x is also incorrect.
+We were forced to work around some of these implementation errors in our
+attacks.
+3
+Attack Based on Modular Inverse Computation
+Our ﬁrst attack enables block-by-block plaintext recovery of AES-ECB blocks
+encrypted under kM. In particular, this enables RSA private key recovery, i.e. the
+recovery of privk. Let [B]kM be such a target ciphertext block with unknown
+target plaintext block B, for example corresponding to an unknown block of q
+from privk.
+This attack is in the malicious server setting, or equivalently the TLS-MitM
+setting, and makes use of the ECB encryption oracle described in Sect. 2.2. It
+exploits the error type ⊥5, which arises on line 7 and line 8 of DecodePrivk(privk)
+in Fig. 5 when gcd(p, q) ̸= 1. To get to this point, the server must submit inputs
+such that none of the previous error types are triggered. The server will only
+replace the [privk]kM value and expect to abort before executing DecryptSid(·, ·),
+so the only condition that must be satisﬁed is the one on line 2, which requires
+that the decrypted privk parses into 4 values without too much extra padding.
+Then, error ⊥5 can be distinguished from any of the errors that could follow,
+though with overwhelming probability this will be error ⊥4 from line 10 due to
+the server overwriting parts of privk.
+The main idea behind this attack rests in the observation that if the server
+can construct [privk∗]kM such that the decrypted and decoded p is divisible by a
+small prime r, and the decrypted and decoded q contains the target block B in its
+least-signiﬁcant position, then the outputting of error ⊥5 leaks that gcd(p, q) ̸= 1
+and thus (if some further conditions are satisﬁed), that q mod r = 0. From this,
+the server can learn the value of B mod r. Repeating this for a suﬃcient num-
+ber of diﬀerent primes ri and combining the values using the Chinese Remain-
+der Theorem (CRT), the server can learn the value of B mod r0 · . . . · rn−1.
+If |r0 · . . . · rn−1|b ≥128, the server recovers B.
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+201
+In the following subsections, we describe two versions of the attack in more
+detail, starting with the simple, block-aligned version and then describing an
+attack that is more general and resistant to simple ﬁxes. Both versions have been
+implemented and veriﬁed using our TLS-MitM setup described in Sect. 1.3.
+3.1
+Block-Aligned, Small-Length Version
+The attack proceeds in two distinct phases. The ﬁrst phase calls the ECB encryp-
+tion oracle to obtain a set of chosen-plaintext blocks, which are then combined
+with a target block to form the ciphertexts submitted to the client as part of the
+second phase. The second phase relies on the client making a number of online
+login attempts. The ECB encryption oracle calls are shown as [x]kM ←OECBkM(x)
+(if x consists of 2ℓblocks, this call will involve ℓuses of the actual oracle described
+in Sect. 2.2). The content of the modiﬁed ciphertexts that will be submitted to
+the client is shown in Fig. 6. Note that we aim to reduce the number of OECBkM()
+calls by ensuring most of the content consists of all-zero blocks (or blocks con-
+taining the value 1), which only need to be queried once.
+Fig. 6. The plaintext content of cti,t, where the all-zero blocks are light green, the
+blocks containing 1 are dark green and the placement of the target block B is in red.
+(Color ﬁgure online)
+Precomputation Using the ECB Encryption Oracle. Take {r0, . . . , rn−1} =
+{7, 11, . . . , 103}, n = 24 small odd primes such that their product R = n−1
+i=0 ri
+has |R|b ≥128. Let [B]kM be the target ciphertext block and denote by B∗the
+plaintext block computed as part of this attack.
+1. Generate a random prime p′ such that |p′|b = 256.
+2. Let d′ ←1, u′ ←1 and encode them as byte strings d′, u′ such that |d′|B =
+254, |u′|B = 126.
+3. Let rest ←len(d′) ∥d′ ∥len(u′) ∥u′ and obtain [rest]kM ←OECBkM(rest).
+4. For i ∈{0, . . . , n −1}, do the following:
+(a) Compute p ←p′·ri and encode it as a byte string p such that |p|B = 126.4
+(b) Let ptpi ←len(p) ∥p and obtain [ptpi]kM ←OECBkM(ptpi).
+5. For t ∈{0, . . . , rn−1 −1}, do the following:
+(a) Compute q∗←2128 ·t and encode it as a byte string q∗such that |q∗|B =
+126.
+(b) Let ptqt ←len(q∗) ∥q∗[0 : 110], which skips the last block of q∗to make
+space for the target. Obtain [ptqt]kM ←OECBkM(ptqt).
+6. For i ∈{0, . . . , n −1}, do the following:
+(a) For t ∈{0, . . . , ri −1}, do the following:
+Store cti,t ←[ptqt]kM ∥[B]kM ∥[ptpi]kM ∥[rest]kM.
+4 We include the prime p′ for several reasons. First, because of one of the uncaught
+errors, we must make sure that q mod p ̸= 0. Further, to avoid false positives from
+error ⊥5, we need the gcd(p, q) ̸= 1 signal to be equivalent to gcd(p, q) = ri.
+
+202
+M. R. Albrecht et al.
+Online Attack. Suppose we have a set of cti,t as described above.
+1. For i ∈{0, . . . , n −1}, do the following:
+(a) For t ∈{0, . . . , ri −1}, do the following:
+i. When the client initiates a login, respond to the client’s request with
+([kM]ke , cti,t, [m]pk , uh), where everything but cti,t is as it would be
+in an honest response.
+ii. If the client returns ⊥5, save the value of t and break out of this loop.
+(b) Save B∗
+i ←−2128 · t mod ri.
+2. Then, compute B∗mod R by solving the system B∗≡B∗
+i (mod ri) for i ∈
+{0, . . . , n −1} using CRT.
+Correctness. Notice that for each decrypted cti,t, DecodePrivk(·) results in p ←
+p′·ri and q ←2128·t +B. The error ⊥5 will be triggered if and only if gcd(p, q) ̸=
+1, which is equivalent to gcd(p, q) = ri, since p′ is a prime larger than q. Hence
+⊥5 is triggered if and only if q mod ri = 0, and so if and only if B ≡−2128 · t
+(mod ri). This means that for the computed value B∗
+i we have B∗
+i ≡B (mod ri).
+It follows that B∗≡B (mod R). Since R is such that |R|b ≥128 and |B|b = 128,
+we deduce that B∗= B (over the integers).
+Cost. First, we count the cost of recovering the target in terms of ECB encryption
+oracle calls, assuming that each repeated value (such as an all-zero block) is only
+queried once. As can be seen in Fig. 6, the encoding of q∗, p, d′ and u′ is block-
+aligned. The value rest consists of four non-zero blocks: two blocks that include
+a length encoding, and two identical blocks containing the value 1. Next, ptpi
+also has four non-zero blocks: one length-encoding block and three blocks for
+p′ · ri since |p′ · ri|b < 263 < 3 · 128; similarly, ptqt has two non-zero blocks: one
+length-encoding block and one block for t since |t|b ≤|rn−1|b < 128. Finally,
+notice that ptpi[0 : 16] is the same for all i, and similarly ptqt[0 : 16] is the
+same for all t, so the length-encoding blocks can be reused. Recalling that each
+use of the oracle returns two blocks of ciphertext, together the attack requires
+⌈1
+2 · (1 + 3 + 2 + n · 3 + rn−1)⌉= 91 ≈26.5 queries. Further, the result of these
+queries can be reused when recovering multiple blocks for a given target user.
+Second, we count the number of online login attempts. On average, the attack
+requires 1
+2 · n−1
+i=0 ri = 627 ≈29.29 logins (210.29 in the worst case).5
+3.2
+Full-Length Version
+The attack in Sect. 3.1 could technically be prevented by a number of simple
+checks, e.g. by moving the check on bit lengths before the client computes
+q−1 mod p (and so possibly triggers ⊥5), by ensuring that |p|b, |q|b = 1024 or
+that d, u ̸= 1. However, none of these changes would prevent this type of attack:
+5 Note that the attack can be easily modiﬁed to use one less login for each ri. This is
+because, in the online phase, if the server does not get a positive answer from the
+oracle for any of the values t ∈{0, . . . , ri −2}, it means that the value ri −1 is the
+correct one and so does not need to be submitted explicitly.
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+203
+here we provide a more general version that would still work if these changes
+were made. The content of the modiﬁed ciphertexts that will be submitted to
+the client is shown in Fig. 7.
+Fig. 7. The plaintext content of cti,t, where the all-zero blocks are light green, the
+parts containing ﬁxed values are dark green, the placement of the target block B is
+in red and the placement of the unmodiﬁed values from ct is in yellow. (Color ﬁgure
+online)
+Precomputation Using the ECB Encryption Oracle. As before, take
+{r0, . . ., rn−1} = {7, 11, . . . , 103}, n = 24 small odd primes such that their
+product R = n−1
+i=0 ri has |R|b ≥128. Let [B]kM be the target ciphertext block
+and denote by B∗the plaintext block computed as part of this attack. Let
+ct ←[privk]kM be the original ciphertext encrypting the user’s private RSA key.
+1. Let d′ ←22047 and encode it as a byte string d′ such that |d′|B = 256.
+2. Let ptd ←00 00 00 01 ∥len(d′) ∥d′[0 : 10] and get [ptd]kM ←OECBkM(ptd).
+3. Let [rest]kM ←ct[272 : |ct|B]. The slice begins with the ciphertext block that
+encrypts the most-signiﬁcant full block of the original d.
+4. For i ∈{0, . . . , n −1}, do the following:
+(a) Compute p ←21023 + 232 · ϱ + 1 for ϱ such that p ≡0 (mod ri) and p/ri
+is prime. Encode it as a byte string p such that |p|B = 128.
+(b) Let ptpi ←00 01 ∥len(p) ∥p[0 : 124] and get [ptpi]kM ←OECBkM(ptpi).
+5. For t ∈{0, . . . , rn−1 −1}, do the following:
+(a) Compute q∗←21023 + 2128+16 · t + 1 and encode it as a byte string q∗
+such that |q∗|B = 128.
+(b) Let ptqt ←len(q∗) ∥q∗[0 : 110] and obtain [ptqt]kM ←OECBkM(ptqt).
+6. For i ∈{0, . . . , n −1}, do the following:
+(a) For t ∈{0, . . . , ri −1}, do the following:
+Store cti,t ←[ptqt]kM ∥[B]kM ∥[ptpi]kM ∥[ptd]kM ∥[rest]kM.
+Correctness. In this version, the precomputation must construct a modiﬁed
+ciphertext such that all values q, p, d, u are of the expected bit length. Recall
+that the plaintext encoding has the form: len(q) ∥q ∥len(p) ∥p ∥len(d) ∥d
+∥len(u) ∥u ∥pad. Since each value is encoded by preﬁxing a two-byte length
+ﬁeld and the original lengths are either 1024 bits or 2048, the values in the
+resulting plaintext are not block-aligned. This is why we construct the “partial”
+block ptd in Step 2. separately: it is composed of the ﬁnal 4 bytes of p, len(d′)
+and the ﬁrst 10 bytes of d′. Similarly, the block-aligned plaintext ptp in Step 4b
+begins with another partial block which consists of the ﬁnal 2 bytes of q∗, len(p)
+
+204
+M. R. Albrecht et al.
+and the ﬁrst 12 bytes of p.6 Finally, the modiﬁed blocks are “stitched” together
+in Step 6a as in the simple version of the attack, ensuring that the target B is
+interpreted as the last “full” block of q.
+Cost. Finding p of the correct form for each i in Step 4a is easy and takes
+326 ≈28.35 trials on average for the given primes ri. This step is independent
+of user data and so can be reused to attack multiple users. With reference to
+Fig. 7, note that both ptpi and ptqt will likely have two non-zero blocks each.
+We assume the reuse of the length-encoding blocks as in Sect. 3.1. Thus the
+attack requires ⌈1
+2 · (1 + 1 + 2 + n + rn−1)⌉= 66 ≈26.04 queries.
+Online Attack. Suppose we have a set of cti,t as described above.
+1. For i ∈{0, . . . , n −1}, do the following:
+(a) For t ∈{0, . . . , ri −1}, do the following:
+i. When the client initiates a login, respond to the client’s request with
+([kM]ke , cti,t, [m]pk , uh), where everything but cti,t is as it would be
+in an honest response.
+ii. If the client returns ⊥5, save the value of t and break out of this loop.
+(b) Save B∗
+i ←(216)−1 · (−21023 −2128+16 · t −1) mod ri.
+2. Then, compute B∗mod R by solving the system B∗≡B∗
+i (mod ri) for i ∈
+{0, . . . , n −1} using CRT.
+Correctness. Recall that for each decrypted cti,t, DecodePrivk(·) gets p ←
+21023 + 232 · ϱ + 1 and q ←21023 + 2128+16 · t + 216 · B + 1. The overwrit-
+ten values are encoded so that the parsing succeeds, and there are no other
+explicit errors that could be triggered before the error we are using for the
+attack.7 The error ⊥5 will be triggered if and only if gcd(p, q) ̸= 1, which
+is equivalent to gcd(p, q) = ri with high probability, since p/ri is a large
+prime and the probability that q ≡0 (mod (p/ri)) is ≈1/(p/ri) ≤2−1016.
+Hence ⊥5 is triggered if and only if q mod ri = 0, and hence if and only if
+B = (216)−1 · (−21023 −2128+16 · t −1) mod ri. Thus we have B∗
+i ≡B (mod ri).
+The rest of the analysis follows as for the simpler version of the attack.
+Cost. The attack requires the same number of online login attempts as the
+simpler version in Sect. 3.1. We conﬁrmed this in our implementation: in 500 runs
+of the attack recovering random ECB-encrypted blocks, the average number of
+login attempts required by the full version of the attack was 632 ≈29.30. The
+histogram is shown in Fig. 8.
+6 That is, ptd[0 : 4] = p[124 : 128] for all p, and ptpi[0 : 2] = q∗[126 : 128] for all q∗.
+7 There is a possibility that d ∗mod (p −1)(q −1) = 0 where d ∗←d ′ +(d mod 21968)
+and d is the original value encrypted in ct. Because of the uncaught non-termination
+bug arising during the computation of (d ∗)−1 mod (p −1)(q −1), in this case the
+attack would fail, but this is highly unlikely to happen in practice.
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+205
+Fig. 8. Number of login attempts used by the attack over 500 runs.
+4
+Attack Based on Small Subgroups
+Here, we present our second AES-ECB decryption attack. In terms of login
+attempts it is less eﬃcient than the attack in Sect. 3. However it requires fewer
+uses of the ECB encryption oracle. Further, it exploits a number of additional
+errors and also behaviours resulting from the “legacy” check on the second byte
+of the RSA plaintext.
+The attack is also in the malicious server/TLS-MitM setting and uses the
+ECB encryption oracle from Sect. 2.2 with the aim of recovering blocks of d
+from the original privk (or any other AES-ECB-encrypted blocks that can be
+placed in their position). It exploits the errors ⊥2 and ⊥3 arising on line 5 and
+line 6 of DecPrivkAndSid(kM, [privk∗]kM , c∗, uh∗) in Fig. 5 for an adversarially
+supplied privk∗(created with the help of the ECB encryption oracle), c∗and
+uh∗. It also requires working around some of the uncaught exceptions described
+in Sect. 2.3. To reach the needed error, the checks that trigger the earlier errors
+⊥1, ⊥4, ⊥5, ⊥6 and ⊥7 must all be satisﬁed: uh∗must be a UTF-8 string of size
+11, privk∗must encode q∗, p∗, d∗, u∗of suﬃcient length such that gcd(q∗, p∗) =
+1 and gcd(d∗, (p∗−1)(q∗−1)) = 1 so that the corresponding inverses exist,
+u∗= (q∗)−1 mod p∗and c∗< N ∗where N ∗= p∗· q∗.
+Under these constraints, observe that DecryptSid(sk, c∗) behaves diﬀerently
+depending on whether the second byte of the decrypted value m∗←(c∗)d∗mod
+N ∗is 00, where m∗is ﬁrst zero-padded to the length of N ∗to form m∗. Suppose
+the server supplied p∗, q∗such that |N ∗|B = 256. Let m ←DecryptSid(sk, c∗)
+and m′ be the intermediate value such that m = m′[2 : |m′|B]. Then, based on the
+error returned by the client, the server can distinguish the following two cases:
+– Case (⊥2, 254): This means that |m|B = 254, so |m′|B = 256 = |N ∗|B = |m∗|B,
+so the condition on line 9 was not satisﬁed, i.e. m∗[1] = 00.8
+8 Note that the server does not know whether this is because prior to zero-padding, we
+have |m∗|B ≤|N ∗|B −2 and therefore trivially m∗[1] = 00 or because |m∗|B = |N ∗|B
+and m∗[1] = 00. However, the root cause is immaterial to our attack.
+
+206
+M. R. Albrecht et al.
+– Case ⊥3: This means that |m|B = 255, so |m′|B = 257 = |N ∗|B + 1 = |m∗|B + 1,
+which can only arise if m′ = 00 ∥m∗and so m∗[1] ̸= 00.
+A similar case analysis can be done for arbitrary values of |N ∗|B; then the
+errors may be swapped. However due to the bugs in the modular power imple-
+mentation in MEGA code, the attack actually only works for |N ∗|B ≤256.
+We explain next how to exploit this behavioural diﬀerence to leak information
+about a target user’s RSA private key.
+The server constructs [privk∗]kM using the ECB encryption oracle such that
+in the “d” ﬁeld it knows the plaintext for all blocks except the least-signiﬁcant
+full block. That block will be the target of the attack; it can be an arbitrary
+AES-ECB-encrypted block [B]kM. Let d∗denote the “d” component constructed
+in this way. The server must also precompute p∗, q∗of a special form and a
+number of values m∗with m∗[1] = 00 such that it can interpret one of the errors
+arising on decryption of a corresponding ciphertext as conﬁrmation of a correct
+“guess”.
+At a high level, the primes p∗and q∗are constructed so that (p∗−1)(q∗−1)
+contains small prime factors ri of a given bit length such that their product is
+at least 128 bits.9 Let G = (Z/N ∗Z)× so that |G| = (p∗−1)(q∗−1). For each
+factor ri, the server computes gi ∈G such that gi has order ri and such that
+a value ti ∈{1, . . . , ri −1} (or a set of such values Ti) exists with the property
+that gi ti mod N ∗has second byte 00 after zero-padding to the length of N ∗. The
+value of u∗is then set to (q∗)−1 mod p∗.
+Then, in the online phase of the attack, the server submits privk∗constructed
+using the ECB encryption oracle to contain q∗, p∗, d∗, u∗. For each ri, it sets
+xi = 1, 2, . . . , ri −1 and submits c∗
+i,t ←gi xi mod N ∗until the client returns
+the error that conﬁrms the second byte of the decrypted value was 00 (which is
+(⊥2, 254) in the case that |N ∗|B = 256 which we will use in the attack). Then,
+based on the precomputed values it learns that, for the speciﬁc value xi triggering
+the error, xi · d∗≡ti (mod ri). Here d∗is a value that is known except for its
+least signiﬁcant full block, where it contains B. From this equation, the value
+of B (mod ri) can be recovered. Finally, using CRT and taking some care with
+non-block-aligned inputs, allows recovery of the block B.
+The attack is described in more detail in the following subsections, ﬁrst a
+simpler but less-eﬃcient version and then the full version. The ECB encryption
+oracle calls are shown as [x]kM ←OECBkM(x) as before. Since both versions of the
+attack must “stitch” AES-ECB blocks together to create the ﬁnal ciphertext,
+we provide the algorithm in Fig. 9 to avoid repetition. This algorithm combines
+the chosen values q∗, p∗, d′, u∗so that they parse as expected, with the target
+block B being placed in the position of the least-signiﬁcant full block of d∗and
+overwriting the corresponding block of d′. This is visualised in Fig. 10.
+9 The factors do not need to be common between (p∗−1) and (q∗−1), and can be
+freely distributed between the two.
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+207
+Stitch(q∗, p∗, d′, u∗, [B]kM)
+1 :
+pt0 ←len(q∗) ∥q∗∥len(p∗) ∥p∗∥len(d′) ∥d′[0 : 234]
+2 :
+pad ←$ ({0, 1}8)8
+// random padding, could also be 00s
+3 :
+pt1 ←d′[250 : 256] ∥len(u∗) ∥u∗∥pad
+4 :
+[pt0]kM ←OECBkM(pt0)
+5 :
+[pt1]kM ←OECBkM(pt1)
+6 :
+ct∗←[pt0]kM ∥[B]kM ∥[pt1]kM
+7 :
+return ct∗
+Fig. 9. Combining modiﬁed values produced using the ECB encryption oracle with the
+target ciphertext block in the correct format, reusing known AES-ECB blocks where
+possible. This assumes that |q∗|B = |p∗|B = |u∗|B = 128 and |d′|B = 256, as is the case
+for legitimate MEGA keys.
+Fig. 10. The plaintext content of ct∗, with the placement of the target block B in red.
+(Color ﬁgure online)
+4.1
+Simpliﬁed Version
+This version of the attack assumes a single ti value per factor, which simpliﬁes
+the presentation but imposes a high cost at the precomputation stage. Further,
+there is a non-negligible probability of the attack aborting and thus failing to
+complete. We will remove this restriction in the full version of the attack below.
+Precomputation. Take {r0, . . . , rn−1} where each ri is a prime such that
+|ri|b = 8, and n is such that |n−1
+i=0 ri|b ≥128. This imposes the constraint
+16 ≤n ≤19. Let [B]kM be the target ciphertext block.
+1. Find primes p∗, q∗such that |p∗|b = |q∗|b = 1024 and
+p∗= 2 ·
+⎛
+⎝
+⌈n/2⌉−1
+
+i=0
+ri
+⎞
+⎠· p′ + 1,
+q∗= 2 ·
+⎛
+⎝
+n−1
+
+i=⌈n/2⌉
+ri
+⎞
+⎠· q′ + 1
+where p′, q′ is each a product of 2-4 large primes.10 Encode p∗, q∗as byte
+strings p∗, q∗.
+2. Set N ∗←p∗· q∗and G ←(Z/N ∗Z)×.
+10
+These primes could repeat, the goal here is to avoid (p∗−1)(q∗−1) having any
+other small factors except for r0, . . . , rn−1.
+
+208
+M. R. Albrecht et al.
+3. For i ∈{0, . . . , n −1}:
+(a) Find gi ∈G of order ri, e.g. by sampling h ←$ G and computing gi ←
+h(p∗−1)(q∗−1)/ri mod N ∗until gi ̸= 1.
+(b) Find a value ti ∈{1, . . . , ri −1} such that for m ←gti
+i mod N ∗; m ←
+ZeroPad(m, N ∗), we have m[1] = 00. If no such ti is found or there are
+multiple possible values, restart the precomputation.
+4. Compute u∗←(q∗)−1 mod p∗and encode it as a byte string u∗with |u∗|b =
+1024.
+5. Let d′ ←22047 + 1 and encode it as a byte string d′ with |d′|b = 2048.
+6. Obtain ct∗←Stitch(q∗, p∗, d′, u∗, [B]kM). Let d∗←d′ + 248 · B (where B is
+the unknown target block) denote the unknown value in the “d” ﬁeld that
+will arise on decrypting ct∗.11
+Success Probability. For random m ∈G we have Pr[m[1] = 00] = 2−8. For each
+factor ri the probability that Step 3b ﬁnds exactly one suitable ti is (ri −1)·2−8·
+	
+1 −2−8
+ri−2, which is greater than 0.18 for 27 < ri < 28. However, this needs
+to occur for all n factors where n ≥16 to get a product of suﬃcient length to
+recover B using CRT, so the overall success probability is of the order ≈2−39 or
+less. To reduce the required amount of precomputation, in Sect. 4.2 we increase
+the bit length of each factor to ensure that there is at least one suitable ti for
+each ri and provide a strategy to disambiguate between multiple ﬁtting ti values.
+Online Attack. Let R = n−1
+i=0 ri and ct∗, {gi}i∈I , {ti}i∈I be as computed
+before, for I = {0, . . . , n −1}.
+1. When the client initiates a login, respond to the client’s request with ([kM]ke,
+ct∗, [m]pk, uh), where everything but ct∗is as it would be in an honest
+response. If the client returns ⊥6, abort.
+2. For i ∈{0, . . . , n −1}, do the following:
+(a) For x ∈{1, . . . , ri −1}, do the following:
+i. Compute c∗
+i,x ←(gi)x mod N ∗.
+ii. When the client initiates a login, respond to the client’s request with
+([kM]ke , ct∗, c∗
+i,x, uh), where everything but ct∗and c∗
+i,x is as it would
+be in an honest response.12
+iii. If the client returns (⊥2, 254), save the value of x and break out of
+this loop.
+(b) If there is a saved value x, then we have d∗≡x −1 · ti (mod ri) for
+unknown d∗.
+3. Then, use CRT to compute d∗mod R from the values collected in Step 2b.
+Recall that by construction d∗= d′ + 248 · B, so d∗= 22047 + 248 · B + 1.
+Hence compute
+11 Note that by the choice of d ′, overwriting the least signiﬁcant full block of d ′ with
+B is equivalent to adding 248 · B to d ′.
+12 An honest response refers to the data that an honest server would have sent. Note
+that in this case, the “honest” uh will not match the value recovered from c∗
+i,x, but
+this check only comes after the errors triggered by the attack. The attacker could
+equally replace the uh value with an arbitrary 11-byte UTF-8 string.
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+209
+B ≡
+	
+248
+−1 ·
+	
+d∗−22047 −1
+
+(mod R),
+to recover the target plaintext block since |R|b ≥128.
+Cost. In the worst case, the main cost of the online attack is 
+i∈I(ri −1) login
+attempts. This is bounded from above by n · (28 −1) ≈212.24 for n ≤19. In the
+average case, for each i we expect Step 2a to conclude after approximately 1
+2 ·28
+trials, so the overall bound becomes n · 27 ≈211.24 for n ≤19.
+Probability of Abort. Note that the attack aborts if it receives error ⊥6. This error
+is returned whenever the decrypted d∗= d′ + 248 · B is such that gcd(d∗, (p∗−
+1)(q∗−1)) ̸= 1. Since d∗is odd by construction,13 the error can only be caused
+if at least one of the following is true:
+– d∗≡0 (mod ri) for at least one ri,
+– d∗≡0 (mod p′
+j) for at least one p′
+j | p′, or
+– d∗≡0 (mod q′
+k) for at least one q′
+k | q′.
+The values p′
+j, q′
+k are large primes by construction, so the probability of an
+abort being caused by those cases is negligible. However, each factor ri is only
+8 bits in size, which means that assuming a random B the probability that
+the attack aborts because d∗≡0 (mod ri) for at least one ri is bounded by
+n · 2−7 ≈0.15 with n ≤19. In Sect. 4.2, we discuss strategies for avoiding the
+abort.
+Correctness. Now, assume the attack does not abort. By construction, the values
+of q∗, p∗, d′, u∗pass the check on bit length, we have gcd(q∗, p∗) = 1, u∗=
+(q∗)−1 mod p∗and all c∗
+i,x < N ∗. During DecryptSid(sk, c∗
+i,x), the client will
+compute m =
+	
+c∗
+i,x
+
+d∗
+mod N ∗= (gi)x·d∗
+mod N ∗. If it is the case that m =
+(gi)ti mod N ∗and therefore x ·d∗≡ti (mod ri), the second byte of zero-padded
+m will be 00 and so the client will return (⊥2, 254) to the server. Otherwise, it
+will proceed with the computation and with very high probability return ⊥3,
+since the uh value will not match the relevant substring of m. Hence the attack
+recovers the target plaintext block.
+4.2
+Full Version
+Here, we provide strategies to improve the running time and the success prob-
+ability of our second attack. First, we discuss the use of multiple ti values per
+factor ri, incorporate this into the attack and show the eﬀect of this strategy.
+For practical purposes, this strategy is already suﬃcient to reduce the precom-
+putation cost and the likelihood of aborts.
+13
+This is also why we cannot make the block-aligned simpliﬁcation for this attack,
+because if we aligned it such that the least-signiﬁcant block of d ∗is full and therefore
+placed our target block B there, then if B ≡0 (mod 2) the client would output error
+⊥6 on all queries.
+
+210
+M. R. Albrecht et al.
+In this version of the attack, we increase the bit length of the factors ri. As
+a result, the probability of ﬁnding a suitable ti value during precomputation is
+increased. However this also implies that there will be more than one such value.
+We therefore have to also amend the online part of the attack to provide a way
+of determining which t ∈Ti value has caused the expected error for a given x.
+There are multiple ways in which this could be achieved, and here we describe
+one option.
+Take ri, Ti and assume that we got the (⊥2, 254) error for some x ∈
+{1, . . . , ri −1}. We can test each potential value tj ∈Ti by submitting another
+query c∗
+i,xj ←(gi)xj mod N ∗where xj ←x · t−1
+j
+mod ri. If the guess for tj is
+correct, we have x · d∗≡tj (mod ri), and so decryption of c∗
+i,xj will produce
+(gi)xj ·d∗mod N ∗= (gi)x·t−1
+j
+·d∗mod N ∗= gi as the plaintext. Then, as long as
+gi is such that its second byte is not 00, which we can ensure in the precompu-
+tation phase, the check that produces ⊥2 will pass. Since the server knows gi
+and is able to set uh to arbitrary 11-byte values, it can also make sure to pass
+the check that produces ⊥3, and therefore get 43 bytes of gi from the client via
+the returned sid value when the guess is correct. However, if the guess is not
+correct, it is very unlikely that the server-modiﬁed uh would match the resulting
+plaintext, leading to ⊥3. So the server can distinguish between the two cases.
+Precomputation. Take {r0, . . . , rn−1} where each ri is a prime such that
+|ri|b = 12, and n is such that for R ←n−1
+i=0 ri we have |R|b ≥128, so
+11 ≤n ≤12. Let [B]kM be the target ciphertext block.
+1. Find primes p∗, q∗such that |p∗|b = |q∗|b = 1024 and
+p∗= 2 ·
+⎛
+⎝
+⌈n/2⌉−1
+
+i=0
+ri
+⎞
+⎠· p′ + 1,
+q∗= 2 ·
+⎛
+⎝
+n−1
+
+i=⌈n/2⌉
+ri
+⎞
+⎠· q′ + 1
+where p′, q′ is each a product of 2-4 large primes. Encode p∗, q∗as byte strings
+p∗, q∗.
+2. Set N ∗←p∗· q∗and G ←(Z/N ∗Z)×.
+3. For i ∈{0, . . . , n −1}:
+(a) Find g ∈G of order ri, e.g. by sampling h ←$ G and computing g ←
+h(p∗−1)(q∗−1)/ri mod N ∗until g ̸= 1.
+(b) Initialise Ti = ∅.
+(c) For t ∈{1, . . . , ri −1}, do the following:
+i. Let g′ ←ZeroPad(g′, N ∗) for g′ ←gt mod N ∗.
+ii. If g′[1] = 00, add t to Ti. Else if g′[17 : α] for some α ≥28 is a valid
+UTF-8 string of size 1114, save gi ←g′, a ←t and uh∗
+i ←g′[17 : α].
+(d) If Ti = ∅or a is undeﬁned, restart the precomputation.
+14 Note that an 11 B byte string interpreted as a valid UTF-8 string will likely not be a
+string of size 11, i.e. a string consisting of 11 characters, since not all byte values are
+interpreted as text and non-ASCII characters require multiple bytes to encode [36].
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+211
+(e) Shift Ti by replacing each t ∈Ti by t · a−1 mod ri. This ensures that the
+values in Ti are with respect to the new generator gi instead of g.
+4. Compute u∗←(q∗)−1 mod p∗and encode it as a byte string u∗with |u∗|b =
+1024.
+5. Compute d′ ←22047 + 248+128 · δ + 1 for δ < R such that d′ ≡0 (mod R).
+Encode it as a byte string d′ with |d′|b = 2048.
+6. Obtain ct∗←Stitch(q∗, p∗, d′, u∗, [B]kM).
+Success Probability. Increasing the bit length of the factors means that now
+for each factor ri the probability that Step 3(c)ii ﬁnds at least one suitable t
+is 1 −(1 −2−8)ri−1, which is greater than 0.9996 for 211 < ri < 212. Across
+all n factors for n ≤12, it is still greater than 0.99. Next, the probability
+that a random 11-byte string is a valid UTF-8 string is ≈0.001634. Hence
+for each factor ri the probability that at least one such string will be found is
+1 −(1 −0.001634)ri−1 > 0.9648, and across all factors it is at least 0.65. In
+practice, if the precomputation fails at this point, it can simply be re-run again
+with diﬀerent ri values.
+Cost. This version tests all possible values of t for every ri, so overall it must
+check at most n · 212 ≈215 values of gt (these can however be cycled through
+for each ri). The prime generation is a one-time cost in the sense that the values
+can be reused in attacks on multiple users. Finally, since d′ will be composed
+mostly of zero-blocks, building the ciphertext ct∗requires up to 15 uses of the
+ECB encryption oracle (which, recall, produces 2 blocks at a time).
+Online Attack. Let ct∗, {gi}i∈I , {Ti}i∈I be the values computed before where
+I = {0, . . . , n −1}.
+1. When the client initiates a login, respond to the client’s request with ([kM]ke,
+ct∗, [m]pk, uh), where everything but ct∗is as it would be in an honest
+response. If the client returns ⊥6, abort.
+2. For i ∈I, do the following:
+(a) For x ∈{2, . . . , ri −1}, do the following:
+i. Compute c∗
+i,x ←(gi)x mod N ∗.
+ii. When the client initiates a login, respond to the client’s request with
+([kM]ke , ct∗, c∗
+i,x, uh), where everything but ct∗and c∗
+i,x is as it would
+be in an honest response.
+iii. If the client returns (⊥2, 254), save the value of x and break out of
+this loop.
+(b) If Ti = {ti} has a single element, skip this step. Otherwise, for t ∈Ti, do
+the following:
+i. Let x ′ ←x · t−1 mod ri.
+ii. Compute c∗
+i,x ′ ←(gi)x ′ mod N ∗.
+iii. When the client initiates a login, respond to the client’s request with
+([kM]ke , ct∗, c∗
+i,x ′, uh∗
+i ), where only [kM]ke is as it would be in an honest
+response.
+
+212
+M. R. Albrecht et al.
+iv. If the client returns sid = gi[1 : 44], save the value ti ←t and break
+out of this loop.
+(c) We have that d∗= d′ + 248 · B ≡x −1 · ti (mod ri), and so B ≡
+	
+248
+−1 ·
+x −1 · ti (mod ri).
+3. Then, use CRT to compute B mod R from the values collected in Step 2c,
+which in turn recovers the target plaintext block since |R|b ≥128.
+Success Probability. As in the attack in Sect. 4.1, this attack aborts if it receives
+error ⊥6. However, the probability that this happens becomes smaller with the
+increased bit length of the factors ri. Assuming a random B, for 12-bit factors
+the probability of an abort is bounded by n · 2−11 ≈0.006 with n ≤12. In the
+full version of this work we give a more complex attack strategy that avoids the
+abort altogether.
+In practice, the attack’s success probability may be impacted by another
+factor, namely diﬀering implementations of UTF-8 validation. Suppose that the
+values g produced in Step 3(c)ii of the precomputation in Sect. 4.2 have valid
+UTF-8 substrings of size 11 in Python: this does not guarantee that they will
+be interpreted as such by the Javascript webclient. This requires implementing
+additional strategies for disambiguation in case the UTF-8-based one never yields
+the expected sid request.15
+Cost. In the worst case, the main cost of the online phase of the attack is the
+
+i∈I(ri −1) login attempts needed. This is bounded by n ·(212 −1) ≈215.58 for
+n ≤12. In the average case, for each i we expect Step 2a to conclude after at
+most 28 trials and Step 2b to ﬁnish after around 1
+2 ·|Ti| ≈1
+2 ·ri ·2−8 trials. Added
+together, the number of login attempts needed in the average case is bounded
+by n · (28 + 1
+2 · 212 · 2−8) ≈211.63 for n ≤12. Performing the experimental
+analysis over a large number of runs as in Sect. 3.2 would be more diﬃcult due
+to the interaction between the disambiguation strategies and the web client with
+automated logins, which causes the web client to freeze or begin sending requests
+in large batches. This can impact the success rate (in particular, the attack may
+produce one x or t value that is slightly oﬀ) and hinders automating the attack.
+We stress that this is purely an artefact of our proof-of-concept implementation.
+Note that to keep the presentation of the attacks simpler, we have assumed
+speciﬁc values of |ri|b and thus constrained the value of n. In reality, using
+diﬀerent values would allow making a diﬀerent tradeoﬀbetween the precom-
+putation cost and the number of login attempts needed in the online phase.
+For instance, using 10-bit primes would lower the (online) worst-case bound to
+n · (210 −1) ≈213.91 for n ≤15, but slightly increase the (online) average-case
+bound to n · (28 + 1
+2 · 210 · 2−8) ≈211.92 login attempts. It would also make the
+15 One alternative is to instead for all t ∈Ti submit x ′ ←x · t−1 · tj mod ri for some
+tj ∈Ti, tj ̸= t, and use the original error (⊥2, 254) as the conﬁrmation signal. This
+still has a potential for false positives and false negatives, however. A ﬁnal, and most
+expensive, failover strategy is then to cycle through all values of x, saving the ones
+for which the client returns (⊥2, 254) and then running an oﬄine computation to
+determine which x values are matched to which t values.
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+213
+precomputation phase much less likely to succeed in a single run: the probability
+of ﬁnding suitable t values for all ri would fall to around 0.11, while the proba-
+bility of ﬁnding generators with suitable UTF-8 substrings for all ri would only
+be around 0.0002.
+5
+Recovering the RSA Private Key
+Our attacks in Sects. 3 and 4 can be seen as building generic AES-ECB decryp-
+tion oracles. In this section, we turn this capability into an RSA private key
+recovery attack. Naively we would expect to call our costly AES-ECB decryp-
+tion oracle up to nine times: each factor p, q of N has 1024 bits, but these are
+not perfectly aligned with AES block boundaries, necessitating to cover (partial)
+plaintexts from nine diﬀerent 128-bit blocks. However, using a post-processing
+stage, we can reduce this number to four.
+In particular, as illustrated in Fig. 4, the block alignments of p and q diﬀer.
+For reasons that will become apparent below we will need to recover at least
+512 bits. Based on the speciﬁc alignments, we will aim to recover the 512+16
+least signiﬁcant bits of q: 512 bits (i.e. four 128-bit blocks) are recovered using
+the attacks from Sects. 3 and 4 and the least signiﬁcant 16 bits are “recovered”
+using exhaustive search (which avoids the query cost of recovering a ﬁfth block).
+If instead we targeted p, we would need to recover 32 bits using exhaustive
+search, which would have prohibitive cost. Thus, next, we discuss how to recover
+the remaining bits of q given the ℓ= 512 + 16 least signiﬁcant bits of q. In
+particular, we will solve the following computational problem.
+Deﬁnition 1. Let N = p · q be a 2048-bit RSA modulus with p, q having 1024
+bits each. Given ℓconsecutive least signiﬁcant bits of q, recover q.
+Our approach is a simple combination of exhaustive search, lattice reduction
+and root ﬁnding over Z following Coppersmith’s method [6]. In particular, we use
+the Howgrave-Graham variant [8,9,13,28] of this algorithm. Let ⌈log2 q⌉−ℓ<
+1024, q = 2⌈log2 q⌉−ℓ· r + q′
+0, where r are the bits we are trying to recover
+and |q′
+0| ≤2ℓare the known bits of q. Then r satisﬁes f ′(x) ≡0 mod q for
+f ′(x) := q′
+0 + 2⌈log2 q⌉−ℓ· x mod q. Given this we can consider
+q0 := 2−⌈log2 q⌉+ℓ· q′
+0
+and
+f(x) := q0 + x mod q
+and note that r still satisﬁes f(x) ≡0 mod q. That is, we translate our prob-
+lem into one where the most signiﬁcant bits are known rather than the least
+signiﬁcant ones, cf. [28].
+From this, the algorithm proceeds by constructing several polynomials that
+evaluate to zero modulo q or a multiple thereof, such as (powers of) N. In more
+detail, Let h ≥2 ∈N and u < h ∈N, for 0 ≤i < h we let
+fi(x) :=
+
+N u−i · (q0 + x)i
+for 0 ≤i < u,
+xi−u · (q0 + x)u
+for u ≤i < h.
+For example, picking h = 4 and u = 2 we get
+
+214
+M. R. Albrecht et al.
+N 2,
+N · q0 + N · x,
+q2
+0 + 2 q0 · x + x2
+and
+q2
+0 · x + 2 q0 · x2 + x3.
+First, note that all fi(x) evaluate to zero modulo qu at the correct r. Second,
+note the maximal degree of the fi(x) is h −1, i.e. max0≤i<h(deg(fi(x))) = h −1
+and thus each polynomial has at most h coeﬃcients.
+Now, letting X = 2⌈log2 q⌉−ℓand f (j)
+i
+denote the coeﬃcient of xj in fi(x),
+we construct a matrix A where the entry Ai,j := f (j)
+i
+· Xj. Continuing with our
+example, we would have
+A :=
+⎛
+⎜
+⎜
+⎝
+N 2
+0
+0
+0
+N · q0 N · X
+0
+0
+q2
+0
+2 q0 · X
+X2
+0
+0
+q2
+0 · X 2 q0 · X2 X3
+⎞
+⎟
+⎟
+⎠.
+Since the matrix is triangular we can read oﬀthe determinant det(A) =
+N u·(u+1)/2 · Xh·(h−1)/2. The rows of this matrix A span a lattice which con-
+tains a vector v of Euclidean norm ∥v∥≤
+√
+h ·
+	
+N u·(u+1)/2 · Xh·(h−1)/2
+1/h by
+Minkowski’s theorem. In other words, there exists an integer-linear combination
+of the rows of A that produces a vector with at most this Euclidean norm.
+Using lattice reduction we can ﬁnd this shortest vector.16 Now, given a vector of
+Euclidean norm ∥v∥we know that its ℓ1 norm, i.e. the sum of the absolute values
+of its entries, is bounded by |v|1 ≤
+√
+h · ∥v∥. Finally, if v ̸= 0 and |v|1 ≤qu,
+we can extract a polynomial that evaluates to zero modulo qu on r but which
+evaluated at r is strictly smaller than qu.17 In other words, this polynomial eval-
+uates to zero at r over Z. The algorithm concludes by ﬁnding the roots of this
+polynomial, which can be accomplished in polynomial time (and eﬃciently in
+practice).
+To select h and u, by abuse of notation let h also be a formal variable and
+set u := 1/2 · h −1. As in [8, p. 102], we then ﬁnd a root > 0 of
+1024 −ℓ
+2048
+· h · (h −1) −u · h + u · (u + 1).
+This succeeds for ℓ> 512 and the solution grows as ℓapproaches 512 from above.
+As mentioned above, in our setting we consider ℓ= 512 + 16: We run the
+attack from Sect. 3 on four blocks to recover 512 bits and run an exhaustive
+search over the remaining 16 bits (which are contained in a non-aligned block).
+In this setting, we picked h = 36 and u = 18. In our experiments, using LLL,
+ﬁnding a suﬃciently short vector takes about 26 s on a Intel(R) Xeon(R) Gold
+6252 CPU @ 2.10 GHz using SageMath/FPLLL [31,32]. In 1024 experiments,
+16 The traditional presentation of this algorithm invokes the LLL algorithm which gives
+a short vector that is at most an exponential factor away from the shortest vector.
+However, the lattice dimensions involved here are in the range where the shortest
+vector problem (SVP) can be solved eﬃciently in practice – say, up to dimension
+150 [7] – and we may thus simply assume we solve SVP. In any case, the exponential
+factor is ≈1.0219h which is < 3 for h ≤50.
+17 We extract g(x) as g(j) := vj/Xj ∈Z.
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+215
+we obtained a success rate of 100%. Thus, we expect to be able to recover q in
+time 216 · 26 seconds, or about 20 core days.18
+The overall cost of the RSA private key recovery attack is 4 · 29.29 = 211.29 ≈
+2500 login attempts, 66 ECB encryption oracle calls, and about 20 core days of
+computation (using the attack of Sect. 3 in combination with the attack in this
+section).
+6
+Attacking Unpatched Clients
+We brieﬂy revisit the attacks of [2] against unpatched MEGA clients in the light
+of our discovery of the ECB encryption oracle described in Sect. 2.2.
+Attack 1 in [2] uses an estimated 512 logins to recover a target user’s RSA
+private key. The number of logins required was subsequently reduced to 6 in [29]
+by using more sophisticated lattice techniques.
+Attack 2 in [2] then exploits knowledge of that private key to recover two
+blocks of AES-ECB plaintext per login. This is done by overwriting two blocks
+of the encrypted version of u with the target AES-ECB ciphertext blocks and
+selecting a carefully crafted RSA ciphertext in the authentication protocol; the
+session ID returned by the client in that protocol then leaks the two AES-ECB
+plaintext blocks. This approach is used to build an eﬃcient procedure for recov-
+ering ﬁle encryption keys in [2].
+Interestingly, however, the RSA private key used in Attack 2 in [2] does
+not need to be the target user’s true key – it only needs to be a key known
+to the adversary and any valid RSA private key (in the appropriate format)
+will do. Hence, an adversary can use the ECB encryption oracle to create a
+suitably encrypted, known RSA private key. By carefully reusing all-zero blocks
+for most of q, p and d, the number of ECB encryption oracle calls needed can
+be made as small as 7. The adversary then applies Attack 2 from [2] with the
+target AES-ECB ciphertext blocks being selected from those encrypting the least
+signiﬁcant bits of q (from the actual private key). With two applications of the
+attack, the adversary recovers 4 plaintext blocks, or 512 bits of q. Applying the
+lattice attack from Sect. 5, the adversary recovers the full RSA private key.
+The cost of the attack is 2 login attempts and a small number of ECB encryp-
+tion oracle calls.
+Note that Attack 2 of [2] is prevented by patched MEGA client code because
+of the requirement that the client-selected 11-byte string uh appear in m at a
+speciﬁc location and because overwriting u with a target ciphertext would make
+the check at line 10 in DecodePrivk(privk) fail.
+18 We note that this computation is “proudly parallel” or “embarrassingly parallel”.
+This is because for each of our 216 guesses we can run an independent lattice reduc-
+tion. We also note that the running time is independent of whether the input instance
+corresponds to a correct or incorrect guess. Moreover, incorrect solutions resulting
+from incorrect guesses can be ﬁltered out using the known public key.
+
+216
+M. R. Albrecht et al.
+7
+Discussion and Future Work
+On the one hand, the conclusion to be drawn from this work for practitioners
+and designers is no diﬀerent from the one derived from [2]. The root causes
+at play here were already identiﬁed in [2], whose suggestion of protecting the
+integrity of encrypted keys using a MAC would have prevented the attacks in
+this work as well. Further, the existence of the ECB encryption oracle in a feature
+completely separate from the attacked protocol highlights the continued fragility
+of the MEGA infrastructure, made possible also by the lack of key separation.
+However, our attacks also highlight issues going beyond the ones exposed
+in previous works. First, some of the errors that our attacks exploit as oracles
+are not explicit, but derive from bugs in the big integer arithmetic provided by
+asmcrypto.js. This presents a challenge already mentioned in [3] which called
+for a veriﬁed big integer library that could serve as a common core for diﬀerent
+projects. In the case considered here, such a library would need to be cross-
+compilable to JavaScript or WebAssembly. We consider this a pressing area for
+future work.
+There are also further lessons to be drawn for a cryptanalytic audience. First,
+our attacks serve as an additional example of key overwriting attacks [2,5,10],
+a class of attacks that appears to deserve more exploration in terms of targets
+(deployed in practice) and attack reﬁnement. Moreover, our attacks make use of
+the detailed and verbose error reporting by MEGA clients. This enables powerful
+side-channel attacks that can be observed remotely,19 highlighting the practical
+signiﬁcance of these classes of attacks. Finally, our work, along with other recent
+works attacking widely deployed protocols such as [1,5,11,30,35], underlines
+that while it might seem that the “golden age” of cryptographic attacks against
+deployed protocols is over – given the level of academic involvement and formal
+rigour that went into the design of TLS 1.3 – the target has simply moved up
+the stack. As cryptographic applications move beyond “simple” protection of
+data in transit or at rest, more complex cryptographic solutions are deployed at
+scale, often without signiﬁcant input from the cryptographic community. This
+suggests a broad and impactful ﬁeld for cryptanalysis of targets “in the wild”.
+It is well known that attacks are typically required to convince practitioners
+to adopt cryptographic recommendations. This in turn suggests that to achieve
+the adoption of more secure and formally analysed cryptographic solutions in
+practice, further cryptanalytical work on the “current generation” of deployed
+solutions is needed.
+Finally, the two attacks presented in this work require a large number of
+login attempts. This was also the case for the ﬁrst attack of [2] and used as
+an argument by MEGA that the attack was not practical. However, later work
+by [29] reduced the number of login attempts to six, and we have further reduced
+it to just two. Beyond reinforcing the truism that attacks only get better, this
+poses the open problem to improve the attacks presented in this work in terms
+of login attempt complexity.
+19 In contrast to timing-based side-channel attacks, generally considered less practical
+in the remote, as opposed to local, setting.
+
+Caveat Implementor! Key Recovery Attacks on MEGA
+217
+Acknowledgements. The research of Marekov´a was carried out in part during a
+visit to the Applied Cryptography Group at ETH Z¨urich. She was also supported by
+the EPSRC and the UK Government as part of the Centre for Doctoral Training in
+Cyber Security at Royal Holloway, University of London (EP/P009301/1). The work
+of Paterson was supported in part by a gift from VMware. The work of Albrecht was
+done while Albrecht was at Royal Holloway.
+References
+1. Albrecht, M.R., Marekov´a, L., Paterson, K.G., Stepanovs, I.: Four attacks and a
+proof for Telegram. In: 43rd IEEE Symposium on Security and Privacy, SP 2022,
+San Francisco, CA, USA, 22–26 May 2022, pp. 87–106. IEEE (2022). https://doi.
+org/10.1109/SP46214.2022.9833666
+2. Backendal, M., Haller, M., Paterson, K.G.: MEGA: malleable encryption goes awry.
+In: 44th IEEE Symposium on Security and Privacy (2023, to appear). https://
+eprint.iacr.org/2022/959
+3. Barbosa, M., et al.: SoK: computer-aided cryptography. In: 2021 IEEE Symposium
+on Security and Privacy, pp. 777–795. IEEE Computer Society Press, May 2021.
+https://doi.org/10.1109/SP40001.2021.00008
+4. Bleichenbacher, D.: Chosen ciphertext attacks against protocols based on the RSA
+encryption standard PKCS #1. In: Krawczyk, H. (ed.) CRYPTO 1998. LNCS, vol.
+1462, pp. 1–12. Springer, Heidelberg (1998). https://doi.org/10.1007/BFb0055716
+5. Bruseghini, L., Paterson, K.G., Huigens, D.: Victory by KO: attacking OpenPGP
+using key overwriting. In: ACM Conference on Computer and Communications
+Security (ACM CCS) (2022, to appear). https://doi.org/10.3929/ethz-b-000545839
+6. Coppersmith, D.: Finding a small root of a bivariate integer equation; factoring
+with high bits known. In: Maurer, U. (ed.) EUROCRYPT 1996. LNCS, vol. 1070,
+pp. 178–189. Springer, Heidelberg (1996). https://doi.org/10.1007/3-540-68339-
+9 16
+7. Ducas, L., Stevens, M., van Woerden, W.: Advanced lattice sieving on GPUs, with
+tensor cores. In: Canteaut, A., Standaert, F.-X. (eds.) EUROCRYPT 2021. LNCS,
+vol. 12697, pp. 249–279. Springer, Cham (2021). https://doi.org/10.1007/978-3-
+030-77886-6 9
+8. Howgrave-Graham,
+N.A.:
+Computational
+Mathematics
+Inspired
+by
+RSA.
+Ph.D. thesis, University of Bath (1998). https://researchportal.bath.ac.uk/en/
+studentTheses/computational-mathematics-inspired-by-rsa
+9. Howgrave-Graham, N.: Finding small roots of univariate modular equations revis-
+ited. In: Darnell, M. (ed.) Cryptography and Coding 1997. LNCS, vol. 1355, pp.
+131–142. Springer, Heidelberg (1997). https://doi.org/10.1007/BFb0024458
+10. Klima, V., Rosa, T.: Attack on private signature keys of the OpenPGP format,
+PGP(TM) programs and other applications compatible with OpenPGP. Cryptol-
+ogy ePrint Archive, Report 2002/076 (2002). https://eprint.iacr.org/2002/076
+11. Len, J., Grubbs, P., Ristenpart, T.: Partitioning oracle attacks. In: Bailey, M.,
+Greenstadt, R. (eds.) USENIX Security 2021, pp. 195–212. USENIX Association,
+August 2021
+12. Lim, C.H., Lee, P.J.: A key recovery attack on discrete log-based schemes using a
+prime order subgroup. In: Kaliski, B.S. (ed.) CRYPTO 1997. LNCS, vol. 1294, pp.
+249–263. Springer, Heidelberg (1997). https://doi.org/10.1007/BFb0052240
+13. May, A.: Using LLL-reduction for solving RSA and factorization problems. In:
+Nguyen, P., Vall´ee, B. (eds.) The LLL Algorithm. Information Security and Cryp-
+tography. Springer, Heidelberg (2009). https://doi.org/10.1007/978-3-642-02295-
+1 10
+
+218
+M. R. Albrecht et al.
+14. MEGA: About Us, September 2022. https://mega.io/about
+15. MEGA: Mega.nz web client (2022). https://github.com/meganz/webclient
+16. MEGA: Security White Paper, June 2022. https://mega.nz/SecurityWhitepaper.
+pdf
+17. MEGA:
+webclient
+-
+#15273:
+Patch
+for
+ETH
+Zurich
+exploit,
+June
+2022.
+https://github.com/meganz/webclient/commit/d2a0d054d4dbb90f035b3b4b421f
+780adafaa78e
+18. MEGA:
+webclient
+-
+#15295:
+Output
+detailed
+information
+about
+RSA
+decoding failures, June 2022. https://github.com/meganz/webclient/commit/
+cd4ab89b2cd0e388b0ea55753b86c8808f810138
+19. MEGA: webclient - asmcrypto.js, August 2022. https://github.com/meganz/
+webclient/blob/v4.21.4/js/vendor/asmcrypto.js
+20. MEGA: webclient - asmcrypto.js: Modulus, August 2022. https://github.com/
+meganz/webclient/blob/v4.21.4/js/vendor/asmcrypto.js#L10325
+21. MEGA: webclient - asmcrypto.js: Modulus inverse. https://github.com/meganz/
+webclient/blob/v4.21.4/js/vendor/asmcrypto.js#L10382 (August 2022)
+22. MEGA: webclient - asmcrypto.js: mredc, August 2022. https://github.com/
+meganz/webclient/blob/v4.21.4/js/vendor/asmcrypto.js#L9706
+23. MEGA: webclient - asmcrypto.js: RSA decrypt, August 2022. https://github.com/
+meganz/webclient/blob/v4.21.4/js/vendor/asmcrypto.js#L10746
+24. MEGA: webclient - crypto.js: api updfkeysync, September 2022. https://github.
+com/meganz/webclient/blob/v4.21.4/js/crypto.js#L3050
+25. MEGA: webclient - crypto.js: crypto decodeprivkey, August 2022. https://github.
+com/meganz/webclient/blob/v4.21.4/js/crypto.js/#L2047
+26. MEGA: webclient - nodedec.js: crypto rsadecrypt, August 2022. https://github.
+com/meganz/webclient/blob/v4.21.4/nodedec.js/#L550
+27. MEGA:
+webclient
+-
+security.js:
+decryptRsaKeyAndSessionId,
+August
+2022.
+https://github.com/meganz/webclient/blob/v4.21.4/js/security.js#L1231
+28. Micheli, G.D., Heninger, N.: Recovering cryptographic keys from partial informa-
+tion, by example. Cryptology ePrint Archive, Report 2020/1506 (2020). https://
+eprint.iacr.org/2020/1506
+29. Ryan, K., Heninger, N.: Cryptanalyzing MEGA in six queries. Cryptology ePrint
+Archive, Report 2022/914 (2022). https://eprint.iacr.org/2022/914
+30. Shakevsky, A., Ronen, E., Wool, A.: Trust dies in darkness: shedding light on sam-
+sung’s TrustZone keymaster design. Cryptology ePrint Archive, Report 2022/208
+(2022). https://eprint.iacr.org/2022/208
+31. Stein, W., et al.: Sage Mathematics Software Version 9.5. The Sage Development
+Team (2022). http://www.sagemath.org
+32. The FPLLL development team: FPLLL, a lattice reduction library (2021). https://
+github.com/fplll/fplll
+33. The mitmproxy development team: mitmproxy - an interactive HTTPS proxy
+(2022). https://mitmproxy.org/
+34. van Oorschot, P.C., Wiener, M.J.: On Diﬃe-Hellman key agreement with short
+exponents. In: Maurer, U. (ed.) EUROCRYPT 1996. LNCS, vol. 1070, pp. 332–
+343. Springer, Heidelberg (1996). https://doi.org/10.1007/3-540-68339-9 29
+35. Vanhoef, M., Ronen, E.: Dragonblood: analyzing the dragonﬂy handshake of WPA3
+and EAP-pwd. In: 2020 IEEE Symposium on Security and Privacy, pp. 517–533.
+IEEE Computer Society Press, May 2020. https://doi.org/10.1109/SP40000.2020.
+00031
+36. Wikipedia: UTF-8 (2022). https://en.wikipedia.org/wiki/UTF-8
+

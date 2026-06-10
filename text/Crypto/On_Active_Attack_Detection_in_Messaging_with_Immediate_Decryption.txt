@@ -1,0 +1,2142 @@
+On Active Attack Detection in Messaging
+with Immediate Decryption
+Khashayar Barooti, Daniel Collins(B), Simone Colombo,
+Lo¨ıs Huguenin-Dumittan, and Serge Vaudenay
+EPFL, Lausanne, Switzerland
+{khashayar.barooti,daniel.collins,simone.colombo,
+lois.huguenin-dumittan,serge.vaudenay}@epfl.ch
+Abstract. The widely used Signal protocol provides protection against
+state exposure attacks through forward security (protecting past mes-
+sages) and post-compromise security (for restoring security). It supports
+immediate decryption, allowing messages to be re-ordered or dropped at
+the protocol level without aﬀecting correctness. In this work, we con-
+sider strong active attack detection for secure messaging with immediate
+decryption, where parties are able to immediately detect active attacks
+under certain conditions. We ﬁrst consider in-band active attack detec-
+tion, where participants who have been actively compromised but are
+still able to send a single message to their partner can detect the com-
+promise. We propose two complementary notions to capture security, and
+present a compiler that provides security with respect to both notions.
+Our notions generalise existing work (RECOVER security) which only
+supported in-order messaging. We also study the related out-of-band
+attack detection problem by considering communication over out-of-
+band, authenticated channels and propose analogous security notions.
+We prove that one of our two notions in each setting imposes a linear
+communication overhead in the number of sent messages and security
+parameter using an information-theoretic argument. This implies that
+each message must information-theoretically contain all previous mes-
+sages and that our construction, that essentially attaches the entire mes-
+sage history to every new message, is asymptotically optimal. We then
+explore ways to bypass this lower bound and highlight the feasibility of
+practical active attack detection compatible with immediate decryption.
+1
+Introduction
+Since the Snowden revelations and given the unprecedented rise of mass surveil-
+lance, several messaging solutions strengthened their security guarantees. The
+susceptibility to state exposure attacks pushed both researchers and practi-
+tioners to develop ratcheting-based schemes, which enables forward secrecy—
+conﬁdentiality of messages sent before a state exposure—and post-compromise
+security—automatic healing of conﬁdentiality upon compromise [15].
+The full version of this paper is available at [6].
+c
+⃝International Association for Cryptologic Research 2023
+H. Handschuh and A. Lysyanskaya (Eds.): CRYPTO 2023, LNCS 14084, pp. 362–395, 2023.
+https://doi.org/10.1007/978-3-031-38551-3_12
+
+On Active Attack Detection in Messaging with Immediate Decryption
+363
+The asynchronicity of messaging and the unreliability of some network pro-
+tocols drove the design of ratcheting-based schemes with immediate decryp-
+tion [1,16,31], i.e., the support of out-of-order delivery and message loss on the
+protocol level. This property ensures that legitimate messages can be immediately
+decrypted by the receiver upon arrival and placed correctly among other received
+messages. Furthermore, communication can continue even if some messages are
+permanently lost. The Signal protocol, the current de-facto messaging standard,
+supports immediate decryption. By contrast, many schemes in the literature fail
+if even a single message is lost (see [7,11,14,21,32] for a non-exhaustive list).
+The aforementioned security notions do not guarantee message authentica-
+tion when the adversary impersonates parties, e.g., through state compromise.
+The lack of authentication implies that parties cannot detect active attacks. A
+recent phishing attack against Signal’s phone number veriﬁcation service enabled
+attackers to re-register accounts to another device, demonstrating the practical-
+ity of impersonation attacks via secret state compromise [35]. Similar attacks
+that steal veriﬁcation codes to hijack accounts aﬀect a plethora of messag-
+ing applications. The proliferation of spyware such as Pegasus represents an
+additional—and worrying—threat for secret exﬁltration [34].
+The most widely used mechanisms for detecting active attacks use an out-
+of-band authenticated channel. All such mechanisms we are aware of, either
+deployed in practice [28] or proposed in the literature [17,19] assume such a
+channel. Solutions like Signal’s safety numbers [28] enables parties to authen-
+ticate long-term keys by comparing QR codes in person. However, as observed
+by Dowling and Hale [18,19], Signal’s approach—and all similar methods to our
+knowledge—fails to provide guarantees after a user’s state is exposed, since safety
+numbers only authenticate initial keys (for Signal, the keys that the X3DH key
+agreement protocol generates).
+To remedy this situation, Dowling and Hale [19] proposed to add an addi-
+tional authentication key to each iteration of Signal’s asymmetric ratchet for on-
+demand use in out-of-band authentication. Their construction allows parties to
+immediately—that is, without additional communication rounds—authenticate
+their entire asymmetric ratchet out of band. However messages forged under
+symmetric keys will never be detected. The only other construction in the liter-
+ature to our knowledge, proposed by Dowling, G¨unter and Poirrier [17], requires
+three rounds of in-band communication before an out-of-band hash comparison
+can take place. Contrary to Dowling and Hale’s solution, this approach authen-
+ticates all messages (albeit does not formally treat out-of-order messages), but
+imposes additional rounds, which is especially problematic in the presence of an
+active adversary. This raises our ﬁrst research question:
+1. Can we authenticate all messages in a single round of out-of-band communi-
+cation to detect active attacks in the immediate decryption setting?
+Out-of-band authentication is not always practical or even possible. A con-
+venient alternative is to detect active attacks in-band, i.e., using the same chan-
+nel as the messaging protocol. The adversary can, in the worst case, block all
+messages sent by honest parties, thereby forcing users to resort to out-of-band
+
+364
+K. Barooti et al.
+communication, but mounting such a persistent attack requires considerable
+resources. Durak and Vaudenay [21] introduce RECOVER security: if a party
+receives a forgery, then this party does not accept subsequent messages sent
+honestly by his counterpart. Caforio et al. [11] extend RECOVER security to
+enable a party to detect whether their partner was compromised, i.e., whether
+they received a forgery. By contrast to out-of-band authentication, no additional
+messages are required to support attack detection: in-band ciphertexts contain
+the authentication information. However, these notions and the corresponding
+constructions assume in-order message delivery and fail on message dropping.
+This raises a second question, ﬁrst suggested by Alwen et al. [1]:
+2. Can we achieve extended RECOVER security—immediate in-band active
+attack detection—while supporting immediate decryption?
+To detect active attacks, parties need to authenticate their entire message
+history: each message may be a forgery, i.e., the result of an active attack. With
+immediate decryption, parties cannot be sure which messages their partner has
+received until they receive an honest reply from them. Intuitively, each message
+needs to “contain” the message history up until when it was sent. We prove this
+intuition, which motivates the exploration of performance/security trade-oﬀs
+and optimisations. In this regard, existing protocols for both in-band and out-
+of-band active attack detection represent only a subset of the potential design
+space. Consequently we also ask:
+3. What are the communication costs of in- and out-of-band active attack
+detection for messaging with immediate decryption, and what useful per-
+formance/security trade-oﬀs can be made?
+1.1
+Our Contributions
+In this paper, we explore the aforementioned questions. In more detail:
+– We introduce (Sect. 3) a new primitive that we call authenticated ratcheted
+communication, which captures immediate decryption and models communi-
+cation through both insecure in-band and authentic out-of-band channels.
+– In Sect. 4, we formalise in-band active attack detection for immediate decryp-
+tion, by extending RECOVER security [11,21], with two notions, namely r-RID
+and s-RID security, for detecting active attacks towards the receiver and on
+reception of messages from the sender after they were attacked; combined,
+these two notions comprise RID (recover with immediate decryption) secu-
+rity. We propose a scheme secure under these notions.
+– We consider out-of-band active attack detection for immediate decryption
+messaging in Sect. 5. We introduce notions r-UNF and s-UNF (which combine
+to UNF for unforgeable), which are analogous to the notions for in-band detec-
+tion. Demonstrating their similarity, we construct an UNF-secure scheme from
+a RID-secure scheme. We also construct an UNF-secure ARC scheme given a
+RC scheme.
+
+On Active Attack Detection in Messaging with Immediate Decryption
+365
+– In Sect. 6, we prove with an information-theoretic argument that ciphertexts
+in a scheme satisfying either r-RID or r-UNF security must grow linearly in
+the number of messages sent. As our constructions demonstrate, s-RID and
+s-UNF security are comparatively cheaper and practical.
+– In Sect. 7, we consider diﬀerent ways to bypass the aforementioned lower
+bounds. First we discuss ways to optimize the s-RID-secure scheme. We show
+how one can drastically reduce the overhead as long as the communication
+between the two parties is balanced. The details of this optimization are given
+in the full version of this paper [6], which we believe is the most suitable
+scheme for use in practice that we propose. We also focus on optimizing
+the authenticated out-of-band channel variant, by exploring pruning-based
+optimizations, where parties securely prune messages as soon as they are
+authenticated. We ﬁnally discuss the performance advantages resulting from
+a three-move authentication procedure.
+1.2
+Paper Overview
+We assume a network where parties communicate over two types of channels:
+insecure channels and out-of-band authenticated channels. The adversary has
+full control over insecure channels. In particular, she can read, deliver, modify
+and delay messages. In the authenticated channels, the integrity and authenticity
+of the messages are protected, that is, the adversary can read, deliver, duplicate
+and delay messages but not modify them. In the Signal application, the insecure
+channel is the usual network, whereas the out-of-band channel is that used for
+safety number veriﬁcation [28], typically in-person.
+(Authenticated) Ratcheted Communication. We introduce a syntax for ratcheted
+communication (RC) in which sent and received messages are associated with
+totally ordered ordinals (epoch/index pairs in Signal [1]). Ordinals enable our
+protocol to support immediate decryption [1], i.e., message loss and re-ordering
+on the network. We build on this syntax to deﬁne authenticated ratcheted com-
+munication, or ARC, which comprises two additional functions AuthSend and
+AuthReceive. A party can use AuthSend to send an authentication tag through the
+out-of-band channel that the counterpart processes with AuthReceive. AuthSend
+outputs an ordinal that is at least as large as the last sent ordinal for that party.
+AuthReceive, if successful, should authenticate all messages up to that ordinal;
+this is captured in UNF security. Our notion ORDINALS enforces these semantics
+even in presence of forgeries.
+RID security. We revisit the deﬁnitions of RECOVER security [11,21] in the
+immediate decryption setting. We deﬁne two complementary security notions
+for RID security:
+– r-RID ensures that the receiver of a forgery does not accept honest messages
+with ordinals larger than that of the forgery.
+– s-RID security enables a party to detect if their counterpart has ever received
+a forgery (i.e., a forgery from the sender).
+
+366
+K. Barooti et al.
+If a scheme is both r-RID- and s-RID-secure, then it is RID-secure. These notions
+are orthogonal to forward security and post-compromise security.
+We propose a construction that transforms any ratcheted communication
+scheme into a provably RID-secure one. In the construction, both parties keep
+track of messages they have sent and received. Every time they send a message,
+they attach all messages (i.e., the ciphertexts from the underlying RC) they have
+sent and received so far to their ciphertext. When a party receives a message
+that “contradicts” what it has sent or received, it can deduce that an active
+attack took place.
+To reduce bandwidth, parties send ordinals and hashes of messages, instead
+of complete ciphertexts. For r-RID security, a receiver P compares the input
+message and the sender P’s supposed set of sent messages with what P has
+received previously. For s-RID, it suﬃces for a receiver P (who knows exactly
+what it sent) to check whether the sender claims to have received anything
+that P did not send. Here, P only needs to send a single hash alongside the
+set of received ordinals (which are generally smaller than hashes), since P can
+recompute the hash locally. Since the channel is insecure, parties need to perform
+a series of checks on the ciphertexts to prevent the adversary from tampering
+with the sets of sent and received messages sent. Both r-UNF- and s-UNF-security
+build on the collision resistance of the hash function.
+UNF security. We deﬁne notions analogous to r-RID and s-RID for authenticated
+ratcheted communication schemes. The r-UNF (receiver unforgeable) notion
+ensures that a party does not accept authentication tags after receiving a forgery,
+whereas s-UNF (sender unforgeable) ensures that a party does not accept authen-
+tication tags coming from a counterpart that received a forgery. We show that a
+RID-secure scheme can be turned into a UNF-secure scheme. The transformation
+highlights the similarity between RID and UNF security. In the former, parties
+authenticate all messages they have sent and received in band, whereas in the
+latter the messages are authenticated out of band. Concretely, the transforma-
+tion uses the ciphertext of a RID-secure RC scheme as the authentication tag for
+an ARC scheme, by moving authentication material to the out-of-band channel.
+Communication Costs. We prove a linear lower bound on the ciphertext size
+of any r-RID-secure RC: each ciphertext must capture all information contained
+in previously sent ones. In fact, the security notion requires that the receiving
+party is able to immediately detect if any subset of previous ciphertexts contains
+a forgery, since the sender does not know what has been received and ciphertexts
+can be arbitrarily re-ordered or dropped.
+For the proof, we construct an (ineﬃcient) encoder/decoder pair for a list
+of input messages (m1, . . . , mn) and randomness R, that uses the r-RID RC to
+compress the input. More precisely, the encoder uses the RC to send messages
+(m1, . . . , mn) with randomness R to get a list of ciphertexts (ct1, . . . , ctn), and
+outputs only (ctn, R). Next, the decoder uses the RC to receive ciphertext ctn,
+generates every possible ct1 for all possible messages m1 with randomness R and
+attempts to successfully receive one of them. If this succeeds, it means m1 was
+
+On Active Attack Detection in Messaging with Immediate Decryption
+367
+the same message as the one input to the encoder (i.e., the “honest” one). Then,
+the decoder continues with m2 and so on, eventually outputting (m1, . . . , mn, R).
+Finally, by setting the distributions of the messages and randomness as uniform,
+one can argue by Shannon’s theorem that the ciphertext space must be exponen-
+tially large in n·|mi|. The formal proof is actually more complicated as the r-RID
+security does not need to be perfect and many ciphertexts might be successfully
+received when decoding.
+Then, following a nearly identical proof, we prove a linear lower bound on
+the authentication tag size of any r-UNF-secure ARC. These proofs might be of
+independent interest. Following similar arguments we show that the state (i.e.
+secret key) of any public key puncturable encryption (PKPE) scheme must grow
+linearly with the number of punctures.
+Practical Active Attack Detection. We explore how to overcome the linear com-
+munication complexity that r-RID and r-UNF impose. We ﬁrst observe that
+ciphertexts can be much smaller to achieve s-RID or s-UNF security. As noted
+above, it suﬃces for P to send a single hash of all received messages with the
+corresponding ordinals, since partner P can recompute the hash if it stores all
+messages it sends. Assuming each ordinal uses c space, ciphertexts reduce in size
+from O(n(λ + c)) to O(λ + nc) given P has received n messages.
+Motivating this comparison, we observe that parties achieve r-RID/r-UNF-
+like guarantees after one round of communication from s-RID/s-UNF security. If
+P detects that their partner P has received a forgery, P can let P know, and
+thus P can learn that they have received a forgery (which is what r-RID/r-UNF
+guarantee). We formalise this by proposing a lightweight three-move protocol,
+and a corresponding security model, over the out-of-band channel which provides
+bidirectional message authentication. Participant P (resp. P) sends their set of
+received messages to their partner in the ﬁrst and second moves. In the second
+and third moves, P (resp. P) sends a bit that indicates whether the set of received
+messages was consistent with what they actually sent.
+In the aforementioned protocols, performance degrades linearly in the num-
+ber of exchanged messages, even for s-RID/s-UNF security. We observe that for
+UNF security the authentication tags can be compressed over time by includ-
+ing acknowledgements in tags. Since the out-of-band channel is authentic, par-
+ties are sure that the authentication information—that is, the sets of sent and
+received messages—coming from the counterpart is correct. This enables parties
+to prune already authenticated messages. For r-RID security, pruning-based opti-
+mizations are more diﬃcult to obtain, since parties do not know which messages
+are authentic, i.e., have really been sent or received by the counterpart.
+1.3
+Additional Related Work
+A growing line of work considers the performance and security of messaging
+in both the two-party [5,7,11,21,25,33] and more general group settings [2–
+4] settings. Some of these works provide similar [25] and sometimes weaker [26]
+guarantees for in-band active attack detection assuming in-order communication.
+
+368
+K. Barooti et al.
+To our knowledge, in-band active attack detection is not explicitly explored in
+group messaging, but schemes like MLS ensure that if the state of two parties is
+forked then their states become incompatible, in some protocol-speciﬁc sense.
+Naor et al. [29] introduced the concept of immediate key delivery for key
+exchange: if one goes oﬄine, the remaining ones should be able to complete it
+successfully by returning a shared secret. This property is orthogonal to imme-
+diate decryption as it focuses on keys instead of messages.
+Apart from Durak and Vaudenay and Caforio et al. who introduced the
+RECOVER notions, Dowling et al. [20] provide r-RECOVER, but not s-RECOVER
+security via signatures, while providing anonymity guarantees even upon state
+exposure. Dowling et al. [17] frame their authentication guarantees as follows:
+if no long-term keys are compromised, then all messages exchanged are authen-
+tic. Otherwise, active attacks can be detected out-of-band. They achieve this
+by signing all messages with long-term keys. Our protocols and security notions
+can be adapted to achieve these guarantees. In distributed computing, the prob-
+lem is formalised in terms of accountability, which enables parties to detect
+faulty (Byzantine) nodes [12,22]. In multi-party computation, a line of work has
+explored security with identiﬁable abort [23] which ensures that if parties fail to
+compute a given function, they can identify the party that caused the failure.
+The encoder/decoder technique that we use to prove the lower bounds in
+Sect. 6 have been used before in cryptography [24,27]. While the basic idea is
+the same, the technical details of the proofs are not comparable as the primitives
+are diﬀerent. Related work in group messaging achieves communication lower
+bounds in a symbolic model of execution [9] and in a black-box impossibility
+setting [8].
+2
+Notation
+We consider two parties, A and B. Let P be one party (A resp. B) and P be their
+partner (B resp. A). We use maps, or associative arrays, which associate keys
+with values: m[·] ←x deﬁnes a new map with values initially set to x and m[k]
+returns the element indexed by key k. Keys are tuples of any length n ≥1. We
+index maps with integers starting from 1; in this case, m[a : b] returns the list
+of elements whose keys are between a and b. We access the element of a tuple
+using the dot notation. The function length(m) returns the number of keys in
+map m. The empty string is denoted by ε. Given a set S, S∗(respectively Sn) is
+the set of all strings of arbitrary length (resp. of length n) whose elements are in
+S. PPT abbreviates ‘probabilistic polynomially bounded’, which we use in the
+context of algorithms bounded in terms of the security parameter λ.
+3
+(Authenticated) Ratcheted Communication
+In this section we introduce the ratcheted communication (RC) cryptographic
+primitive and an extension authenticated ratcheted communication (ARC) sup-
+porting out-of-band authentication. These primitives augment classic ratcheted
+
+On Active Attack Detection in Messaging with Immediate Decryption
+369
+secure messaging schemes [1,11,26] in two ways: (i) sent and received messages
+are associated with ordinals, and, for ARC, (ii) the syntax encompasses two
+additional stateful algorithms AuthSend and AuthReceive.
+Ordinals associated with messages enable a party to (1) order incoming mes-
+sages immediate decryption setting; (2) keep track of how many messages have
+passed through the communication channel; and (3) infer which messages have
+been authenticated using the out-of-band channel. Ordinals of the form num can
+be elements of any set on which a total order is deﬁned. In Alwen et al.’s [1] and
+Bienstock et al.’s [10] modelling of the Signal protocol, an ordinal num is deﬁned
+as a pair of integers (e, c) such that (e, c) < (e′, c′) if e < e′ or both e = e′ and
+c < c′. We formally deﬁne an RC scheme below.
+Deﬁnition 1 (Ratcheted communication (RC)). A ratcheted communica-
+tion (RC) scheme comprises the following PPT algorithms:
+– Setup(1λ) →pp takes the security parameter λ ∈N, expressed in unary, and
+outputs public parameters pp.
+– Init(pp) →(stA, stB, z) takes public parameters pp and outputs a state stP for
+P ∈{A, B}, and public information z.
+– Send(stP, ad, pt) →(st′
+P, num, ct) takes a state stP, associated data ad and a
+plaintext pt and outputs a new state st′
+P, an ordinal num and ciphertext ct.
+– Receive(stP, ad, ct) →(acc, st′
+P, num, pt) takes a state stP, associated data ad
+and ciphertext ct and outputs an acceptance bit acc ∈{true, false}, state st′
+P,
+ordinal num and plaintext pt.
+The Receive algorithm returns dummy st′
+P, num, pt which are ignored when acc =
+false.
+Remark 1. Signal can be viewed as an RC. In the work of Alwen et al. [1], a
+secure messaging scheme consists of an initialisation algorithm and party-speciﬁc
+Send and Receive algorithms with no associated data. The Receive algorithms,
+but not the Send algorithms, output an epoch/index pair (e, i) ∈N2 which plays
+the role of an ordinal. Signal as deﬁned by Alwen et al. [1] can thus be considered
+an RC by modifying its Send algorithm to output each (e, i) pair as an ordinal
+and enforcing that ad = ⊥is always input to Send and Receive.
+In an ARC, parties rely on AuthSend and AuthReceive to authenticate the
+communication using a (possibly narrowband) out-of-band authenticated chan-
+nel. AuthSend inputs state and outputs an updated state, an authentication tag
+and an ordinal, whereas AuthReceive takes a state and an authentication tag
+to output an authentication bit, an updated state and an ordinal. Intuitively,
+the authentication tag is sent via the out-of-band authenticated channel and it
+enables the receiver to detect active attacks using the AuthReceive algorithm.
+Participants can decide when to invoke the algorithms and thus use the authen-
+tication tag on-demand, e.g., when an out-of-band channel is available.
+AuthSend and AuthReceive outputs ordinals with the same semantics as Send
+and Receive. Namely, the num that AuthSend outputs is greater or equal to the
+
+370
+K. Barooti et al.
+last num that Send outputs; besides ordering authentication tags with respect to
+messages the party has sent or received, the ordinal indicates which messages (all
+up until num) the authentication tag authenticates. Similarly, for AuthReceive,
+the ordinal num indicates that all messages with num′ ≤num have been authen-
+ticated with the received tag.
+Deﬁnition 2 (Authenticated ratcheted communication (ARC)). An
+authenticated ratcheted communication (ARC) scheme comprises the following
+PPT algorithms:
+– Setup, Init, Send, Receive deﬁned as in RC (Deﬁnition 1).
+– AuthSend(stP) →(st′
+P, num, at) takes a state stP and outputs a new state st′
+P,
+an ordinal num and an authentication tag at.
+– AuthReceive(stP, at) →(auth, st′
+P, num) takes a state stP and authentication
+tag at and outputs an authentication bit auth ∈{true, false}, an updated state
+st′
+P and an ordinal num.
+The AuthReceive algorithm returns dummy st′
+P, num which the scheme ignores
+when auth = false.
+Remark 2. One could alternatively deﬁne AuthSend/AuthReceive to output sets
+of ordinals, rather than single ones, corresponding to which messages have been
+authenticated. Our security notions ensure that this information can be eﬃ-
+ciently computed by parties using the ordinal that the algorithms output.
+We deﬁne correctness for an RC and ARC scheme with the CORRECT game
+presented in Fig. 1. The game takes a security parameter and a schedule sched as
+inputs. We use a schedule to model the message ﬂow between the participants,
+which can (1) send a message, (2) receive a message, and for ARC only, (3) send
+an authentication tag, or (4) receive a sent authentication tag. More precisely,
+sched is an ordered list of instructions either of the form (P, “send”, ad, pt),
+(P, “rec”, j), and for ARC only, (P, “authsend”), and (P, “authrec”, j), where
+P ∈{A, B}, ad denotes associated data, pt denotes a plaintext, and j ∈N
+indicates either the (ad, ct) pair or the at to be received—that is, to be processed
+by Receive or AuthReceive respectively.
+A correct (A)RC scheme must recover the correct plaintext from the cor-
+responding associated data/ciphertext pair. Moreover, the scheme must satisfy
+the following properties.
+– Subsequent calls to the Send algorithm outputs increasing ordinals (line 7 in
+Fig. 1).
+– Ordinals are equal for corresponding calls to Send (resp. AuthSend for ARC)
+and Receive (resp. AuthReceive for ARC) (lines 12 and 22).
+– For ARC, AuthSend outputs an ordinal greater or equal to the ordinal
+returned by the last call to Send.
+We encode these properties in the CORRECT game for clarity. We require that
+these properties hold in the adversarial setting (in particular when forgeries
+are received) and enforce them in the ORDINALS game presented in Fig. 3. We
+formally deﬁne correctness for an (A)RC scheme in Deﬁnition 3.
+
+On Active Attack Detection in Messaging with Immediate Decryption
+371
+Game CORRECT(1λ, sched)
+1 :
+pp ←Setup(1λ); (stA, stB, z) ←Init(pp)
+2 :
+ad∗[·], pt∗[·], ct∗[·],∗[·] ←⊥; received[·], sent[·] ←false; sent-num ←0
+3 :
+for i = 1 to length(sched) do
+4 :
+if sched[i] parses as (P, “send”, ad, pt) for ad, pt then
+5 :
+(stP, num, ct) ←Send(stP, ad, pt)
+6 :
+(num′, ·) ←ptP[i −1]
+7 :
+if i > 1 ∧num′ ≥num then return 1
+8 :
+sent[i] ←true; adP[i] ←ad; ptP[i] ←(num, pt); ctP[i] ←ct; sent-num ←num
+9 :
+elseif sched[i] parses as (P, “rec”, j) for j ∈N then
+10 :
+if ¬sent[j] ∨received[j] ∨P [j] ̸= ⊥then continue
+11 :
+(acc, st′
+P, num, pt) ←Receive(stP, adP[j], ctP[j])
+12 :
+if ¬acc ∨((num, pt) ̸= ptP[j]) then return 1
+13 :
+received[j] ←acc; stP ←st′
+P
+14 :
+elseif sched[i] parses as (P, “authsend”) then
+15 :
+(stP, num, ) ←AuthSend(stP)
+16 :
+if num < sent-num then return 1
+17 :
+sent[i] ←true; P[i] ←(num, ); sent-num ←num
+18 :
+elseif sched[i] parses as (P, “authrec”, j) for j ∈N then
+19 :
+if ¬sent[j] ∨received[j] ∨P [j] = ⊥then continue
+20 :
+(numP,P ) ←P [j]
+21 :
+(auth, st′
+P, num) ←AuthReceive(stP,P )
+22 :
+if ¬auth ∨num ̸= numP then return 1
+23 :
+received[j] ←true; stP ←st′
+P
+24 :
+return 0
+Fig. 1. Correctness game for an RC/ARC scheme. Highlighted statements are only
+executed for when considering an ARC.
+Deﬁnition 3 (CORRECT). Consider the correctness game CORRECT presented
+in Fig. 1. An RC (resp. ARC) scheme is correct if, for all λ ∈N, and
+all sequences of the form sched with elements of the form (P, “send”, ad, pt),
+(P, “rec”, j), (resp. also of the form (P, “authsend”), (P, “authrec”, j)), for
+P ∈{A, B}, we have Pr[CORRECT(1λ, sched) ⇒1] = 0.
+Remark 3. Correctness states that AuthSend must output an ordinal greater or
+equal to the ordinal that the last call to Send returned. If AuthSend does not
+increase the ordinal, then it is clear which messages are authenticated; if the
+ordinal increases in AuthSend, the application designer must keep track of the
+last num that Send returned to infer what the tag authenticates. Nonetheless,
+the latter case may be desirable to ensure that all ordinals output by Send and
+AuthSend are distinct.
+
+372
+K. Barooti et al.
+Security notions for RC and ARC schemes build on a common set of oracles,
+introduced in Fig. 2. The SEND (resp. RECEIVE) oracle enables the adversary to
+send (resp. receive) a message on behalf of a party P. In SEND, the caller can
+specify the randomness used by Send or let the challenger sample randomness
+uniformly. For ARC, AUTHSEND enables the adversary to send an authentica-
+tion tag on behalf of a party P, whereas AUTHRECEIVE handles AuthReceive.
+The oracles EXPpt(j) and EXPst(j) expose plaintexts and states, respectively.
+Oracle SEND(P, ad, pt, r)
+1 :
+i ←i + 1
+2 :
+if r = ε then r ←$ R
+3 :
+(stP, num, ct) ←Send(stP, ad, pt; r)
+4 :
+state[i] ←stP
+5 :
+plaintext[i] ←pt
+6 :
+log[i] ←(“send”, P, num, ad, ct)
+7 :
+return (num, ct)
+Oracle AUTHSEND(P)
+1 :
+i ←i + 1
+2 :
+(stP, num, ) ←AuthSend(stP)
+3 :
+auth[(P, i)] ←
+4 :
+state[i] ←stP
+5 :
+log[i] ←(“authsend”, P, num, )
+6 :
+return (num, )
+Oracle EXPpt(j)
+1 :
+i ←i + 1
+2 :
+log[i] ←(“ptexp”, j)
+3 :
+return plaintext[j]
+Oracle RECEIVE(P, ad, ct)
+1 :
+(acc, st, num, pt) ←Receive(stP, ad, ct)
+2 :
+if ¬acc then return ⊥
+3 :
+i ←i + 1
+4 :
+stP ←st; state[i] ←stP
+5 :
+plaintext[i] ←pt
+6 :
+log[i] ←(“rec”, P, num, ad, ct)
+7 :
+return num
+Oracle AUTHRECEIVE(P, j)
+1 :
+←auth[(P, j)]
+2 :
+if = ⊥then return ⊥
+3 :
+(auth, st, num) ←AuthReceive(stP, )
+4 :
+if ¬auth then return ⊥
+5 :
+i ←i + 1
+6 :
+stP ←st; state[i] ←stP
+7 :
+log[i] ←(“authrec”, P, num, )
+8 :
+return num
+Oracle EXPst(j)
+1 :
+i ←i + 1
+2 :
+log[i] ←(“stexp”, j)
+3 :
+return state[j]
+Fig. 2. Oracles which use variables state, plaintext, log, auth, st∗and i, all initialized
+in games where the oracles are used. AUTHSEND and AUTHRECEIVE are only used
+when considering ARC.
+The oracles of Fig. 2 models a communication network composed of insecure in-
+band and authentic out-of-band channels. The SEND and RECEIVE oracles enable
+the adversary to read, deliver, modify and delay messages, but AUTHSEND and
+AUTHRECEIVE do not allow the modiﬁcation of authentication tags.
+Remark 4. We assume an always-authentic out-of-band channel. To our knowl-
+edge, all deployed solution for out-of-band authentication and relevant litera-
+ture [17,18] assume this. One can deﬁne a stronger model where the out-of-band
+channel is authentic only in some cases, e.g., the tampering rate is bounded,
+or multiple out-of-band channels exist but the adversary can compromise only
+
+On Active Attack Detection in Messaging with Immediate Decryption
+373
+a subset of them. As a not-always-authentic out-of-band channel is a stronger
+version of an insecure in-band channel, the discussions in Sect. 4 apply.
+For RC and ARC schemes we require that even in the presence of an adversary
+that injects forgeries, the Send and Receive (as well as AuthSend and AuthReceive
+for ARC schemes) algorithms output correct ordinals. An RC or ARC scheme
+has correct ordinals if (1) the Send algorithm always outputs increasing ordinals
+with respect to all previously sent or received ordinals; (2) corresponding calls to
+Send and Receive (resp. to AuthSend and AuthReceive) output the same ordinal;
+and (3) for an ARC scheme, AuthSend outputs an ordinal greater or equal to
+the ordinal returned by the last call to Send. We consider these properties in
+CORRECT (Fig. 1), but they must hold also in presence of forgeries. We formalize
+this notion with the ORDINALS game in Fig. 3.
+In this game the challenger veriﬁes three predicates, which correspond to
+the conditions for correct ordinals presented above. In Deﬁnition 4 we formalize
+ORDINALS-security for (A)RC schemes.
+Game ORDINALSA(1λ)
+1 :
+pp ←Setup(1λ); (stA, stB, z) ←Init(pp)
+2 :
+state[·], plaintext[·], log[·], auth[·], st∗←⊥
+3 :
+i ←0
+4 :
+ASEND,RECEIVE,EXPpt,EXPst,AUTHSEND,AUTHRECEIVE(z)
+5 :
+if ∃P, num, num′, ad, ct, x, y :
+6 :
+not-increasing(log, P, num, num′, x, y) ∨diﬀerent(log, P, num, num′, ad, ct, ) ∨
+7 :
+auth-monotonic(log, P, num, x) then
+8 :
+return 1
+9 :
+return 0
+not-increasing(log, P, num, num′, x, y)
+1 :
+return ((“send”, P, num, ·, ·) = log[x] ∨(“rec”, P, num, ·, ·) = log[x]) ∧
+2 :
+(“send”, P, num′, ·, ·) = log[y] ∧(0 < x < y) ∧(num ≥num′)
+diﬀerent(log, P, num, num′, ad, ct, )
+1 :
+return (((“send”, P, num, ad, ct) ∈log ∧(“rec”, P, num′, ad, ct) ∈log)) ∨
+2 :
+((“authsend”, P, num, ) ∈log ∧(“authrec”, P, num′, ) ∈log))) ∧(num ̸= num′)
+auth-monotonic(log, P, num, x)
+1 :
+num′ ←0
+2 :
+if (“send”, P, ·, ·, ·) ∈log then num′ ←max
+
+num′′ : (“send”, P, num′′, ·, ·) = log[y] ∧y < x
+
+3 :
+return (“authsend”, P, num, ·, ·) = log[x] ∧(num < num′)
+Fig. 3. ORDINALS game. Highlighted statements are only considered for an ARC.
+
+374
+K. Barooti et al.
+Deﬁnition 4 (ORDINALS). Consider the ORDINALS game in Fig. 3. We say
+that an (authenticated) ratcheted communication scheme is ORDINALS secure if,
+for all possibly unbounded adversaries A we have Pr[ORDINALSA(1λ) ⇒1] = 0.
+Remark 5. The ORDINALS game in Fig. 3 is not suited to the case where ordinals
+can be arbitrary and in particular collide between parties. Thus, each party must
+be associated with disjoint ordinals: practical schemes like the Signal protocol
+do this by associating one party with even epochs and the counterpart with odd
+epochs.
+4
+In-band Active Attack Detection: RECOVER
+In this section we consider in-band active attack detection in the immediate
+decryption setting.
+Caforio et al. [11] deﬁne RECOVER security, which encompasses both
+r-RECOVER security and s-RECOVER security, by assuming that the channel
+ensures in-order message delivery. Intuitively, r-RECOVER security prevents a
+party from being able to deliver an honest message after delivering a forgery,
+and s-RECOVER security allows a party to detect and stop communication when
+their partner has delivered a forgery. We extend these notions to handle out-of-
+order message delivery by introducing r-RID and s-RID, which we present in Fig. 4
+and illustrate in Fig. 5. Combined, these two properties ensure RID security. Note
+that these deﬁnitions are orthogonal to the usual forward and post-compromise
+security notions that the ratcheting literature considers [1,7].
+The winning condition in RID consists of three predicates:
+– forgery veriﬁes whether a forgery was accepted by one of the participants
+by taking into account both injection and modiﬁcation of messages. In the
+predicate, we denote the impersonated party as P and the recipient of the
+forgery as P.
+– bad-P checks whether the recipient of the forgery manages to detect the
+attack. This predicate corresponds to r-RID security.
+– bad-P establishes whether P, i.e., the participant that the adversary imper-
+sonates to send the forgery, fails to detect the attack. Since P is the recipient
+of the forgery, the detection of the attack by P relies on a ciphertext sent by
+P and honestly delivered. This predicate corresponds to s-RID security.
+The game imposes that if forgery returns true, then at least one between
+bad-P and bad-P must return true for the adversary to win the game.
+Deﬁnition 5 (RID). A RC is (q, t, ϵ)-r-RID (resp. s-RID) secure, if for all adver-
+saries A which make at most q oracle queries and which run in time at most t,
+we have: Pr[r-RIDA(1λ) ⇒1] ≤ϵ (resp. Pr[s-RIDA(1λ) ⇒1] ≤ϵ), where game
+r-RIDA (resp. s-RIDA) is deﬁned in Fig. 4.
+Although r-RID seems to be a stronger than s-RID at ﬁrst glance, the two
+notions are not comparable. There exist schemes which provide r-RID and not
+
+On Active Attack Detection in Messaging with Immediate Decryption
+375
+s-RID security and vice versa, e.g., the scheme proposed in Fig. 6 if the checks
+for either r-RID or s-RID are removed from the checks subroutine.
+However, we note the following link between both notions. Suppose we use
+a s-RID scheme. This means that P is able to know that P received a forged
+message. Then, if P sends an “abort” message to P, P would be able to detect
+the forgery after one honest round-trip of messages. In other words, s-RID RC
+schemes can be transformed (by adding an “abort” message) into RC schemes
+with a weak variant of r-RID security: r-RID after a honest round-trip.
+Remark 6. Suppose A sends messages with num ∈{1, . . . , 5}, B receives a forgery
+with num = 1000, and then A sends messages with num ∈{6, . . . , 10}. If B never
+sends, i.e., A is the sender and B the receiver, RID-security only guarantees that
+the forgery might be detected when A sends the honest message with num′ =
+1001. (cf. the condition “num < num′” in predicate bad-P in Fig. 4.). Intuitively,
+B should be able to detect the forgery on receipt of honest message with num = 6
+since this message is “independent” of the forgery with num = 1000. By the
+not-increasing predicate of the ORDINALS security, all messages that A sends
+after one round-trip will have num > 1000, so such an attack will nevertheless
+be eventually detected. Fine-grained security capturing these scenarios can be
+formalised by tracking state exposures and message delivery timing at the cost
+of greater deﬁnitional complexity; we leave it open to do so. Some forgeries will
+be defeated by our construction below but it is likely required to leverage the
+security of the underlying RC to build a secure scheme. Looking ahead, this
+remark also applies to UNF ARC schemes deﬁned in Sect. 5.
+Game r-RIDA(1λ) s-RIDA(1λ)
+1 :
+pp ←Setup(1λ); (stA, stB, z) ←Init(pp)
+2 :
+state[·], plaintext[·], log[·] ←⊥
+3 :
+auth[·], st∗←⊥
+4 :
+i ←0
+5 :
+AO(z)
+6 :
+if ∃P, num, num′, ad, ct, ad′, ct′, x, y :
+7 :
+forgery(log, P, num, ad, ct, x) ∧
+8 :
+bad-P(log, P, num, num′, ad′, ct′) then
+9 :
+bad-P(log, P, num′, ad′, ct′, x, y) then
+10 :
+return 1
+11 :
+return 0
+Game RIDA(1λ)
+1 :
+return r-RIDA(1λ) ∨s-RIDA(1λ)
+forgery(log, P, num, ad, ct, x)
+1 :
+return (“send”, P, num, ad, ct) /∈log ∧
+2 :
+(“rec”, P, num, ad, ct) = log[x]
+bad-P(log, P, num, num′, ad′, ct′)
+1 :
+return (“rec”, P, num′, ad′, ct′) ∈log ∧
+2 :
+(“send”, P, num′, ad′, ct′) ∈log ∧
+3 :
+(num < num′)
+bad-P(log, P, num′, ad′, ct′, x, y)
+1 :
+return (y > x) ∧
+2 :
+(“send”, P, num′, ad′, ct′) = log[y] ∧
+3 :
+(“rec”, P, num′, ad′, ct′) ∈log
+Fig. 4. r-RID, s-RID
+and RID games for O = {SEND, RECEIVE, EXPpt, EXPst}.
+
+376
+K. Barooti et al.
+4.1
+A RID-Secure RC
+In this section we build a RID-secure RC scheme given a correct and ORDINALS-
+secure RC scheme and a collision-resistant hash function H. We present our
+transformation in Fig. 6.
+Scheme Description. Each party P keeps track of every message it has sent and
+received (in S and R, respectively). This information is communicated to P every
+time P calls Send (via variables S and R′).
+Sender P
+Receiver P
+(num1, ct1)
+...
+(numm, ctm)
+(num, ct)
+log[x]
+...
+num′ > num
+(num′, ct′)
+win?
+Receiver P
+Sender P
+(num1, ct1)
+...
+(numm, ctm)
+log[x]
+(num, ct)
+...
+log[y]
+(num′, ct′)
+win?
+Fig. 5. Visualizing r-RID (left) and s-RID (right). Each ﬁgure showcases an adversary’s
+winning condition in the respective game. The dashed arrows are forged messages. If
+P accepts the message at time “win?” then the adversary wins.
+The Send procedure prepares the set R′, which contains the ordinals and a hash
+of all received messages (line 3). This step can be optimized by using an incremental
+hash function as we discuss in Sect. 7.1. Next, the procedure calls RC.Send with
+input ((ad, S, R′), pt). The ciphertext ct is the concatenation of ct′ and both sets
+S and R′ (which are authenticated in ad′). Finally, the procedure adds the pair
+(num, h) to S (line 8), where the hash h is computed as H.Eval(stP.hk, (ad, ct)),
+where ct = (ct′, S, R′). Intuitively, (num, h) comprises a summary of P’s state after
+calling RC.Send which can be checked by P for inconsistency.
+When P invokes Receive, the procedure calls RC.Receive, which outputs num′
+(which is such that num = num′ given P and P are correct). Since ct contains RP,
+P checks that what P received so far was correct (line 3 in checks). In addition,
+using the S set contained in the ciphertext, P can further check whether the
+ciphertexts it received so far have indeed been sent by P. This is veriﬁed in
+line 5 of checks and from line 7 to 18. These latter checks detect tampering of
+ct by the adversary (e.g. ct.S should not contain ordinals larger than the one of
+the current ciphertext, or if ct was sent earlier than another ciphertext already
+received, ct.S should be consistent with messages already acknowledged, etc.).
+If everything veriﬁes, Receive stores (num, h) in R and adds ct.S to the set of
+acknowledged messages (lines 9 and 10).
+Remark 7. The sets S and R′ included in the ciphertext are also included in
+the authenticated data passed to the underlying RC: the tuple (S, R′) is always
+authenticated in Fig. 6. This is actually not needed for RID security, but for
+
+On Active Attack Detection in Messaging with Immediate Decryption
+377
+authentication and conﬁdentiality. Even if we do not deﬁne authentication and
+conﬁdentiality for (A)RC, we use authenticated encryption for completeness.
+Remark 8. In case of forgery detection the scheme outputs the generic error
+symbol ⊥. In practice it could be necessary to distinguish between diﬀerent
+kinds of errors. For instance, a RID forgery made by an adversary that exposed
+the state could be interpreted by the application as a failure of the underlying
+RC.Receive function. In that case, the application could decide to continue and
+accept subsequent ciphertexts, although this should not happen.
+RRC.Setup(1λ)
+1 :
+pp0 ←RC.Setup(1λ)
+2 :
+hk ←H.KGen(1λ)
+3 :
+hk′ ←H.KGen(1λ)
+4 :
+pp ←(pp0, hk, hk′)
+5 :
+return pp
+RRC.Send(stP, ad, pt)
+1 :
+(st′
+P, hk, hk′, S, R, ·, ·) ←stP
+2 :
+nums′ ←{num′ : (num′, ·) ∈R}
+3 :
+R′ ←(nums′, H.Eval(hk′, R))
+4 :
+ad′ ←(ad, S, R′)
+5 :
+(stP.st′
+P, num, ct′) ←RC.Send(st′
+P, ad′, pt)
+6 :
+ct ←(ct′, S, R′)
+7 :
+h ←H.Eval(hk, (num, ad, ct))
+8 :
+stP.S ←S ∪{(num, h)}
+9 :
+return (stP, num, ct)
+RRC.Receive(stP, ad, ct)
+1 :
+(ct′, SP, RP) ←ct
+2 :
+(st′
+P, hk, hk′, ·, R, Sack, max-num) ←stP
+3 :
+ad′ ←(ad, SP, RP)
+4 :
+(acc, st′
+P, num, pt) ←RC.Receive(st′
+P, ad′, ct′)
+5 :
+if ¬acc then return (false, stP, ⊥, ⊥)
+6 :
+h ←H.Eval(hk, (num, ad, ct))
+7 :
+if checks(stP, ct, h, num) then
+8 :
+return (false, stP, ⊥, ⊥)
+9 :
+stP.R ←R ∪{(num, h)}
+10 :
+stP.Sack ←Sack ∪SP
+11 :
+stP.st′
+P ←st′
+P
+12 :
+return (acc, stP, num, pt)
+RRC.Init(pp)
+1 :
+(pp0, hk, hk′) ←pp
+2 :
+(st′
+A, st′
+B, z′) ←RC.Init(pp0)
+3 :
+max-num ←0
+4 :
+S, R, Sack ←∅
+5 :
+stA ←(st′
+A, hk, hk′, S, R, Sack, max-num)
+6 :
+stB ←(st′
+B, hk, hk′, S, R, Sack, max-num)
+7 :
+z ←(z′, pp)
+8 :
+return (stA, stB, z)
+checks(stP, ct, h, num)
+1 :
+(nums′, h′) ←ct.R
+2 :
+R∗←{(num′, ·) ∈stP.S : num′ ∈nums′)}
+3 :
+s-bool ←(H.Eval(stP.hk′, R∗) ̸= h′)
+4 :
+R′ ←{(num′, ·) ∈stP.R : num′ ≤num}
+5 :
+r-bool ←(R′ ̸⊆ct.S)
+6 :
+r-bool ←r-bool ∨
+7 :
+(∃(num∗, ·) ∈ct.S : num∗≥num)
+8 :
+if num < stP.max-num then
+9 :
+r-bool ←r-bool ∨((num, h) ̸∈st.Sack)
+10 :
+r-bool ←r-bool ∨(ct.S ̸⊆st.Sack)
+11 :
+Sack
+′ ←{(num′, ·) ∈stP.Sack :
+12 :
+num′ < num}
+13 :
+r-bool ←r-bool ∨(Sack
+′ ̸⊆ct.S)
+14 :
+else
+15 :
+stP.max-num ←num
+16 :
+r-bool ←r-bool ∨
+17 :
+(∃(num′, ·) ∈st.Sack \ ct.S :
+18 :
+num′ < stP.max-num)
+19 :
+return r-bool ∨s-bool
+Fig. 6. RID-secure RC scheme RRC based on a RC scheme RC (Deﬁnition 1). RRC
+requires the following variables: max-num represents the largest received num. S is the
+set of (num, h) pairs; R is the set of received (num, h) pairs; Sack is the set of (num, h)
+which are expected to be received (according to the received ciphertext ct). All sets
+are append-only.
+
+378
+K. Barooti et al.
+Security Analysis. Correctness of the RRC scheme follows from the correctness
+of the underlying scheme RC and the fact that the checks always outputs false
+when only honest messages are received. Similarly, ORDINALS-security follows
+from the ORDINALS-security of RC, as RRC outputs the num that RC outputs.
+As the next theorems state, the construction of Fig. 6 is r-RID-secure (Theorem
+1) and s-RID-secure (Theorem 2). The construction is therefore RID-secure.
+Theorem 1. Let H be a (tcr, ϵcr) collision resistant hash function. Then RRC
+(deﬁned in Fig. 6) is a (q, t, ϵcr)-r-RID-secure RC where tcr ≈t and q is upper
+bounded by t.
+Theorem 2. Let H be a (tcr, ϵcr) collision resistant hash function. Then RRC
+(deﬁned in Fig. 6) is a (q, t, ϵcr)-s-RID-secure RC where tcr ≈t and q is upper
+bounded by t.
+Optimization. The s-RID notion imposes less average overhead than r-RID: the
+construction can be further optimized and still provide s-RID security. We give
+here an intuition about this optimization and refer the reader to the full version
+of this paper [6] for the details.
+In the optimized version, parties keep track of epochs. Party A starts with
+epoch = 0 and B with epoch = 1. While sending each message parties attach the
+epoch alongside. If epochA = t, A does not accept any messages with epoch > t+1
+and if A receives a message with epoch = t + 1 they update their epoch ←
+t + 2. The observation is that epoch values only increase when both parties have
+received a message. Using this fact, it can be shown that it suﬃces to convey
+information about the messages received in the last two epochs to provide s-RID
+security. If an honest message was sent from A to B after A received a forged
+message, either this forgery was received in the last 2 epochs, or there was
+another forgery and honest message pair after it, as otherwise the epoch values
+would be out of sync. Although this optimization does not change the worst-
+case complexity of Fig. 6, if the direction of the conversation changes frequently
+enough the overhead signiﬁcantly decreases.
+5
+Out-of-Band Active Attack Detection: UNF
+In-band active attack detection is not always possible, as an adversary may block
+all honest messages in the network. For example, modern messaging solutions use
+a possibly malicious third party server to relay messages between participants,
+thereby introducing a single point of failure for in-band communication. This
+brings us to consider out-of-band active attack detection.
+
+On Active Attack Detection in Messaging with Immediate Decryption
+379
+An ARC scheme is unforgeable if, as soon as one of the two parties accepts
+a forgery, both parties can detect this out-of-band. We formalize this security
+notion through the UNF game (Fig. 7), which, similarly to RID, encompasses
+r-UNF and s-UNF. The winning condition in UNF consists of three predicates:
+forgery, bad-P (corresponds to r-UNF) and bad-P (corresponds to s-UNF) that
+are essentially the same as the predicates that we use to deﬁne RID security
+(Deﬁnition 5), except they rely on authentication tags instead of ciphertexts for
+forgery detection.
+Deﬁnition 6 (UNF). Consider the r-UNF (resp. s-UNF) game in Fig. 7. We say
+that an ARC scheme is (q, t, ϵ)-r-UNF (resp. s-UNF) secure if, for all adversaries
+A which make at most q oracle queries, and which run in time at most t, we
+have: Pr[r-UNFA(1λ) ⇒1] ≤ϵ (resp. Pr[s-UNFA(1λ) ⇒1] ≤ϵ).
+Game r-UNFA(1λ) s-UNFA(1λ)
+1 :
+pp ←Setup(1λ); (stA, stB, z) ←Init(pp)
+2 :
+state[·], plaintext[·], log[·] ←⊥
+3 :
+auth[·], st∗←⊥
+4 :
+i ←0
+5 :
+AO(z)
+6 :
+if ∃P, num, num′, ad, ct, , x, y :
+7 :
+forgery(log, P, num, ad, ct, x) ∧
+8 :
+bad-P(log, P, num, num′, ) then
+9 :
+bad-P(log, P, num′, , x, y) then
+10 :
+return 1
+11 :
+return 0
+Game UNFA(1λ)
+1 :
+return r-UNFA(1λ) ∨s-UNFA(1λ)
+forgery(log, P, num, ad, ct, x)
+1 :
+return (“send”, P, num, ad, ct) /∈log ∧
+2 :
+(“rec”, P, num, ad, ct) = log[x]
+bad-P(log, P, num, num′, )
+1 :
+return (“authrec”, P, num′, ) ∈log ∧
+2 :
+(num ≤num′)
+bad-P(log, P, num′, , x, y)
+1 :
+return (y > x) ∧
+2 :
+(“authsend”, P, num′, ) = log[y] ∧
+3 :
+(“authrec”, P, num′, ) ∈log
+Fig. 7. r-UNF, s-UNF
+and UNF games for O = {SEND, RECEIVE, EXPpt, EXPst,
+AUTHSEND, AUTHRECEIVE}.
+Remark 9. As for RC schemes, we do not deﬁne message indistinguishability
+for ARC schemes. All the schemes include in the authentication tag only public
+material, i.e., messages that have already transited through the insecure channel.
+Since the adversary already has access to the entire transcript of the insecure
+channel, the authentication material does not give any additional advantage for
+distinguishing.
+
+380
+K. Barooti et al.
+5.1
+RID RC ⇒UNF ARC
+We show in this section that RID-secure RC schemes imply UNF-secure ARC
+ones. More precisely, one can easily build an UNF-secure ARC scheme from a
+RID-secure RC. The ARC scheme uses the Setup, Gen, Init, Send, Receive function
+of RC. To send an authentication tag with AuthSend, the ARC scheme calls the
+Send function on a dummy message to generate a ciphertext ct that acts as the
+authentication tag. The function AuthReceive is then implemented as a Receive
+call on the authentication tag/ciphertext. The construction is detailed in Fig. 8.
+Then, we can show the following theorem, which also implies that the scheme
+of Fig. 8 is also r-UNF- and s-UNF-secure.
+Theorem 3. Let RC be a RC scheme and RC-ARC be the ARC scheme built
+out of RC as shown in Fig. 8. If RC is RID, ORDINALS-secure and correct, then
+RC-ARC is UNF-, ORDINALS-secure and correct.
+Proof. Correctness follows from the correctness of the underlying RRC and the
+use of domain separation for tags and ciphertexts.
+RC-ARC.Setup(1λ)
+1 :
+return RRC.Setup(1λ)
+RC-ARC.Init(pp)
+1 :
+return RRC.Init(pp)
+RC-ARC.Send(stP, ad, pt)
+1 :
+ct′ ←RRC.Send(stP, ad, pt)
+2 :
+ct ←(0, ct′)
+3 :
+return ct
+RC-ARC.Receive(stP, ad, ct)
+1 :
+(b, ct′) ←ct
+2 :
+if b ̸= 0 then return (false, ⊥, ⊥, ⊥)
+3 :
+return RRC.Receive(stP, ad, ct′)
+RC-ARC.AuthSend(stP)
+1 :
+(st′
+P, num, ct) ←RRC.Send(stP, 0, 0)
+2 :
+return (st′
+P, num, (1, ct))
+RC-ARC.AuthReceive(stP, )
+1 :
+(b,′ ) ←
+2 :
+if b ̸= 1 then return (false, ⊥, ⊥)
+3 :
+(acc, st′
+P, num, pt) ←RC.Receive(stP, 0,′ )
+4 :
+return (acc, st′
+P, num)
+Fig. 8. UNF-secure ARC scheme based on a RID-secure RC scheme RRC.
+
+On Active Attack Detection in Messaging with Immediate Decryption
+381
+Now, we sketch the proof that RID security of RC implies UNF security
+of RC-ARC. For any adversary A playing the UNF game with RC-ARC, we
+build a RID adversary B for RC. Each query made by A to the oracles SEND,
+RECEIVE, EXPpt, EXPst are forwarded by B to its own corresponding oracles
+(and domain separation is correctly implemented where needed). Queries of the
+form AUTHSEND(P) are simulated by B querying at′ ←SEND(P, 0, 0) and set-
+ting at ←(1, at′), which perfectly simulates the generation of a tag in ARC.
+Finally, AUTHRECEIVE queries are simulated using the RECEIVE oracle on the
+tag/ciphertext. B can perfectly simulate the UNF game for A.
+Now, let us assume that the UNF adversary A wins with the forgery and
+bad-P predicates evaluating to true. It means a forgery was received by a party
+P, then, later, that party sent a tag (i.e. a ciphertext in the RID game played by
+B) that is honestly and successfully delivered to a party P. That implies that in
+the RID game played by B, a party received a forgery, then sent a message that
+was successfully delivered, which is a winning condition for B.
+The second case is when the UNF adversary A wins with the forgery and
+bad-P predicates evaluating to true. This means that a forgery was received by a
+party P with ordinal num, then a tag with ordinal num′ ≥num was successfully
+received. Note that in our RC-ARC construction the tags are ciphertexts, thus
+the ordinals are strictly increasing, i.e., num′ > num. Therefore, in the RID game
+played by B, a forgery with ordinal num was received by P, then later a honest
+ciphertext with ordinal num′ > num was successfully delivered to P, making the
+bad-P predicate in the RID game true.
+Hence, for any adversary A winning the UNF game, there exists a RID adver-
+sary B that wins with at least the same probability.
+ORDINALS-security follows from the construction.
+⊓⊔
+5.2
+A UNF-Secure ARC Scheme
+We present a non-optimized UNF-secure ARC scheme given a RC scheme (Deﬁ-
+nition 1), i.e. we deﬁne the two additional algorithms AuthSend and AuthReceive.
+We present our scheme in Fig. 9.
+
+382
+K. Barooti et al.
+ARC.Setup(1λ)
+1 :
+pp0 ←RC.Setup(1λ); hk ←H.KGen(1λ)
+2 :
+return (pp0, hk)
+ARC.Init(pp)
+1 :
+(pp0, hk) ←pp
+2 :
+(st′
+A, st′
+B, z′) ←RC.Init(pp0)
+3 :
+num, max-num ←−1; S, R, Sack ←∅
+4 :
+stA ←(st′
+A, hk, S, R, Sack, num, max-num)
+5 :
+stB ←(st′
+B, hk, S, R, Sack, num, max-num)
+6 :
+z ←(z′, pp)
+7 :
+return (stA, stB, z)
+ARC.Send(stP, ad, pt)
+1 :
+(st′
+P, hk, S, ·, ·, num, ·) ←stP
+2 :
+(stP.st′
+P, num, ct) ←RC.Send(st′
+P, ad, pt)
+3 :
+h ←H.Eval(hk, (ad, ct))
+4 :
+stP.S ←S ∪{(num, h)}
+5 :
+stP.num ←num
+6 :
+return (stP, num, ct)
+ARC.AuthSend(stP)
+1 :
+(·, ·, S, R, ·, num, ·) ←stP
+2 :
+←(S, R, num)
+3 :
+return (stP, num, )
+ARC.Receive(stP, ad, ct)
+1 :
+(st′
+P, hk, ·, R, Sack, ·, max-num) ←stP
+2 :
+(acc, st′
+P, num, pt) ←RC.Receive(st′
+P, ad, ct)
+3 :
+if ¬acc then return (false, stP, ⊥, ⊥)
+4 :
+h ←H.Eval(hk, (ad, ct))
+5 :
+if num ≤max-num ∧(num, h) /∈Sack then
+6 :
+return (false, stP, ⊥, ⊥)
+7 :
+stP.R ←R ∪{(num, h)}
+8 :
+stP.st′
+P ←st′
+P
+9 :
+return (acc, stP, num, pt)
+ARC.AuthReceive(stP, )
+1 :
+(·, ·, S, R, Sack, num, max-num) ←stP
+2 :
+(SP, RP, numP) ←
+3 :
+// P received a forgery
+4 :
+if RP ⊈S then return (false, stP, num)
+5 :
+RP
+⊆←{(num, ·) ∈R : num ≤numP}
+6 :
+// P received a forgery
+7 :
+if RP
+⊆⊈SP then return (false, stP, num)
+8 :
+stP.Sack ←Sack ∪SP
+9 :
+stP.max-num ←max{max-num, numP}
+10 :
+return (true, stP, numP)
+Fig. 9. UNF-secure ARC scheme based on a RC scheme RC (Deﬁnition 1). The scheme
+uses four additional variables compared to RC: S is the set of sent (num, h); R is the
+set of received (num, h); Sack is the set of (num, h) which are expected to be received
+(according to the received authentication tag ); max-num represents the largest num
+received in an . All sets are append-only. For simplicity of exposition, we omit the
+optimisation where R is sent as a single hash and n ordinals as done in Fig. 6 for RID
+security.
+Scheme Description. The Send and Receive procedures call the respective pro-
+cedures of the underlying RC scheme. The Send procedure stores the hash of
+(ad, ct) for the message being sent, together with the corresponding num that
+the underlying RC.Send algorithm returns. The tuple composed of num and the
+hash is stored in a set S, which is in turn stored in the internal state of the party.
+The Send algorithm also updates the ordinal num in the state. The Receive proce-
+dure veriﬁes if the RC.Receive algorithm accepts the inputs and that the received
+message is not a forgery on a previously authenticated message, which is by con-
+struction contained in Sack. If both checks pass, Receive stores the hash of (ad, ct)
+together with the ordinal num returned by RC.Receive in a set R.
+
+On Active Attack Detection in Messaging with Immediate Decryption
+383
+AuthSend puts in the authentication tag at the hashes of the sent and received
+messages together with the last num returned by RC.Send. Intuitively, the num
+in the authentication tag at indicates which messages are authenticated in the
+S messages. Since the adversary can reorder messages both in the normal chan-
+nel and in the out-of-band channel, the ordinal indicates to the recipient of the
+authentication tag which messages they should compare against at. AuthReceive
+parses the authentication tag and checks whether the messages received by the
+counterpart are in the local S set. Then it veriﬁes whether the local set of received
+messages, without the messages not encompassed by at, is a subset of the mes-
+sages sent by the counterpart. If one of these conditions is not satisﬁed, then
+a forgery is detected. The sent messages authenticated by the counterpart are
+stored in a set Sack. Receive uses this set to avoid forgeries on already authenti-
+cated num’s.
+Remark 10. The size of the authentication tags and the state of each party in
+the scheme of Fig. 9 is linear in the number of sent and received messages as we
+show in Sect. 6. Messages can nevertheless be eﬃciently exchanged out-of-band
+in practice, e.g., using Bluetooth. Otherwise, parties can send authentication
+information over the insecure channel and authenticate it using the out-of-band
+channel by hashing and comparing digests [30]. If we assume that the underlying
+network channel is ordered (e.g., by using TCP), then the hashes of the last sent
+and received messages suﬃce to detect forgeries [11].
+Security Analysis. We now analyze the security properties of the scheme in
+Fig. 9. Correctness of the scheme follows from the correctness of the underlying
+RC scheme. Similarly, ORDINALS security follows from the ORDINALS security
+of RC, as the scheme of Fig. 9 outputs the same num that RC outputs.
+The UNF-security of the ARC scheme presented in Fig. 9, lies in the collision
+resistance of the hash function that the scheme uses. When one party P wants
+to authenticate the communication it produces an authentication tag containing
+the hashes of all the messages inboxed and outboxed by P. These hashes can be
+compared with the counterpart P to detect if any forgery has been received and
+accepted by one of the participants. In what follows we prove that the scheme
+of Fig. 9 is UNF-secure.
+Theorem 4 (Unforgeability of ARC). Let H be a (tcr, ϵcr)-collision resistant
+hash function. Then the ARC scheme, that we present in Fig. 9, is (q, t, ϵcr)-UNF
+secure ARC scheme where t ≈tcr.
+6
+Communication Costs for Attack Detection
+We study in this section the size of both ciphertexts and authentication tags
+of r-RID RC and r-UNF ARC schemes, respectively. In particular, all our con-
+structions of such schemes imply a linear growth of ciphertexts (and tags) in
+the number of messages sent, in the worst case. We show here that one can-
+not hope for better by proving two lower bounds. More precisely, we show that
+
+384
+K. Barooti et al.
+the ciphertext space (resp. tag space) of a r-RID RC (resp. r-UNF ARC) grows
+exponentially in the number of messages sent. Note that we cannot prove a lower
+bound on the ciphertext size directly as it is always possible that some ciphertext
+is small. However, our bounds imply that at least n bits are required to represent
+any ciphertext or tag in their respective domain after the n-th message.
+6.1
+Communication Cost of r-RID RC
+In what follows, we consider a RC that is perfectly correct: for all randomness r,
+valid states stP and associative data ad, the function Send(stP, ad, ·; r) mapping
+a plaintext to a ciphertext is injective.
+The next theorem proves that ciphertext size in a r-RID RC grows linearly in
+the number of messages (times either the security parameter or message size).
+Theorem 5. Let Π be a perfectly correct RC, ns and λ be ﬁxed, and Tλ,ns be
+the time complexity of the (eﬃcient) adversary given on the left of Fig. 10. In
+addition, let γ ∈Z be such that for all adversaries A running in at most time
+Tλ,ns which send at most ns messages, we have: Pr[r-RIDA
+Π (1λ) ⇒1] ≤
+1
+2γ . Let
+M = {0, 1}n and C = {0, 1}k be the plaintext and ciphertext space associated to
+Π, respectively. Then,
+k ≥n + (ns −1)(γ −2), if γ ≤n
+k ≥2 + ns(n −2), if γ > n.
+A third lower bounds gives
+k ≥nns −
+1
+1 −2nns
+2γ
+,
+which is tighter for low values of n (e.g. n = 1, 2) and when γ > n + log(ns).
+Proof. We show that if k is smaller than the given bounds, one can build an
+encoder/decoder for a uniform source s.t. the expected bit-length of a codeword
+is strictly lower than the entropy (i.e. the log of the size of the sampling set),
+contradicting Shannon’s source coding theorem.
+More formally, we consider a source that samples uniformly at random from
+the set {0, 1}n×ns × {0, 1}r, where r is the maximal number of bits (i.e. random
+coins) needed by the two procedures Setup and Init of Π and ns invocations
+of Send. We present an encoder and decoder for such a source in Fig. 11 (the
+non-boxed instructions in the encoder, and the decoder shown on the left). First
+assume that the RC used in the encoder/decoder has perfect r-RID security.
+Then, the sender sends ns honestly generated ciphertexts ct1, . . . , ctns, and the
+receiver receives the last ciphertext ctns. By perfect r-RID security, for any i < ns,
+any ciphertext ct′
+i ̸= cti should be rejected by the receiver. Thus, one can build
+an (ineﬃcient) decoder that tests all ct′
+i to ﬁnd the correct one and recovers the
+corresponding message. In a sense, all cti must be encoded in the last ciphertext
+ctns. The actual encoding is more complicated as if the r-RID security is not
+
+On Active Attack Detection in Messaging with Immediate Decryption
+385
+perfect, there will be a number of false positives (i.e. ct′
+i ̸= cti but ct′
+i is accepted
+by the receiver). Note that w.l.o.g., we omit the associated data throughout the
+proof (or assume ad = ⊥) as it plays no role.
+Lemma 1. Our encoder (Fig. 11) is perfectly correct, i.e.
+Pr[Decode(Encode(m1, . . . , mns, R)) = (m1, . . . , mns, R)] = 1 .
+Proof. The value R output by Decode is the same as the one input in Encode.
+Since the initial states depend only on R and Π is correct, ctns will decrypt
+to mns. The states sti
+A will be identical in both the encoding and decoding
+procedures as they are generated from sti−1
+A , the previously recovered message
+mi−1 and randomness Ri. This implies that the sets of accepting messages Si
+will be the same as they depend only on st1
+B and sti−1
+A . In addition, by the perfect
+correctness of Π, each message mi will be in the corresponding set Si. Hence,
+the decoder can recover each message mi by reading Si at the index given in the
+input.
+⊓⊔
+Lemma 2. Let C be the random variable corresponding to the codeword length
+output by Encode. In addition, let Fi := Si \ {mi} be the set of false positives,
+where Si and mi are as in Encode. Then, E[C] ≤k+r+ns−1
+i=1
+1+log(E[|Fi|]+1).
+Proof. By design, the encoder outputs a codeword of k + r + ns−1
+i=1 ⌈log(|Si|)⌉
+bits. Therefore, we have
+E[C] = k + r +
+ns−1
+
+i=1
+E[⌈log(1 + |Fi|)⌉] ≤k + r +
+ns−1
+
+i=1
+1 + E[log(1 + |Fi|)]
+which is upper bounded by k + r + ns−1
+i=1
+1 + log(E[|Fi|] + 1), by the linearity
+of expectation and the deﬁnition of Fi, the fact that ⌈x⌉≤1 + x, and Jensen’s
+inequality, respectively.
+⊓⊔
+Finally, we show the following key lemma.
+Lemma 3. Let Fi, i ∈[ns −1] be deﬁned as above and n, γ as in the statement
+of the Theorem. Then, E[|Fi|] ≤2n−γ.
+Proof. We proceed by contradiction. That is, we show that if E[|Fi|] > 2n−γ,
+then there exists an adversary Ai s.t. Pr[r-RIDAi
+Π (1λ) ⇒1] >
+1
+2γ .
+We present such an adversary Ai on the left of Fig. 10. The adversary samples
+ns messages m1, . . . , mns at random and makes A send these with randomness
+R1, . . . , Rns, respectively. Then, Ai makes B receive the last ciphertext ctns.
+Next, Ai samples a random message m, sends it using state sti−1
+A
+and randomness
+Ri to get a ciphertext ct and makes B receive it. Now, as ctns is sent after ct (ctns
+is sent with stns−1
+A
+and ct with sti−1
+A
+), ctns and ct will decrypt respectively to
+numns and numi s.t. numns > numi by correctness. Then, if m ̸= mi, then ct is
+diﬀerent from the i-th ciphertext cti (as we assume Send(sti−1
+A
+, ·; Ri) is injective).
+Therefore, if ct is accepted and m ̸= mi, then ct and numi satisfy the forgery
+
+386
+K. Barooti et al.
+Ai
+1 :
+m1, . . . , mns ←$ {0, 1}n×ns
+2 :
+R−1, R0, . . . , Rns ←$ {0, 1}r
+3 :
+for j ∈{1, . . . , ns} do
+4 :
+if j = i then
+5 :
+sti−1
+A
+←EXPst(A)
+6 :
+(ctj, numj) ←SEND(A, ∅, mj, Rj)
+7 :
+RECEIVE(B, ∅, ctns)
+8 :
+m ←$ {0, 1}n
+9 :
+, , ct ←Send(sti−1
+A
+, m; Ri)
+10 :
+RECEIVE(B, ∅, ct)
+11 :
+return B
+Ai
+1 :
+m1, . . . , mns ←$ {0, 1}n×ns
+2 :
+R−1, R0, . . . , Rns ←$ {0, 1}r
+3 :
+for j ∈{1, . . . , ns} do
+4 :
+if j = i then
+5 :
+sti−1
+A
+←EXPst(A)
+6 :
+(ctj, numj) ←SEND(A, ∅, mj, Rj)
+7 :
+(num, ) ←AUTHSEND(A)
+8 :
+i←index of
+9 :
+AUTHRECEIVE(B, i)
+10 :
+m ←$ {0, 1}n
+11 :
+, , ct ←Send(sti−1
+A
+, m; Ri)
+12 :
+RECEIVE(B, ∅, ct)
+13 :
+return B
+Fig. 10. Adversary for the proof of Theorem 5 (resp. Theorem 6) on the left (resp. on
+the right).
+predicate of the r-RID game in Fig. 4. In addition, as ctns is sent and delivered
+honestly, the conditions on lines 7 and 8 of the r-RID game always hold for numns
+and ctns, and the adversary wins (i.e. the bad-P predicate is satisﬁed). We call
+this event win.
+We now compute the probability that win happens, which is the probability
+that cti ̸= ct and B accepts ct. Let m1, . . . , mns and the whole randomness R
+(R = R−1, R0, . . . , Rns) be ﬁxed. As before, let Si be the set of messages m s.t.
+Receive(st1
+B, ct) accepts, for ct = Send(sti−1
+A , m; Ri). Note that since Si depends
+only (m1, . . . , mns, R) (which are now ﬁxed), it is deterministic. Therefore, con-
+ditioned on m1, . . . , mns, R, we have
+Pr
+m [win] = Pr
+m [m ∈Si ∧m ̸= mi] = Pr
+m [m ∈Fi] = |Fi|
+2n
+as m is sampled uniformly at random. Hence, overall
+Pr
+m,m1,...,mns,R[win] = Em1,...,mns,R[Pr
+m [m ∈Fi]] = E[|Fi|]
+2n
+.
+Note that both the source and the adversary sample m1, . . . , mns, R uniformly
+at random. Finally, if E[|Fi||] > 2n−γ, then Pr[win] > 2n−γ
+2n
+= 2−γ, which leads
+to the contradiction.
+⊓⊔
+By the previous lemma, we have log(E[|Fi|]+1) ≤log(2n−γ+1) ≤max(0, n−γ)+
+1 . Plugging this result into Lemma 2, we get E[C] ≤k +r +(ns −1)(max(0, n−
+γ)+2). In addition, as our encoder outputs a uniquely decodable code, we know
+that nsn + r ≤E[C] by Shannon’s source coding theorem. Hence, we get
+k + r + (ns −1)(n −γ + 2) ≥nsn + r ⇐⇒k ≥n + (ns −1)(γ −2)
+
+On Active Attack Detection in Messaging with Immediate Decryption
+387
+if γ ≤n and otherwise
+k + r + (ns −1)2 ≥nsn + r ⇐⇒k ≥2 + ns(n −2).
+Now that the ﬁrst two lower bounds have been shown, we prove the ﬁnal bound
+in the following lemma.
+Lemma 4. Let k, n, ns, γ as in the statement of the theorem. Then,
+k ≥nns −
+1
+1 −2nns
+2γ
+.
+Proof. In order to prove this lemma, we build another encoder/decoder pair
+very similar to the previous one. They are shown in Fig. 11 (with the boxed
+instructions for the encoder and the boxed decoder on the right). The only
+diﬀerence in the encoder is that if one false positive is found, the encoder outputs
+a bit set to zero and the trivial encoding of the input. Let’s call this event fail.
+If fail does not occur, a bit set to 1, the last ciphertext and the randomness are
+output.
+In the decoder, either the ﬁrst bit of the input is set to 0 and the input is
+returned straightaway, or b = 1 and the decoder proceeds as before. However, as
+there are no false positives, the mi can be recovered without using the indices ei
+(i.e. the correct message would be the only element of Si). Overall, the expected
+codeword length is E[C] = 1 + αnns + (1 −α)k + r, where α := Pr[fail], as if fail
+occurs a trivial encoding (on 1+nns +r bits) is used, and otherwise the encoder
+outputs 1 + k + r bits. By Shannon source coding theorem, we obtain
+1 + αnns + (1 −α)k + r ≥nns + r ⇐⇒k ≥nns −
+1
+1 −α
+In addition, we have α := Pr[fail] = Pr[∪ns−1
+i=1 {|Fi| ≥1}] ≤ns−1
+i=1
+Pr[|Fi| ≥1] as
+fail occurs if at least one of the sets of false positives Fi contains an element. Then,
+we have Pr[|Fi| ≥1] ≤E[|Fi|] ≤2n−γ, where the ﬁrst inequality follows from
+Markov’s inequality and the second from Lemma 3. Overall, we get α ≤ns2n
+2γ .
+Hence,
+k ≥nns −
+1
+1 −α ≥nns −
+1
+1 −2nns
+2γ
+.
+Finally, some algebra shows that this bound is tighter than the second one when
+2γ ≥2nns
+2 −2ns
+3 −2ns
+,
+that is, when γ is larger than ≈n + log(ns).
+⊓⊔
+
+388
+K. Barooti et al.
+Encode(m1, . . . , mns, R)
+1 :
+parse R−1, R0, . . . , Rns ←R; pp ←Setup(1λ; R−1); st0
+A, st0
+B, z ←Init(pp; R0)
+2 :
+for i ∈{1, . . . , ns} do// send the ns messages
+3 :
+sti
+A, num, cti ←Send(sti−1
+A
+, mi; Ri)
+4 :
+acc, st1
+B, num, m′
+ns ←Receive(st0
+B, ctns)// Receive ctns: m′
+ns = mns by perfect corr.
+5 :
+// Collecting false positives + correct messages:
+6 :
+for i ∈{1, . . . , ns −1} do
+7 :
+Si ←∅
+8 :
+for m ∈{0, 1}n do
+9 :
+, , ct′ ←Send(sti−1
+A
+, m; Ri)
+10 :
+acc, , , m′ ←Receive(st1
+B, ct′)
+11 :
+if acc then
+12 :
+if m ̸= mi then return (0, m1, . . . , mns, R)
+13 :
+Si ←Si ∪{m}
+14 :
+Li ←sort(Si)
+15 :
+ei ←index of mi in Li (in binary with ⌈log(|Li|)⌉bits)
+16 :
+encode ctns with k bits
+17 :
+return (1, ctns, R)
+18 :
+return (ctns, R, e0∥. . . ∥ens−1)
+Decode(ctns, R, E)
+1 :
+parse R−1, R0, . . . , Rns ←R
+2 :
+pp ←Setup(1λ; R−1)
+3 :
+st0
+A, st0
+B, z ←Init(pp; R0)
+4 :
+acc, st1
+B, num, mns ←Receive(st0
+B, ctns)
+5 :
+// Collecting false positives:
+6 :
+for i ∈{1, . . . , ns −1} do
+7 :
+Si ←∅
+8 :
+for m ∈{0, 1}n do
+9 :
+, , ct′ ←Send(sti−1
+A
+, m; Ri)
+10 :
+acc, , , m′ ←Receive(st1
+B, ct′)
+11 :
+if acc then Si ←Si ∪{m}
+12 :
+Li ←sort(Si)
+13 :
+ei ←read next ⌈log(|Li|)⌉bits of E
+14 :
+mi ←Li[ei]
+15 :
+sti
+A, ,
+←Send(sti−1
+A
+, mi; Ri)
+16 :
+return (m1, . . . , mns, R)
+Decode(b, data, R)
+1 :
+if b = 0 then
+2 :
+(m1, . . . , mns) ←data
+3 :
+return (m1, . . . , mns, R)
+4 :
+else ctns ←data
+5 :
+parse R−1, R0, . . . , Rns ←R
+6 :
+pp ←Setup(1λ; R−1); st0
+A, st0
+B, z ←Init(pp; R0)
+7 :
+acc, st1
+B, num, mns ←Receive(st0
+B, ctns)
+8 :
+// Collecting false positives:
+9 :
+for i ∈{1, . . . , ns −1} do
+10 :
+Si ←∅
+11 :
+for m ∈{0, 1}n do
+12 :
+, , ct′ ←Send(sti−1
+A
+, m; Ri)
+13 :
+acc, , , m′ ←Receive(st1
+B, ct′)
+14 :
+if acc then mi ←m
+15 :
+sti
+A, ,
+←Send(sti−1
+A
+, mi; Ri)
+16 :
+return (m1, . . . , mns, R)
+Fig. 11. Encoder without (resp. with)
+boxed
+instructions and decoder on the left
+(resp. right) for proving the ﬁrst 2 (resp. third) lower bound(s) in Theorem 5.
+On Non-Perfect Correctness. For simplicity in the proof, we only considered RC
+schemes which are perfectly correct. Note, however, that it should be possible to
+
+On Active Attack Detection in Messaging with Immediate Decryption
+389
+obtain a slightly worse bound for RC schemes that are not perfectly (computa-
+tionally or statistically) correct. In more detail, perfect correctness is used twice
+in the proof of Theorem 5: 1. in the encoder to argue that the encoded messages
+will decrypt properly and 2. in the reduction to argue that m ̸= mi ⇒ct ̸= cti.
+Then, if the probability that a correctness error arises is at most δ, we can argue
+as follows. In case 1., we can simply use the trick of the 3rd bound (i.e. output
+the trivial encoding if the encoded message does not decrypt properly) to get the
+same bounds −1/(1 −δ · ns). Then, in case 2., we will have Pr[win] > 2−λ −δ as
+we need to take into account the probability that m triggers a correctness error.
+This might incur an additional ≈−log(δ) loss in the bound. Overall the proof
+still holds with δ > 0, and if it is small then the bounds remain nearly identical.
+6.2
+Communication Cost of r-UNF ARC
+We consider a perfectly correct ARC (i.e. the function Send(stP, ad, ·; r) is injec-
+tive for all randomness r, valid states stP and associative data ad). The following
+theorem states that the tag size of a secure ARC grows linearly in the number
+of messages (times either the security parameter or message size).
+Theorem 6. Let Π be a perfectly correct ARC, ns and λ be ﬁxed, and Tλ,ns be
+the time complexity of the (eﬃcient) adversary given on the right of Fig. 10. In
+addition, let γ ∈Z be such that for all adversaries A running in at most time
+Tλ,ns which send at most ns messages, we have: Pr[r-UNFA
+Π (1λ) ⇒1] ≤
+1
+2γ . Let
+M = {0, 1}n and T = {0, 1}k be the plaintext and tag space associated to Π,
+respectively. Then, k ≥ns(γ −2), if γ ≤n, and k ≥ns(n −2), if γ > n. A third
+lower bounds gives
+k ≥nns −
+1
+1 −2n(ns+1)
+2γ
+,
+which is tighter for low values of n (e.g. n = 1, 2) and when γ > n + log(ns).
+This theorem can be proven almost identically to Theorem 5; the minor
+changes to the proof are presented in the full version [6].
+7
+Performance and Security Trade-Oﬀs
+In Sect. 6 we showed that r-RID and r-UNF impose a linear communication com-
+plexity for RC and ARC schemes. In this section we explore ways to bypass these
+lower bounds and propose practical protocols for active attack detection. We
+ﬁrst argue that s-RID/s-UNF security can be achieved at a much lower cost than
+the counterparts r-RID/r-UNF. Motivating this analysis, we propose a lightweight
+three-move protocol that authenticates communication in both direction over the
+out-of-band channels. Noting that ciphertexts size is unbounded in the schemes
+that we presented up to this point, we then propose an optimised scheme for
+UNF security that prunes unnecessary messages included in authentication tags.
+
+390
+K. Barooti et al.
+Table 1. Overhead induced by the two RID security notions. We assume that n mes-
+sages are received and c is the space needed to encode an ordinal. The variable nfresh
+refers to the number of messages received in the last two epochs.
+Notion
+r-RID
+s-RID
+Overhead
+O(n(λ + c))
+O(λ + nc)
+Optimized overhead (cf. full version [6])
+N/A
+O(λ + nfreshc)
+7.1
+On the Practicality of s-RID and s-UNF security
+We focus here on s-RID security, but similar arguments hold for s-UNF security.
+The RRC scheme in Fig. 6 achieves s-RID security by sending to the counter
+part the list of received nums and an hash of the R set. Informally, this suﬃces
+for security because a party can immediately detect when their counterpart has
+received a forgery (by keeping in state their sent messages and recomputing
+the hash). Table 1 summarizes the overheads of the two notions together with
+the optimized variant of s-RID, where only information about messages received
+during the two last epochs is sent.
+One can reduce ciphertext size further by optimising for the “good case”
+scenario where messages are delivered in-order; in this case, ordinals can be
+encoded in ranges. For epochs with no lost messages, it suﬃces to encode only
+the last index. In any case, as the size of a single message in today’s secure
+messaging applications can be several kilobytes, the overhead that s-RID imposes
+seems reasonable. We leave a deeper and concrete analysis to determine the
+impact of RID/UNF security in practice to future work.
+In Fig. 6, the entire set of received messages is hashed (using a regular hash
+function) every time a message is sent by P. Consequently, when P receives a
+new message, the entire hash must be re-computed when P sends their next
+message. To avoid this, the scheme can use an incremental hash function such
+that, when a message is received, an eﬃcient operation only depending on the
+new message and the previous digest can be executed to derive the new digest.
+Hash digests can be as small as a group element [13]. This enables parties to
+prune their set of sent/received messages in state. For example, if P receives a
+message m claiming that P has received the ﬁrst k messages from P, and P has
+received messages for all possible ordinals that precede the ordinal of m, then P
+can safely store just the incrementally-hashed value corresponding to the ﬁrst k
+messages, since P can no longer claim to have only received a strict subset of
+the k messages.
+
+On Active Attack Detection in Messaging with Immediate Decryption
+391
+7.2
+Lightweight Bidirectional Authentication
+We propose a three-move bidirectional authentication protocol. Figure 12
+describes the protocol at a high level. Parties include in the authentication tag
+only the set of received messages. The receiver of the tag compares then the set
+of received messages from the counterpart with the set of sent messages.
+We envision this approach to be used when participants meet in person or
+online and can both authenticate the respective views of the conversation at the
+same time. This is already required in Signal—with the veriﬁcation of safety
+numbers [28]—and other messaging solutions. For readers interested in the for-
+mal investigation of the scheme, we refer them to the full version of this paper [6].
+P
+P
+AuthSend(stP)
+RP
+AuthReceive(stP, at)
+RP, at-succ
+AuthSend(stP)
+AuthReceive(stP, at)
+AuthSend(stP)
+at-succ
+AuthReceive(stP, at)
+Fig. 12. Description of the three-move authentication procedure. The boolean at-succ
+indicates whether the counterpart’s set of received messages is a subset of the local set
+of sent messages.
+7.3
+Reducing Bandwidth for UNF Security
+In Fig. 13, we present a scheme that optimises bandwidth consumption for UNF
+security. A complete description and security proof are given in the full ver-
+sion [6]. Our scheme takes advantage of the fact that messages sent out-of-band
+cannot be forged. Suppose that P sends an authentication tag to P, then P
+acknowledge the reception of the tag to P. At this point, P no longer needs to
+send the information that P has already obtained. As usual, our scheme supports
+out-of-order communication even on the authenticated channels. This approach
+is complicated by the fact that parties have to keep track of, e.g., which tags their
+partner has received to determine what is safe to prune from state (in Sat-Seen),
+which incurs relatively small overhead in typical executions.
+
+392
+K. Barooti et al.
+ARC-OP.Setup(1λ)
+1 :
+pp0 ←RC.Setup(1λ); hk ←H.KGen(1λ)
+2 :
+return (pp0, hk)
+ARC-OP.Init(pp)
+1 :
+(pp0, hk) ←pp
+2 :
+(st′
+A, st′
+B, z′) ←RC.Init(pp)
+3 :
+num, max-num, cntat, max-cntat, ←0
+4 :
+S, R, Sack, Sat, Sat-Seen ←∅
+5 :
+stA ←(st′
+A, hk, S, R, Sack, num, max-num,
+6 :
+cntat, max-cntat, Sat, Sat-Seen)
+7 :
+stB ←(st′
+B, hk, S, R, Sack, num, max-num,
+8 :
+cntat, max-cntat, Sat, Sat-Seen)
+9 :
+z ←(z′, pp)
+10 :
+return (stA, stB, z)
+ARC-OP.Send(stP, ad, pt)
+1 :
+(st′
+P, hk, S, ·, ·, num, ·) ←stP
+2 :
+(stP.st′
+P, num, ct) ←RC.Send(st′
+P, ad, pt)
+3 :
+h ←H.Eval(hk, (ad, ct))
+4 :
+stP.S ←S ∪{(num, h)}
+5 :
+stP.num ←num
+6 :
+return (stP, num, ct)
+ARC-OP.AuthSend(stP)
+1 :
+(·, ·, S, R, ·, num, ·,
+2 :
+cntat, Sat, Sat-Seen) ←stP
+3 :
+stP.cntat ←stP.cntat + 1
+4 :
+←(S, R, num, cntat, Sat-Seen)
+5 :
+stP.Sat[stP.cntat] ←S
+6 :
+stP.Sat-Seen ←∅
+7 :
+return (stP, num, )
+ARC-OP.Receive(stP, ad, ct)
+1 :
+(st′
+P, hk, ·, R, Sack, ·, max-num) ←stP
+2 :
+(acc, st′
+P, num, pt) ←RC.Receive(st′
+P, ad, ct)
+3 :
+if ¬acc then return (false, stP, ⊥, ⊥)
+4 :
+h ←H.Eval(hk, (ad, ct))
+5 :
+if num ≤max-num ∧(num, h) /∈Sack then
+6 :
+return (false, stP, ⊥, ⊥)
+7 :
+stP.R ←R ∪{(num, h)}
+8 :
+stP.st′
+P ←st′
+P
+9 :
+return (acc, stP, num, pt)
+ARC-OP.AuthReceive(stP, )
+1 :
+(·, ·, S, R, Sack, num, max-num,
+2 :
+cntat, max-cntat, Sat, Sat-Seen) ←stP
+3 :
+(SP, RP, numP, cntat
+P, Sat-SeenP) ←
+4 :
+if cntat
+P ≤max-cntat then
+5 :
+return (true, stP, numP)
+6 :
+// P received a forgery
+7 :
+if RP ⊈S then return (false, stP, num)
+8 :
+RP
+⊆←{(num, ·) ∈R : num ≤numP}
+9 :
+// P received a forgery
+10 :
+if RP
+⊆⊈SP then return (false, stP, num)
+11 :
+stP.Sack ←stP.Sack ∪SP
+12 :
+stP.max-num ←max{max-num, numP}
+13 :
+stP.max-cntat ←max{cntat
+P, stP.max-cntat}
+14 :
+// garbage collection
+15 :
+stP.Sat-Seen ←stP.Sat-Seen ∪{cntat
+P}
+16 :
+stP.R ←stP.R \ RP
+⊆
+17 :
+for i ∈Sat-SeenP do
+18 :
+stP.S ←stP.S \ stP.Sat[i]; stP.Sat[i] ←∅
+19 :
+return (true, stP, numP)
+Fig. 13. Optimised UNF-secure ARC scheme ARC-OP based on a RC scheme RC (Def-
+inition 1). The sets S, R and Sack are as in Fig. 6. The variable max-num represents the
+largest num received in an . The counters cntat and max-cntat keep track of how many
+have been sent and largest cntat received in an , respectively. Sat-Seen is the list of cntat
+of received since the last sent one; Sat[i] contains the content of S sent in the ith . All
+sets are append-only.
+8
+Conclusion
+This work considers active attack detection for secure messaging with immediate
+decryption, including its inherent performance limitations and how to overcome
+them. We conclude with some avenues for future work: 1) Analyze the practical
+
+On Active Attack Detection in Messaging with Immediate Decryption
+393
+overhead of in- and out-of-band authentication; and 2) Deﬁne RID and UNF
+notions and corresponding constructions in the group setting.
+Acknowledgement. Khashayar Barooti and Lo¨ıs Huguenin-Dumittan are supported
+by a grant (project no. 192364) of the Swiss National Science Foundation (SNSF). We
+thank Olivier Becker and Nathan Duchesne for pointing out bugs in our constructions
+and proofs, and the anonymous reviewers of this paper for their feedback, notably the
+reviewer who proposed the epoch-based s-RID optimisation.
+References
+1. Alwen, J., Coretti, S., Dodis, Y.: The double ratchet: security notions, proofs, and
+modularization for the signal protocol. In: Ishai, Y., Rijmen, V. (eds.) EURO-
+CRYPT 2019. LNCS, vol. 11476, pp. 129–158. Springer, Cham (2019). https://
+doi.org/10.1007/978-3-030-17653-2 5
+2. Alwen, J., Coretti, S., Dodis, Y., Tselekounis, Y.: Modular design of secure group
+messaging protocols and the security of MLS. In: CCS (2021)
+3. Alwen, J., Coretti, S., Jost, D., Mularczyk, M.: Continuous group key agreement
+with active security. In: TCC (2020)
+4. Alwen, J., Jost, D., Mularczyk, M.: On the insider security of MLS. In: Dodis,
+Y., Shrimpton, T. (eds.) CRYPTO 2022. LNCS, vol. 13508, pp. 34–68. Springer,
+Cham (2022). https://doi.org/10.1007/978-3-031-15979-4 2
+5. Balli, F., R¨osler, P., Vaudenay, S.: Determining the core primitive for optimally
+secure ratcheting. In: Moriai, S., Wang, H. (eds.) ASIACRYPT 2020. LNCS, vol.
+12493, pp. 621–650. Springer, Cham (2020). https://doi.org/10.1007/978-3-030-
+64840-4 21
+6. Barooti, K., Collins, D., Colombo, S., Huguenin-Dumittan, L., Vaudenay, S.: On
+Active Attack Detection in Messaging with Immediate Decryption. IACR Cryp-
+tology ePrint Archive (2023)
+7. Bellare, M., Singh, A.C., Jaeger, J., Nyayapati, M., Stepanovs, I.: Ratcheted
+encryption and key exchange: the security of messaging. In: Katz, J., Shacham,
+H. (eds.) CRYPTO 2017. LNCS, vol. 10403, pp. 619–650. Springer, Cham (2017).
+https://doi.org/10.1007/978-3-319-63697-9 21
+8. Bienstock, A., Dodis, Y., Garg, S., Grogan, G., Hajiabadi, M., R¨osler, P.: On the
+Worst-Case Ineﬃciency of CGKA. In: Kiltz, E., Vaikuntanathan, V. (eds.) TCC
+2022. LNCS, vol. 13748, pp. 213–243. Springer, Cham (2022). https://doi.org/10.
+1007/978-3-031-22365-5 8
+9. Bienstock, A., Dodis, Y., R¨osler, P.: On the price of concurrency in group ratcheting
+protocols. In: Pass, R., Pietrzak, K. (eds.) TCC 2020. LNCS, vol. 12551, pp. 198–
+228. Springer, Cham (2020). https://doi.org/10.1007/978-3-030-64378-2 8
+10. Bienstock, A., Fairoze, J., Garg, S., Mukherjee, P., Raghuraman, S.: A More Com-
+plete Analysis of the Signal Double Ratchet Algorithm. In: Dodis, Y., Shrimpton,
+T. (eds.) CRYPTO 2022. LNCS, vol. 13507, pp. 784–813. Springer, Cham (2022)
+11. Caforio, A., Durak, F.B., Vaudenay, S.: Beyond security and eﬃciency: on-demand
+ratcheting with security awareness. In: Garay, J.A. (ed.) PKC 2021. LNCS, vol.
+12711, pp. 649–677. Springer, Cham (2021). https://doi.org/10.1007/978-3-030-
+75248-4 23
+12. Civit, P., et al.: Crime and punishment in distributed byzantine decision tasks.
+Cryptology ePrint Archive (2022)
+
+394
+K. Barooti et al.
+13. Clarke, D., Devadas, S., van Dijk, M., Gassend, B., Suh, G.E.: Incremental multiset
+hash functions and their application to memory integrity checking. In: Laih, C.-
+S. (ed.) ASIACRYPT 2003. LNCS, vol. 2894, pp. 188–207. Springer, Heidelberg
+(2003). https://doi.org/10.1007/978-3-540-40061-5 12
+14. Cohn-Gordon, K., Cremers, C., Dowling, B., Garratt, L., Stebila, D.: A formal
+security analysis of the signal messaging protocol. In: EuroS&P (2017)
+15. Cohn-Gordon, K., Cremers, C., Garratt, L.: On post-compromise security. In: CSF
+(2016)
+16. Cremers, C., Zhao, M.: Provably post-quantum secure messaging with strong com-
+promise resilience and immediate decryption. IACR Cryptology ePrint Archive
+(2022)
+17. Dowling, B., G¨unther, F., Poirrier, A.: Continuous authentication in secure mes-
+saging. In: Atluri, V., Di Pietro, R., Jensen, C.D., Meng, W. (eds.) ESORICS 2022.
+LNCS, vol. 13555, pp. 361–381. Springer, Cham (2022). https://doi.org/10.1007/
+978-3-031-17146-8 18
+18. Dowling, B., Hale, B.: There Can Be No Compromise: The Necessity of Ratcheted
+Authentication in Secure Messaging. IACR Cryptology ePrint Archive (2020)
+19. Dowling, B., Hale, B.: Secure messaging authentication against active man-in-the-
+middle attacks. In: EuroS&P (2021)
+20. Dowling, B., Hauck, E., Riepel, D., R¨osler, P.: Strongly anonymous ratcheted key
+exchange. In: Agrawal, S., Lin, D. (eds.) ASIACRYPT 2022. LNCS, vol. 13793,
+pp. 119–150. Springer, Cham (2022)
+21. Durak, F.B., Vaudenay, S.: Bidirectional asynchronous ratcheted key agreement
+with linear complexity. In: Attrapadung, N., Yagi, T. (eds.) IWSEC 2019. LNCS,
+vol. 11689, pp. 343–362. Springer, Cham (2019). https://doi.org/10.1007/978-3-
+030-26834-3 20
+22. Haeberlen, A., Kouznetsov, P., Druschel, P.: PeerReview: practical accountability
+for distributed systems. SIGOPS 41(6), 175–188 (2007)
+23. Ishai, Y., Ostrovsky, R., Zikas, V.: Secure multi-party computation with identiﬁable
+abort. In: Garay, J.A., Gennaro, R. (eds.) CRYPTO 2014. LNCS, vol. 8617, pp.
+369–386. Springer, Heidelberg (2014). https://doi.org/10.1007/978-3-662-44381-
+1 21
+24. Jacob, R., Larsen, K.G., Nielsen, J.B.: Lower bounds for oblivious data structures.
+In: SODA (2019)
+25. Jaeger, J., Stepanovs, I.: Optimal channel security against ﬁne-grained state com-
+promise: the safety of messaging. In: Shacham, H., Boldyreva, A. (eds.) CRYPTO
+2018. LNCS, vol. 10991, pp. 33–62. Springer, Cham (2018). https://doi.org/10.
+1007/978-3-319-96884-1 2
+26. Jost, D., Maurer, U., Mularczyk, M.: Eﬃcient ratcheting: almost-optimal guar-
+antees for secure messaging. In: Ishai, Y., Rijmen, V. (eds.) EUROCRYPT 2019.
+LNCS, vol. 11476, pp. 159–188. Springer, Cham (2019). https://doi.org/10.1007/
+978-3-030-17653-2 6
+27. Larsen, K.G., Nielsen, J.B.: Yes, there is an oblivious RAM lower bound! In:
+Shacham, H., Boldyreva, A. (eds.) CRYPTO 2018. LNCS, vol. 10992, pp. 523–
+542. Springer, Cham (2018). https://doi.org/10.1007/978-3-319-96881-0 18
+28. Marlinspike, M.: Safety number updates (2017). https://signal.org/blog/veriﬁed-
+safety-number-updates/. Accessed 22 May 2022
+29. Naor, M., Rotem, L., Segev, G.: Out-of-band authenticated group key exchange:
+from strong authentication to immediate key delivery. In: ITC (2020)
+
+On Active Attack Detection in Messaging with Immediate Decryption
+395
+30. Pasini, S., Vaudenay, S.: An optimal non-interactive message authentication pro-
+tocol. In: Pointcheval, D. (ed.) CT-RSA 2006. LNCS, vol. 3860, pp. 280–294.
+Springer, Heidelberg (2006). https://doi.org/10.1007/11605805 18
+31. Pijnenburg, J., Poettering, B.: On Secure Ratcheting with Immediate Decryption.
+In: Agrawal, S., Lin, D. (eds.) ASIACRYPT 2022. LNCS, vol. 13793, pp. 89–118.
+Springer, Cham (2022). https://doi.org/10.1007/978-3-031-22969-5 4
+32. Poettering, B., R¨osler, P.: Asynchronous ratcheted key exchange. IACR Cryptology
+ePrint Archive (2018)
+33. Poettering, B., R¨osler, P.: Towards bidirectional ratcheted key exchange. In:
+Shacham, H., Boldyreva, A. (eds.) CRYPTO 2018. LNCS, vol. 10991, pp. 3–32.
+Springer, Cham (2018). https://doi.org/10.1007/978-3-319-96884-1 1
+34. Scott-Railton, J., et al.: CatalanGate: Extensive Mercenary Spyware Operation
+against Catalans Using Pegasus and Candiru (2022). https://citizenlab.ca/2022/
+04/catalangate-extensive-mercenary-spyware-operation-against-catalans-using-
+pegasus-candiru/. Accessed 22 May 2022
+35. Support, S.: Twilio Incident: What Signal Users Need to Know (2022). https://
+support.signal.org/hc/en-us/articles/4850133017242. Accessed 03 Oct 2022
+

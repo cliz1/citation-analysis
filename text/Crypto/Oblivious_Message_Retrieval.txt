@@ -1,0 +1,1623 @@
+Oblivious Message Retrieval
+Zeyu Liu1(B) and Eran Tromer1,2
+1 Columbia University, New York, USA
+zl2967@columbia.edu
+2 Tel Aviv University, Tel Aviv, Israel
+Abstract. Anonymous message delivery systems, such as private mes-
+saging services and privacy-preserving payment systems, need a mecha-
+nism for recipients to retrieve the messages addressed to them without
+leaking metadata or letting their messages be linked. Recipients could
+download all posted messages and scan for those addressed to them, but
+communication and computation costs are excessive at scale.
+We show how untrusted servers can detect messages on behalf of recip-
+ients, and summarize these into a compact encrypted digest that recip-
+ients can easily decrypt. These servers operate obliviously and do not
+learn anything about which messages are addressed to which recipients.
+Privacy, soundness, and completeness hold even if everyone but the recip-
+ient is adversarial and colluding (unlike in prior schemes).
+Our starting point is an asymptotically-eﬃcient approach, using Fully
+Homomorphic Encryption and homomorphically-encoded Sparse Ran-
+dom Linear Codes. We then address the concrete performance using
+bespoke tailoring of lattice-based cryptographic components, alongside
+various algebraic and algorithmic optimizations. This reduces the digest
+size to a few bits per message scanned. Concretely, the servers’ cost is ∼$1
+per million messages scanned, and the resulting digests can be decoded
+by recipients in under ∼20 ms. Our schemes can thus practically attain
+the strongest form of receiver privacy for current applications such as
+privacy-preserving cryptocurrencies.
+1
+Introduction
+End-to-end encryption of message content is well understood and widely prac-
+ticed. However, metadata about which messages were sent and received by
+whom, and when, can yield abundant sensitive information via traﬃc analysis
+and deductions against auxiliary information. Protecting metadata is thus cru-
+cial to anonymous message delivery systems [7] such as anonymous messaging
+[20,42,61], privacy-preserving analytics [11], and privacy-preserving cryptocur-
+rencies [8,48].
+Yet, the problem of protecting communication metadata remains an open chal-
+lenge for many applications, especially when privacy, scalability, eﬃciency and
+decentralization are all crucial. This challenge is well exempliﬁed by metadata
+protection in privacy-preserving cryptocurrencies, such as Zcash [8,30] and Mon-
+ero [48]. These convey digital asset transaction on a public ledger (blockchain),
+c
+⃝International Association for Cryptologic Research 2022
+Y. Dodis and T. Shrimpton (Eds.): CRYPTO 2022, LNCS 13507, pp. 753–783, 2022.
+https://doi.org/10.1007/978-3-031-15802-5_26
+
+754
+Z. Liu and E. Tromer
+while keeping the contents of every transaction hidden from all but the counterpar-
+ties to the transaction (and those they elect to expose it to), using cryptographic
+protocols utilizing encryption and zero-knowledge proofs. Moreover, the underly-
+ing ledger is permissionless, decentralized and widely replicated, allowing anyone
+to send transactions over the Internet while anonymizing their IP address via stan-
+dard means such as the Tor network. Supposedly, metadata leaks are thus elimi-
+nated.1
+However, a crucial point lingers. From a receiver’s perspective, a transaction
+pertinent to them could appear anywhere in the ledger. If the receiver has a
+full copy of the ledger (a “full node” in blockchain parlance), then it could scan
+it to identify pertinent transactions, but the requisite communication, storage
+and computation cost may far exceed the capabilities of recipients (e.g., already
+today, such ledgers are many GB in size; consider, then, wallet apps running on
+computationally-weak mobile devices, with little storage, using slow or expensive
+network connections).
+How, then, can recipients eﬃciently detect which messages are pertinent to
+them, and retrieve the content of these messages? In general, we consider a bul-
+letin board consisting of numerous messages, with arbitrary application-speciﬁc
+content (of ﬁxed size). Each message is pertinent to a single recipient (identiﬁed
+by their public address) to which it was sent, and impertinent to other recipi-
+ents. A recipient, in lieu of receiving and scanning the whole ledger (full-scan),
+may enlist the help of servers, which we call detectors, that will help them detect
+their pertinent messages and retrieve the content of these messages.
+One approach is for the recipient to provide the detector with a “detection
+key” or “incoming viewing key”, that allows the detector to check, for each
+bulletin board message, whether it is pertinent to that recipient [30,48]. The
+pertinent messages can then be stored and forwarded to the client. Unfortunately,
+this exposes metadata to the detector, and thus also to anyone who subverted
+or coerced the detector, whether in real time or retroactively. Furthermore, such
+long-lived detection key enables devastating deanonymization attacks.2
+The problem of Oblivious Message Detection (OMD) is to perform such detec-
+tion without revealing any information to the detectors about which messages
+are pertinent. This is done today in Zcash via the ZIP-307 “light client” protocol
+[27], which is essentially optimized full-scan: convert each message to a compact
+format which contains just enough information for the recipient to check for
+pertinence, and then send all of these compacted messages to the recipient for
+processing. In practice, this process can take hours even for a relatively lightly-
+used chain, and is recognized as a severe usability and scalability issue.
+1 In reality, today’s blockchain privacy solutions suﬀer from assorted metadata leaks
+such as variability in transaction record size, ill-deﬁned cryptographic guaran-
+tees, inadequate network-level anonymization, exposure of amounts at the interface
+between transaction pools, and operational mistakes. These are outside our scope.
+2 For example, an adversary who acquired a detection key can easily ascertain whether
+that key belongs to a given person, by simulating a transaction to that person and
+seeing if it matches that detection key; if so, then all past and future transaction
+pertinent to that recipient become linked.
+
+Oblivious Message Retrieval
+755
+Furthermore, the full task is Oblivious Message Retrieval (OMR), where the
+recipient also gets the content (payload) of their pertinent messages. Given just
+detection, the recipient would still have to retrieve every detected pertinent
+message by some means. Naively querying the detector (or some other server)
+again leaks the pertinency metadata. This could be mitigated by using Private
+Information Retrieval, mixnets, or decoy traﬃc, but at high cost or/or ill-deﬁned
+security. This is recognized by practitioners as an important open problem.3
+These problems have been studied by two recent works, which made signif-
+icant headway, but still carry signiﬁcant drawbacks. Fuzzy Message Detection
+(FMD) [7] is based on inducing false-positive decoys into detection, and presents
+a diﬃcult tradeoﬀbetween security (a high decoy density is needed to foil adver-
+sarial analysis) and eﬃciency (these decoys all entail costs). Private Signaling
+(PS) [44]4 provides full privacy only if a single detector serves all recipients in
+the system, and moreover requires either trusted hardware such as Intel SGX, or
+a pair of servers that are in constant communication but trusted not to collude.
+Furthermore, both works assume for correctness that all senders and recipi-
+ents behave honestly, and are susceptible to ampliﬁed Denial-of-Service attacks,
+where an adversary can induce detector and/or recipient work that is dispropor-
+tional to the number of messages they place on the bulletin board. They also
+exhibit linkability between detection queries and identities. (See further discus-
+sion below.) We thus pose the problem:
+Is it feasible to achieve oblivious message retrieval/detection that is fully
+private, DoS-resistant, unlinkable, trustless, and practical?
+1.1
+Our Contributions
+In this paper, we propose schemes that fulﬁll all of the above requirements. Our
+approach is based on homomorphic encryption using lattice-based cryptography.
+Strong Security Deﬁnitions. We formally deﬁne the notions of Oblivious
+Message Retrieval and Detection. Our deﬁnitions capture natural notions of
+correctness and privacy, and moreover capture two important security notions
+that prior works failed to capture or achieve:
+– Prior works are vulnerable to ampliﬁed Denial-of-Service attacks in the real-
+istic threat model where there exist malicious participants (senders or recipi-
+ents) in the messaging system. Our strengthened notion says that even if arbi-
+trary system participants are adversarial and colluding, they cannot induce
+more errors or costs than honest participants.
+– Prior works are vulnerable to key-linkability attacks, which tie retrieval actions
+to public identities (or to each other) since public keys are themselves reused or
+linkable. We achieve a strong notion of key unlinkability, preventing these.
+3 E.g., Zcash developers [32] deem it an “action item” that the “lightwalletd [server]
+learns which transactions belong to the wallet”, and described the popular mitigation
+of using decoy fetches as “security theatre” that fails to achieve unlinkability.
+4 Private Signaling [44] is a concurrent and independent work, available only as a
+preprint at the time of this paper’s submission.
+
+756
+Z. Liu and E. Tromer
+Possibility of Compact OMR and OMD. We show that Fully Homomor-
+phic Encryption (FHE) can be used to achieve message retrieval and detection
+with full privacy against any (computationally-bounded) adversary. Moreover,
+we show that FHE can be used to distill the full bulletin board into a compact
+digest of size that is near-linear in the number of pertinent messages, rather than
+all messages in the bulletin board.
+Our approach is based on annotating messages with clues to their perti-
+nence, having the detector inspect these clues using FHE and pack the pertinent
+messages into a compact digest using homomorphically-encoded sparse random
+linear codes, and having the recipient algebraically reconstruct the messages
+from the decrypted digest. The homomorphic packing and encoding stages are
+reminiscent of techniques used in batch Private Stream Search [51] and Private
+Information Retrieval [4,5], adapted and optimized to the OMR/OMD setting.
+Practical OMR/OMD. Generic use of FHE is notoriously ineﬃcient. We
+tackle this by a series of optimizations to drastically improve concrete perfor-
+mance. Our techniques include bespoke composition of several diﬀerent lattice-
+based schemes (speciﬁcally PVW [54] and BFV [13,24]) and extensions thereto,
+utilization of SIMD-like packed operations, using a tailored Sparse Random Lin-
+ear Code, optimization of multiplicative depth to avoid expensive bootstrapping,
+and parameter tuning.
+We thereby obtain several concrete schemes, with diﬀerent tradeoﬀs, that
+achieve our security notions under standard lattice hardness assumptions (Ring-
+LWE). Security is thus plausibly postquantum. DoS-resistance holds under an
+additional natural conjecture about LWE-based encryption, or using zk-SNARKs.
+Implementation and Evaluation. We implemented our schemes as an open-
+source C++ library [50] and measured their concrete performance for a variety
+of parameters and in comparison to prior work. Salient observations include:
+– Detector-to-recipient computation: for Bitcoin-scale parameter settings, our
+OMR schemes have lower detector-to-recipient communication than any other
+known retrieval scheme: ∼9 bits per message for retrieval, and ∼4.5 bits/msg
+for just detection. For even larger parameters, the amortized retrieval digest
+size drops below 1 bit/msg.
+– Recipient’s computation is faster than any other known retrieval scheme, e.g.,
+∼20 ms to retrieve 50 pertinent messages out of 500, 000.
+– Detector’s cost for full retrieval is higher than in related schemes, but still
+quite practical at ∼0.065 s/msg (∼$1.02 per million messages) on a small
+cloud VM. For just detection, our scheme is faster than any other known
+scheme, including those based on trusted hardware.
+Thus, our schemes are attractive when recipients are limited in bandwidthor
+computation speed. The one drawback is a one-time cost of sending a key of size
+∼129 MB to a detector.
+Cryptocurrency Integration. We discuss key design points in integrating
+our scheme with a blockchain-based privacy-preserving cryptocurrency (exem-
+pliﬁed by Zcash) including protocol and costs aspect. We conclude that our
+
+Oblivious Message Retrieval
+757
+Table 1. Comparison of privacy guarantees and assumptions. Here, pN-msg-anonymity
+means the recipient’s messages are hidden among decoy (false-positive) messages which
+are a p fraction of the total N messages. “Partitioned across detectors” privacy means
+that if multiple detectors are used for scalability, then the anonymity set is just the
+recipients served by the same detector. “Honest S&R” means all senders are honest
+when generating clue for messages, and all receivers are honest when generating their
+clue keys. PS1 can be modiﬁed for key unlinkability (cf. Sect. 8). TEE means Trusted
+Execution Environment.
+Scheme
+Privacy
+Soundness + completeness
+Detection
+Retrieval
+Assumptions
+Assumptions
+Overﬂows
+Full Scan
+[27] Full
+ECDH + Auth Enc
+None
+None
+FMD1
+[7] pN-msg-anonymity, ﬁxed p = 2−i PKE
+Honest S&R
+None
+FMD2
+[7] pN-msg-anonymity, dynamic p
+PKE
+None
+PS1
+[44] Full
+N/A
+TEE (SGX) + DDH + PKE
+Undetected
+PS2
+[44] Partitioned
+across detectors N/A
+Communicating non-colluding servers
++ Garbled Circuit + Unforgeable Sigs
+Undetected
+OMRt1
+§5.3
+Full + full-key-unlinkability
+FHE
+Detected
+OMRp1
+§6.3
+Full + full-key-unlinkability
+Ring-LWE
+Honest S&R or Conjecture 1
+or zk-SNARK
+Detected
+OMRp2
+§6.4
+Full + full-key-unlinkability
+Ring-LWE
+Detected
+scheme is compatible with existing protocols, and that the cost of detection
+service would be ∼$1 of Cloud Computing per million messages scanned (i.e.,
+similar magnitude to the total monthly transaction ﬂow in all privacy-preserving
+cryptocurrencies).
+2
+Related Work
+2.1
+Message Detection
+Privacy-preserving message detection and retrieval has been studied in several
+prior and concurrent works, discussed below. Table 1 summarizes the function-
+ality and privacy aspects of these scheme, compared to our Oblivious Message
+Retrieval schemes presented in Sects. 5 to 8. See also Sect. 9 (e.g., Table 2) for
+comparison of concrete performance.5
+The closest prior work, addressing message detection in a sense similar to
+ours, is Fuzzy Message Detection (FMD) [7]. In Table 1 in this section, FMD1
+and FMD2 refer to Figs. 3 and 4 in [7], respectively. FMD provides the privacy we
+call pN-msg-anonymity: the detector can observe which messages were ﬂagged
+as pertinent, but hidden among many intentional false-positives which are indis-
+tinguishable from the truly pertinent messages. These decoys are a p fraction
+of the N messages in the bulletin. Like other decoy-based privacy notions, pN-
+msg-anonymity introduces uncertainty into naive analysis, but still allows many
+privacy-violating deductions, especially given recurring traﬃc or an active adver-
+sary [41].
+5 For reference, these tables also include full scan, which is the straightforward linear-
+communication approach where the recipient scans each message (or a relevant part
+thereof) in the whole bulletin board (used, e.g., in the Zcash light wallet [27]).
+
+758
+Z. Liu and E. Tromer
+Another closely related work (concurrent and independent) is Private Sig-
+naling (PS) [44]. Their model assumes that signals (analogous to our clues) are
+sent directly to servers (analogous to our detectors). Servers handle these sig-
+nals in a privacy-preserving way, using one of two mechanisms. The single-server
+(PS1) scheme relies on a Trusted Execution Environment (Intel SGX), running
+on the detector server. This is a very strong trust assumption (especially given
+the many past attacks on SGX [44, §2.2.1]), with total privacy failure if violated.
+The two-server (PS2) scheme instead relies on secure multiparty computation
+between two servers, using garbled circuit. The two servers jointly serve as a
+detector, and (shares of) signals are sent to both of them. Privacy holds as long
+as these servers communicate but do not collude nor leak their secrets. Note that
+in this model, if either of the servers is compromised and its data leaks, then
+the other server can passively deduce the protected information (the recipient of
+every message), even retroactively.
+DoS Attacks and Key Linkability. Both FMD and PS do not provide sound-
+ness guarantees if clues, or clue keys (public addresses), are generated mali-
+ciously; they are thus subject to Denial-of-Service (DoS) attacks (see Sect. 7).
+They also let detection queries be linked to each other, as well as to clue keys,
+hence to public identities (see Sect. 8).
+Retrieval. FMD originally addresses only the detection problem, but it natu-
+rally extends to retrieval by attaching the full payload for each message; we use
+this variant when we report the performance of FMD1 and FMD2 as retrieval
+schemes. PS also addresses the detection problem, but we cannot directly add
+payloads without breaking privacy; the PS schemes would need to be nontrivially
+modiﬁed to collect and send the payloads in some privacy-preserving way.
+2.2
+Other Works
+Private Retrieval. There are also works that deal with retrieval once indices are
+already known, i.e., Private Information Retrieval (PIR) [19,36]. The keyword
+PIR variant [6,18] assumes the client knows explicit plaintext keywords to search
+for (similarly to PSS, discussed below). Some works [39,46,62] rely on trusted
+hardware, such as Intel SGX, for retrieval privacy. Others oﬀer weak decoy-based
+notions of privacy [27,32]. Our model does not make any of these assumptions
+or relaxations.
+Our construction shares some techniques with state-of-the-art batch PIR
+protocols [4,5], namely homomorphic accumulation of messages using FHE and
+linear coding. However, in our case the retrieved indices are not known a priori
+to the recipient, so our scheme includes encoding and homomorphic decoding of
+suitable clues, which are then used to guide the accumulation. Furthermore, we
+use a diﬀerent coding technique, adapted to this setting.
+Other Private Messaging Aspects. The complementary problem of main-
+taining sender privacy when posting on the bulletin board is addressed by
+Riposte [20], Signal’s Sealed Sender [42] and its improvement [45]. Alpenhorn
+[38] addresses privacy-preserving connection establishment. As discussed in [7],
+
+Oblivious Message Retrieval
+759
+Alpenhorn essentially uses identity-based encryption and a trusted server to
+reduce that problem to the privacy-preserving message retrieval problem stud-
+ied by this paper. The Vuvuzela [29] mixnet oﬀers diﬀerential privacy for sender
+and receiver metadata. Rather than a bulletin board model, it assumes an online
+model where users to remain connected at all times (lest their messages get
+dropped). It employs a cluster of servers, of which at least one is assumed to be
+honest. Bandwidth cost is high (e.g., 30 GB/month for users and 416 TB/month
+for servers [29]).
+Private Stream Search. Private Stream Search (PSS) was introduced by
+Ostrovsky and Skeith [51] and followups [9,21,25]. It allows a client to search
+a keyword over a database of documents and download the ones with such a
+keyword without revealing the keyword to the server.
+In terms of techniques, our use of homomorphic accumulation and linear
+coding is shared also with PSS. However, in PSS, the elements being sought are
+plaintext words, which allows for relatively simple protocols. In OMR, conversely,
+the analogues are “clues” which must be randomly sampled and unlinkable,
+to hide the identity of the recipients. Therefore, we employ FHE to compute
+a complicated circuit for homomorphic decryption (and ampliﬁcation) before
+retrieval, which creates very diﬀerent cost tradeoﬀs, optimizations and imple-
+mentation details compared to PSS. Furthermore, the past PSS works mainly
+focused on optimizing the communication cost, at the cost of very high server-
+server computation (e.g., [25], using Reed-Solomon coding, has a server perform
+do computation superlinear in the number of pertinent messages, for every bul-
+letin message); we use diﬀerent coding techniques to attain practicality in the
+OMR setting.
+3
+Model and Deﬁnitions
+System Model. In this section, we deﬁne the model and the problem of Obliv-
+ious Message Detection and Retrieval. The system components and their high-
+level properties are as follows. See also the high-level components of Fig. 1 (but
+disregard, for now, the detailed schemes like PVW or BFV; these will be intro-
+duced in Sect. 6)
+A bulletin board (or board for short), denoted BB, contains N messages (e.g.,
+blockchain transactions). Each message is sent from some sender and addressed
+to some recipient, whose identities are supposed to remain private.
+A message is a pair (xi, ci) where xi is the payload to convey, and ci is a clue
+which helps notify the intended recipient (and only them) that the message is
+addressed to them.
+We denote the payload space P = {0, 1}˜n for some ˜n ∈Z+, and the clue
+space C (typically ℓnumber of ciphertexts in some encryption system). The
+whole board BB (i.e., all payloads and clues) is public. (In applications, the
+payloads will typically be end-to-end encrypted.)
+At any time, any potential recipient p may retrieve the messages addressed to
+them in BB. We call these messages pertinent (to p), and the rest are impertinent.
+
+760
+Z. Liu and E. Tromer
+Fig. 1. System components, and major internal parts of the practical schemes.
+A server, called a detector, helps the recipient p detect which message indices
+in BB are pertinent to them, or retrieve the payloads of the pertinent messages.
+This is done obliviously: even a malicious detector learns nothing about which
+messages are pertinent. The recipient gives the detector their detection key, and
+a bound ¯k on the number of pertinent messages they expect to receive. The
+detector then accumulates all of the messages in BB into string M, called the
+digest, and sends it to the recipient p. The digest M should be much smaller
+than the board BB (ideally, proportional to ¯k).
+The recipient p processes M to recover all of the pertinent messages with high
+probability, assuming a semi-honest detector and that the number of pertinent
+messages did not exceed ¯k. The false negative rate (probability that a pertinent
+message is not recovered from the digest) is denoted by ϵn. The false positive rate
+(probability that an impertinent message is output by the recovery procedure)
+is denoted by ϵp. Both ϵn and ϵp are small (e.g., under 10−9).
+There may be many detectors, and each may support many recipients. Out-
+side our scope are application-speciﬁc aspects such as payload encryption, con-
+tact discovery and key establishment, the privacy-preserving mechanism by
+which messages are posted to the board, or how recipients subscribe with detec-
+tors. See related discussion in Sects. 2 and 10.
+Threat Model (Non-DoS). We assume a computationally-bounded adversary
+that can read all public information, including all board messages, all public keys
+in the system, and all communication between the detector and the receiver. It
+can also honestly generate new messages (with any payload) and post them on
+the board, as well as honestly generate new clue keys and induce other parties
+to generate messages addressed to those keys. For soundness and completeness,
+we require the detectors, senders, and recipients to be honest but curious; they
+may collude by sharing information. In regard to privacy, we let all parties in the
+
+Oblivious Message Retrieval
+761
+systems be malicious and colluding (including detectors, senders, and recipients),
+except of course for the sender and recipient of the message(s) whose privacy is
+to be protected. (A stronger Denial-of-Service (DoS) threat model will be deﬁned
+in Sect. 7.1. Key unlinkability will be deﬁned in Sect. 8.)
+3.1
+Deﬁnitions
+Oblivious Message Retrieval. We capture the notion of an Oblivious Message
+Retrieval (OMR) scheme as follows.
+Deﬁnition 1 (Oblivious Message Retrieval (OMR)).
+An Oblivious Message Retrieval scheme has the following PPT algorithms:
+– pp ←GenParams(1λ, ϵp, ϵn): takes a security parameter λ, a false positive
+rate ϵp and a false negative rate ϵn, and outputs public parameters pp. pp is
+implicitly taken by the following algorithms.
+– (sk, pk = (pkclue, pkdetect)) ←KeyGen() : outputs a secret key sk and a public
+key pk consisting of a clue key pkclue and a detection key pkdetect.
+– c ←GenClue(pkclue, x) : takes a clue key and a payload x ∈P, and output a
+clue c ∈C.
+– M ←Retrieve(BB, pkdetect, ¯k) : takes as input a board BB = {(x1, c1), . . . ,
+(xN, cN)} for some size N, a detection key pkdetect, and an upper bound ¯k on
+the number of pertinent messages addressed to that recipient; and output a
+digest M.
+– PL ←Decode(M, sk) : takes the digest M and corresponding secret key sk,
+and outputs either a decoded payload list PL ⊂Pk or an overﬂow indication
+PL = overﬂow.
+To deﬁne completeness, soundness, and privacy, we ﬁrst deﬁne the notion of
+board generation:
+Deﬁnition 2 (board generation).
+Given pp, and N which is the number
+of messages: Arbitrarily choose the number of recipients 1 ≤p ≤N, and
+a partition of the set [N] into p subsets S1, . . . , Sp representing the indices
+of messages addressed to each party. Also arbitrarily choose unique payloads
+(x1, . . . , xN). For each recipient i ∈[p]: generate keys (ski, pki) ←KeyGen(),
+and for each j ∈Si, generate cj ←GenClue(pki, xj). Then, output the board
+BB = {(x1, c1), . . . , (xN, cN)}, the set S1, and (sk1, pk1 = (pkclue1, pkdetect1)).6
+The scheme must satisfy the following properties:
+– (Completeness) Let pp ←GenParams(1λ, ϵp, ϵn). Set any N = poly(λ), and
+0 < ¯k ≤N. Let a board BB, a set S of pertinent messages, and a key
+pair (sk, pk = (pkclue, pkdetect)) be generated as in Deﬁnition 2 for any choice
+of p, partition and payloads therein. Let M ←Retrieve(BB, pkdetect, ¯k) and
+PL ←Decode(M, sk). Let k = |S| (the number of pertinent messages in
+6 That is, S1 is the indices of messages pertinent to the recipient whose keys are
+sk1, pk1, which wlog is the ﬁrst recipient.
+
+762
+Z. Liu and E. Tromer
+S). Then either k > ¯k and PL = overﬂow, or Pr[xj ∈PL | j ∈S] ≥
+(1 −ϵn −negl(λ))
+for all j ∈[N].
+– (Soundness) For the same quantiﬁers as in Completeness: Pr[(xj ∈PL | j ̸∈
+S) ∨(x ∈PL | x ̸∈(x1, . . . , xN))] ≤(ϵp + negl(λ))
+for all j ∈[N].
+– (Computational privacy) For any PPT adversary A = (A1, A2): let pp ←
+GenParams(ϵp, ϵn), (sk, pk = (pkclue, pkdetect)) ←KeyGen() and (sk′, pk′ =
+(pk′
+clue, pk′
+detect)) ←KeyGen(). Let the adversary choose a payload x and
+remember its state: (x, st) ←A1(pp, pk, pk′). Let c ←GenClue(pkclue, x)
+and c′ ←GenClue(pk′
+clue, x). Then: |Pr[A2(st, c) = 1] −Pr[A2(st, c′) = 1]| ≤
+negl(λ).
+An OMR scheme is compact if it moreover satisﬁes the following:
+– (Compactness) An OMR scheme is compact if for pp ←GenParams(1λ, ϵp, ϵn),
+(sk, pk
+=
+(pkclue, pkdetect))
+←
+OMR.KeyGen(), for any board BB
+=
+{(x1, c1), . . . , (xN, cN)}, letting M ←Retrieve(BB, pkdetect, ¯k), it always holds
+that: |M| = poly(λ, log N) · log ϵ−1
+p
+· ˜O(¯k + ϵpN).
+Stronger Deﬁnitions. The above deﬁnition assumes that the board generation
+is done honestly (though possibly adaptively). For maliciously generated board
+(e.g., clues not form GenClue), see Sect. 7 for related attacks and a strengthening
+that prevents them. For simplicity, we also assume the payloads (xi)i∈[N] are all
+unique (cf. Deﬁnition 2), but it can be naturally extended to the case of duplicate
+payloads.
+Oblivious Message Detection. As a stepping stone towards OMR, we deﬁne
+a weaker functionality, Oblivious Message Detection (OMD), in which the digest
+merely enables detection of the indices of the pertinent messages, but doesn’t
+convey the corresponding payloads. Instead of a function Retrieve(BB, pkdetect, ¯k)
+that enables decoding the pertinent message payloads, OMD oﬀers a function
+Detect(BB, pkdetect, ¯k) that enables decoding the pertinent message indices. Com-
+pleteness then says that the index of each of the pertinent messages is included
+in PL with probability ≥1 −ϵn −negl(λ). Soundness says that the index of each
+non-pertinent message is included in PL with probability ≤ϵp + negl(λ).
+4
+Preliminaries
+Notation. All logarithms are expressed in base 2 if not indicated otherwise. Let
+[n] denote the set {1., . . . , n}, and let [n, m] denote the set {n, ..., m}. We use
+P(. . . ; s) to denote a randomized algorithm P running with randomness s. Our
+big-O notation, when applied to computational and communication complexity,
+absorbs the security parameter λ and payload size ˜n as a constant. When we
+use a pseudorandom function (PRF), we assume that its range is as implied by
+the context (i.e., that the PRF’s outputs are computationally indistinguishable
+from uniform over that range). We use ⟨i⟩sk to denote the space of ciphertexts
+that decrypt to i under sk.
+
+Oblivious Message Retrieval
+763
+4.1
+LWE Encryption
+Our constructions will be optimized by using lattice-based encryption. We will
+use the PVW [54] variant of Regev’s LWE-based encryption [57], deﬁned as
+follows at a high level, and details in full version.
+The public parameters
+ppLWE = (n, ℓ, w, q, σ) ←PVW.GenParams(1λ, ℓ, q, σ) contain secret key dimen-
+sion n, the number of LWE samples in the public key w, noise standard deviation
+σ, ciphertext modulus q, and number of bits of the plaintext modulus ℓ. (ppLWE
+is assumed to be implicitly taken by the other algorithms.)
+For key generation (sk, pk)
+←
+PVW.KeyGen() and encryption ct
+=
+(⃗a,⃗b) ←PVW.Enc(pk, ⃗m)). Most crucial is the decryption algorithm ⃗m ←
+PVW.Dec(sk, ct = (⃗a,⃗b)), which will be evaluated homomorphically. It computes
+ℓinner products ⃗d = ⃗b −skT⃗a ∈Zℓ
+q and outputs ⃗m ∈Zℓ
+2 where mi = 1 if
+⌈q/4⌉≤b[i] < ⌈3q/4⌉and mi = 0 otherwise.
+PVW is unconditionally correct (sound), and under the standard Learning
+With Error (LWE) hardness assumption [3,57] it fulﬁlls the standard deﬁnitions
+of semantic security (IND-CPA) and key privacy.
+4.2
+Homomorphic Encryption
+Fully Homomorphic Encryption (FHE) enables evaluation of a circuit on
+encrypted data, such that the resulting ciphertext (when decrypted) is the out-
+put of the circuit on the data, but the evaluator learns nothing about the data.
+Formally, an (asymmetric) FHE scheme is an encryption with PPT algo-
+rithms GenParams(1λ), KeyGen(), Enc(pk, m), Dec(sk, c) fulﬁlling the standard
+deﬁnitions of semantic security, soundness, and key privacy. Moreover, it has two
+more PPT algorithms: Eval(pk, (ct1, . . . , ctk), C), Recrypt(pk, ct). Recrypt func-
+tion is as deﬁned in [26], i.e., it decrypts homomorphically using the encrypted
+secret key, thus yielding a fresh re-encryption of the original plaintext. These
+two new algorithms fulﬁll the following generalized correctness. Given a circuit
+C and plaintexts (m1, ..., mk), ciphertexts (ct1, ..., cik) which are each either
+cti ←FHE.Enc(pk, mi) or cti ←FHE.Recrypt(pk, FHE.Enc(pk, mi)), and let-
+ting ct′ ←FHE.Eval(pk, C, (ct1, ..., ctk)): Pr[FHE.Dec(sk, ct′) = C(m1, ..., mk)] ≥
+1 −negl(λ). We require an additional property for the FHE scheme:
+Deﬁnition 3 (Wrong-Key Decryption). For an FHE scheme with plaintext
+space Zt, and t
+≥
+2, letting (sk, pk)
+←
+FHE.KeyGen(1λ) and (sk′, pk′)
+←
+FHE.KeyGen(1λ), ct ←FHE.Enc(pk, 1), and m′ ←FHE.Dec(sk′, FHE.Recrypt
+(pk′, ct)), it holds that: Pr[m′ = 1] ≤1/t + negl(λ).
+BFV
+Encryption. We use the Brakerski/Fan-Vercauteran homomorphic
+encryption scheme [13,24], which we refer to as the BFV scheme. Given a poly-
+nomial from the cyclotomic ring Rt = Zt[X]/(XD+1), the BFV scheme encrypts
+it into a ciphertext consisting of two polynomials, where each polynomial is from
+Rq = Zq[X]/(XD + 1) where q > t. We refer to t, q, and D as the plaintext
+modulus, the ciphertext modulus, and the ring dimension, respectively. Each
+
+764
+Z. Liu and E. Tromer
+ciphertext can pack D plaintext group elements (m1, . . . , mD) ∈ZD
+t , and “sin-
+gle instruction, multiple data” (SIMD) homomorphic operations can be applied.
+BFV is unconditionally correct (sound), and under the standard Ring-LWE
+(RLWE) [43,55] hardness assumption it fulﬁlls semantic security (IND-CPA).
+5
+Generic OMR and OMD Using FHE
+5.1
+Oblivious Message Detection Using FHE
+We start by constructing Oblivious Message Detection (OMD), with retrieval
+to be added in Sect. 5.2 This section’s constructions will be based on general
+fully homomorphic encryption (FHE), and assume all the clues are generated
+honestly. This serves as a simple proof of theoretical possibility; Sect. 6 will
+address practicality and stronger security guarantees.
+Non-compact Construction of OMD. We start by showing how pertinent
+messages can be detected, with a small digest, using any key-private public-key
+FHE satisfying Deﬁnition 3 (e.g., FHEW/TFHE [16,22]). For simplicity, assume
+the plaintext space is Z2.7 Our didactic starting point is a straightforward, non-
+compact construction; we then improve it to achieve compactness.
+High-Level Idea. Each clue ci for i ∈[N] consists of ℓciphertexts, each
+encrypting the constant 1 under the public key of the party this message is
+addressed to. The detector, serving recipient p, will use p’s FHE public key pk
+to recrypt all the ciphertexts in all the clues: ci,j →c′
+i,j for j ∈[ℓ]. Crucially, note
+that each such c′
+i,j will be ⟨1⟩sk if the message is addressed to p, and otherwise
+be 1 with probability ≤1/2 + negl(λ) when decrypted by sk, the correspond-
+ing secret key for the recipient p (by Deﬁnition 3). Thus, for each message, The
+detector performs an AND gate over all c′
+i,j (j ∈[ℓ]) to get PVi (the Pertinency
+Vector) for all i ∈[N]. Then the detector sends PV vector to the recipient. The
+recipient decrypts each PVi using its FHE secret key, and if the result is 1, deems
+the i-th message pertinent.
+The resulting OMD algorithm OMDt1 pseudocode and analysis is deferred
+to the full version.
+Theorem 1. The scheme OMDt1 is an Oblivious Message Detection scheme,
+when instantiated with any fully homomorphic encryption scheme.
+Compact Construction of OMD. Our next step is to achieve compactness,
+i.e., a digest size which depends primarily on the number of pertinent messages k,
+rather than the total number of messages N. Since k itself is a private information
+that should not be exposed, the digest size (and detector’s computation) instead
+7 The following naturally generalizes to plaintext space Zt for any prime t. For brevity,
+we kept this section focused on Z2, which suﬃces for its results, and added footnotes
+to clarify the generalization. Section 6 will use t > 2.
+
+Oblivious Message Retrieval
+765
+need to depend on an upper bound ¯k on the number of pertinent messages k for
+the particular recipient (see Deﬁnition 1). The bound ¯k is given as a parameter
+to the detector.8
+The technique used here is reminiscent of that used in [51], where homomor-
+phic operations are used to summarize “documents” according to 0/1 encryp-
+tions; in our case the 0/1 encryptions are indirectly derived by homomorphic
+computation (as above), and the (implicit) “documents” are our message indices.
+High-Level Idea. We start as above, with the detector recrypting these and
+computing PVi ciphertexts which are ⟨1⟩sk iﬀthe i-th message is pertinent w.h.p.
+Then, we create m buckets, for some m > ¯k (to be ﬁxed later). Each bucket
+contains an accumulator Acci containing a value in ZN encrypted under pk,
+represented as a vector of ⌈log(N)⌉ciphertexts of FHE that store the bit-wise
+binary encoding of the ZN element.9 A bucket also contains a counter Ctri∈[m],
+where Ctri contains a value in Z¯k encrypted under pk, represented using binary
+encoding as well. All buckets and counters initially encrypt 0.
+To add the i-th message in the board, the detector computes PVi as in
+OMDt1, draws a random bucket index μ ∈[m], and homomorphically adds PVi
+to counter Ctrμ in Z¯k. It also homomorphically computes PVi and adds it to the
+accumulator Accμ.
+Finally, the detector sends all buckets and counters to the recipient. The
+recipient decrypts these and checks: if the decrypted Ctrμ is 1, then bucket has a
+single pertinent message mapped to it, and the decrypted Accμ gives the index
+of that message. If any Ctrμ decrypts to greater than 1, indicating that several
+pertinent messages collided in the μ-th bucket, then it outputs overﬂow.
+This method gives us a success rate of ρ = ¯k−1
+i=1
+(m−i)
+m
+. To achieve the desired
+ϵn, we amplify by repeating this C times with fresh buckets and counters and
+re-randomized assignment of messages to buckets, such that (1 −ρ)C < ϵn.
+Our technique is diﬀerent from bloom ﬁlter as used in [17,21]. With bloom
+ﬁlter, the recipient runtime can easily be O(N), and for polylog(N) cost, there
+is an extra false positive rate, which can be avoided using our technique.
+Gathering Partial Information. The ampliﬁcation can be optimized as fol-
+lows. Even when a set of buckets contains collisions and thus doesn’t directly
+decode to give all pertinent message indices, there will likely be some buckets
+in the set that do yield useful information (i.e., the corresponding counters are
+⟨1⟩sk). If we gather all such partial information together, we may get the full
+information. Then, the failure probability is < 1 −¯k−1
+i=1 (1 −( i
+m)C).
+Parameter Analysis. The scheme requires choice of m and C. If we choose
+m = 10¯k, we can then choose the smallest integer C such that 1 −¯k−1
+i=1 (1 −
+(
+i
+10¯k)C) ≤ϵn. We can see that C = O(log(¯k) log(1/ϵn)) by using union bound.
+We get similar results for any choice of m > k that is linear in k.
+8 If the actual number of pertinent messages k exceeds the assumed bound ¯k, then
+retrieval may fail. The recipient can detect overﬂow and ask for the detection to be
+redone with a larger ¯k. Our scheme gives the exact number of k, as discussed below.
+9 For FHE over Zt, use ⌈logt(N)⌉ciphertexts per bucket.
+
+766
+Z. Liu and E. Tromer
+Decoding k. We add a global counter for the total number of pertinent mes-
+sages, Ttl, represented as ⌈log(N)⌉ciphertexts of FHE containing the bit-wise
+binary representation of k ∈ZN. The detector homomorphically sums all PV’s
+into Ttl to let the recipient learn the number of pertinent messages, k.
+We construct a compact OMD algorithm OMDt2 using the techniques men-
+tioned above. Pseudocode and analysis of OMDt2 and the proof of the following
+theorem are deferred to the full version.
+Theorem 2. The scheme OMDt2 is a compact Oblivious Message Detection
+scheme, when instantiated with any fully homomorphic encryption scheme FHE
+and a PRF f.
+This construction satisﬁes the asymptotic requirements of compact OMR (com-
+pleteness, soundness, privacy, and compactness). Additional asymptotic opti-
+mizations are possible and deferred to the full version. The above is still far
+from concrete practicality (see end of Sect. 5), as will be addressed in Sect. 6.
+5.2
+Payload Retrieval Using FHE
+An OMD scheme, like the one above, lets the recipient learn the indices of the
+messages addressed to it in the board. It would then still need to retrieve the
+content (or payload) of those messages, and (in our motivating applications)
+do so privately without revealing which messages were of interest. As discussed
+in Sect. 2, retrieval with current methods after obtaining the indices is either
+ineﬃcient or non-private.
+We thus extend the above OMD scheme to Oblivious Message Retrieval,
+starting with a simple construction from generic FHE below, and improving it in
+Sect. 6. Our approach embeds techniques from PSS [9,21,25,51] and multi-query
+PIR [4,5] (see Sect. 2.2) into the detector’s operation, without an extra round-
+trip to the client. Speciﬁcally, we use the encrypted 0/1 pertinency bits, derived
+above, to extract the pertinent payloads using homomorphic multiplication; we
+then compress these using homomorphically-evaluated linear codes. As discussed
+in Sect. 2.2, these techniques require substantial adaptations for eﬃciency in
+OMD/OMR. The generic OMR approach is detailed below, ﬁrst as an ineﬃcient
+construction based on generic FHE (as a didactic stepping stone), and then with
+major optimizations (Sect. 6).
+Single
+Pertinent
+Message. Our starting point is the above OMDt1
+construction.
+The
+detector’s
+procedure
+OMR.Retrieve
+ﬁrst
+runs
+PV
+←
+OMDt1.Detect(D, pk, ¯k, ϵn), to obtain a pertinency vector PV of N ciphertexts,
+each encrypting 1 or 0. It then proceeds as follows.
+Consider ﬁrst the simple scenario where, throughout the board, there is a
+single message xz that is pertinent for the recipient p (but z is initially unknown).
+Hence, PV has a single ⟨1⟩sk ciphertext, and the rest are ⟨0⟩sk.
+Let the payload space P be represented by a tuple of FHE’s plaintext space
+(i.e., for P = {0, 1}˜n and the plaintext space Z2, we use ˜n ciphertexts to represent
+
+Oblivious Message Retrieval
+767
+each payload). In the following we generalize the FHE.Enc, FHE.Eval, and ⟨·⟩sk
+notation to work on such tuples in the natural way, as vector operations over Z2.
+For each i ∈[N], multiply xi by PVi homomorphically to get a ciphertext tuple
+x′
+i. Thus, x′
+z ∈⟨xz⟩sk, and x′
+i ∈⟨0⟩sk for i ∈[N] for the rest of the ciphertext
+tuples (i ̸= z). Then, homomorphically sum up all x′
+i to get a ciphertext tuple
+M ′, so that M ′ ∈⟨xz⟩sk. The detector sends this M ′ to the recipient, who
+decrypts it to obtain the payload xz.
+Multiple Pertinent Messages via Random Linear Coding. We generalize
+the above to the case of k pertinent messages, where 0 ≤k ≤¯k. The cap ¯k is
+chosen by the recipient and given to the detector, but does not need to be known
+(or even ﬁxed) when the board messages are generated.
+The above single-message scheme fails if there are multiple pertinent mes-
+sages, because the detector would output the encrypted sum of the k pertinent
+payloads, from which the individual payloads cannot be (in general) recovered.
+However, we can have the detector compute several encrypted combinations of
+the pertinent plaintexts, each one summing them with diﬀerent weights, in hope
+of creating a linear system that the recipient can solve.
+Speciﬁcally, we will choose some m ≥¯k and have the detector homomorphi-
+cally compute encrypted payload m combinations Cmbj ←
+i∈[N](wi,j ·xi)·PVi
+for j ∈[m], using random weights wi,j (i ∈[N], j ∈m).10 Letting PS ⊆[N]
+denote the k pertinent message indices, we then have Cmbj ∈
+ 
+i∈PS wi,j ·xi
+
+sk.
+The combinations are realized as FHE ciphertext tuples big enough to rep-
+resent P, with element-wise operations, i.e., as a vector space over the ﬁeld
+GF(t) of the plaintext space (in our case, of binary plaintext space: ˜n binary
+ciphertexts, with bitwise AND and XOR).
+The OMR digest includes the aforementioned output of OMDt1.Detect, from
+which the recipient can recover PS. Moreover the recipient can know the weights
+wi,j (by including the seed used to pseudorandomly generate the weights in
+the digest). Then the recipient can decrypt the payload combinations and
+recover m equations over the variables (xi)i∈PS, of the form 
+i∈PS wi,jxi =
+FHE.Dec(Cmbj) ∈
+ 
+i∈PS wi,j · xi
+
+sk
+for j ∈[¯k]. If |PS| = k of these equa-
+tions are linearly independent, then the recipient can use Gaussian elimination
+to recover these xi, i.e., the pertinent messages’ payloads.
+For randomly-chosen weights in the ﬁeld GF(t) (in our case t = 2), the
+probability of getting ¯k linearly independent equations is m
+i=m−¯k+1(1 −1/ti),
+via [58, Lemma 1]. Therefore, m = ¯k + ⌈logt( 1
+ϵn )⌉suﬃces.
+5.3
+Improved Retrieval Using SRLC
+In the above attempt, the detector’s computational cost for preparing the pay-
+load combinations is proportional to ¯k · N. To reduce this cost, we use Sparse
+10 Here multiplication is in the ﬁeld GF(2), for the plaintext space Z2, so the weights
+are just 0 or 1. In general, this works over GF(t) for prime t. From this point on we
+will require both multiplications and addition (to perform linear algebra), and thus
+consider the ﬁeld GF(t) instead of the group Zt.
+
+768
+Z. Liu and E. Tromer
+Random Linear Coding (SRLC) [34], encoded homomorphically. SRLC is widely
+studied and applied to data transmission [15,34,35,60].11
+In this approach, we create weighted linear combinations as above, but we
+make them sparse: each message is assigned to just a few combinations (i.e., most
+of the weights wi,j are chosen as zero). We provide the following two schemes for
+SRLC to ensure that the resulting combinations are still linearly independent
+(thus solvable by the recipient) with high probability.
+SRLC1: Analytically-Bounded SRLC. For SRLC1, each weight is chosen
+as nonzero with probability γ/m, where γ is some SRLC parameter and m
+is the number of combinations. To ensure that the resulting combinations are
+solvable for k < ¯k variables with probability greater than 1 −ϵn, provably γ =
+O(¯k log2 ¯k log(ϵ−1
+n )) and m = O(γ · ¯k) suﬃce.
+SRLC2: Empirically-Bounded SRLC. In this scheme, we uniformly choose
+exactly γ nonzero weights among the m combinations. The choice of γ and m
+is done by an empirical estimation procedure (in the absence of tight analytical
+bounds), and we prove that the estimation error is negligible.
+Compact OMR using SRLC. We can construct a compact OMR scheme
+using SRLC, following the intuition of Sects. 5.2 and 5.3. The resulting algorithm
+OMRt1 pseudocode is deferred to the full version. The following theorem is
+proven, and complexity analyzed, in the full version:
+Theorem 3. The scheme OMRt1 is a Oblivious Message Retrieval scheme,
+when instantiated with any fully homomorphic encryption scheme FHE, PRFs
+f, and SRLC scheme SRLC. Moreover, when instantiated with SRLC1, OMRt1
+is also compact.
+(Im)practicality. The above establishes the asymptotic existence of compact
+OMR (assuming existence of FHE), but it is still impractical, e.g., due to the
+cost of the Recrypt algorithm in state-of-the-art FHE schemes [13,14,16,22,24].
+Moreover, the clues are large (e.g., FHEW/TFHE needs 512 bytes per each of
+the ∼20 plaintext bits required in Sect. 5.1).
+6
+Practical OMR
+We proceed to introduce optimizations that improve communication and com-
+putation costs to practical levels, as well as security improvements. See Sect. 9
+below for implementation and quantitative evaluation.
+Our starting point is the generic FHE construction of Sect. 5, generalized
+from plaintext space Z2 to Zt for prime t ≥2 (as discussed in footnotes whenever
+pertinent). The generalization immediately gives us improved concrete bounds
+on false positive rate, and in the SRLC-based retrieval. We then proceed to
+modify the scheme as follows.
+11 State-of-the-art batch-PIR [4,5] uses diﬀerent coding techniques, which rely on the
+client knowing the pertinent indices a priori.
+
+Oblivious Message Retrieval
+769
+6.1
+PVW Clue Ciphertext
+Instead of generating clues using encryption under an FHE scheme, we use a
+lighter-weight encryption scheme which can still be homomorphically decrypted
+and processed by the detector. Speciﬁcally, we use the PVW scheme [54], a vari-
+ant of the Regev05 LWE-based encryption scheme [57]. See Sect. 4.1 for details.
+PVW decryption can be cheaply evaluated under FHE (we discuss in more detail
+later), and moreover its ciphertext size grows slowly when multiple bits are
+encrypted (to encrypt ℓbits, clue size using PVW grows with O(n + ℓ), com-
+pared to O(n·ℓ) in the original Regev05 scheme [57], where n is a predetermined
+LWE parameter to be discussed below). Choice of PVW parametersdeferred to
+the full version. The switch to PVW maintains the OMD/OMR privacy require-
+ment, since PVW is IND–CPA and key-private by [28] and [54, Lemma 7.4].
+6.2
+BFV Leveled Homomorphic Encryption
+In the detection and retrieval algorithm, we also replace FHE with leveled HE,
+i.e., homomorphic encryption restricted to evaluation of arithmetic circuits with
+predetermined multiplicative depth. This suﬃces since, as shown below, the mul-
+tiplicative depth can be kept low and moreover, after the switch to PVW encryp-
+tion, we do not need Recrypt. Speciﬁcally, we use the BFV [13,24] scheme (see
+Sect. 4.2).
+The detection key now contains the BFV public key, and the PVW secret key
+PVW.sk encrypted under BFV public key. The detector uses these to homomor-
+phically decrypt the clue, resulting in PVi which are ⟨0⟩BFV
+sk
+or ⟨1⟩BFV
+sk
+. It then
+proceed to process these into a digest as in Sect. 5, using BFV homomorphic
+operations, all with plaintext space GF(t).
+One advantage of this choice is that BFV supports “single instruction, mul-
+tiple data” (SIMD) operations: each BFV ciphertext has D slots, each of which
+can convey an element of Zt, for some plaintext modulus t and a parameter D.
+When computing PV, we can thus operate on D separate messages {(xi, ci)} in
+parallel via SIMD (see Sect. 4.2).
+Speciﬁcally, the detector performs the following steps to homomorphically
+perform PVW.Dec (described intuitively here, and precisely in the full ver-
+sion). Note that for simplicity when decrypting homomorphically using BFV,
+we redeﬁne our clues to be PVW encryptions of 0 instead of 1 as above (i.e.
+PVW.Dec(skp′, GenClue(pkp, ·)) = 0 iﬀp = p′ w.h.p.).
+– Inner Product (InnerProd). The detector performs the ﬁrst step of
+PVW.Dec: inner product of the clue’s PVW ciphertext with PVW.sk (that
+is provided by the recipient under BFV encryption).
+– Range checking (RangeCheck). For a range [−r, r] and plaintext element
+u ∈Zt, this maps u to 0 if u ∈[−r, r], otherwise to 1. We implement this homo-
+morphically using [33, Equation 2] as follows, using the Paterson-Stockmeyer
+algorithm [53] to minimize multiplicative depth. To evaluate the function f(x)
+where fr(x) = 0 for t −r ≤x ≤r, and f(x) = 1 otherwise, we can evaluate
+
+770
+Z. Liu and E. Tromer
+the following polynomial over Zt:
+RCr(X) = fr(0) −
+t−1
+
+i=0
+Xi
+t−1
+
+a=0
+fr(a)at−1−i .
+(1)
+We thus calculate u′ ←RCr(u) homomorphically, so u′ ∈⟨1⟩BFV
+sk
+iﬀu ∈[−r, r]
+(which is the case for pertinent messages with high probability). An exact
+implementation of PVW.Dec would require r = t/4 (by deﬁnition of PVW in
+Sect. 4.1), but this can be relaxed to reduce ϵp, since the error distribution is
+Gaussian.
+– PV Unpacking (PVUnpack). Because we used SIMD evaluation, the above
+steps result in a single ciphertext ct whose D slots encode u′ ∈{0, 1} values
+of D diﬀerent messages. This already suﬃces as a digest, but to maintain a
+clean interface and allow further improvements below, we proceed to unpack
+ct’s slots into separate D ciphertexts (PVi)i∈[D].
+Between RangeCheck and PVUnpack, we ﬂip the sign of u′ (u′ ←1 −u′) so that
+after all these steps, we get PVi ciphertexts encrypting 1 in all slots for the
+pertinent messages, and 0 in all slots for impertinent messages with some false
+positive rate. Similarly to Sect. 5, we proceed as follows.
+Soundness Ampliﬁcation. Analogously to in Sect. 5.1, we reduce this false
+positive rate by having the sender encrypt ℓ0’s to the recipient’s clue key (in this
+case: all in a single ℓ-bit PVW ciphertext). Note that here, the probability of a
+clue ciphertext decrypting to 0 (so that the range-checked output is PV ∈⟨1⟩BFV
+sk
+)
+for impertinent messages is p = 1 −(2r + 1)/q ≥1/2, rather than 1/2 as in the
+Z2 case. Therefore, using ℓciphertexts, we get ϵp of pℓ.
+Applying all of the above, we obtain and OMD scheme analogous to OMDt2,
+but based on PVW clues and BFV scheme instead of generic FHE, thereby
+improving eﬃciency and size. The same technique applies toOMDt1, for more
+eﬃcient compact detection.
+Finally, compress the detection digest by one of two means.
+Deterministic Digest Compression. Each BFV ciphertext can pack D ele-
+ments of Zt, each of which can represent ⌊log(t)⌋bits of plaintext information.
+We pack the single-bit pertinency indicators into these bits, homomorphically.
+This makes near-optimal use of the plaintext space; and in terms of digest size,
+utilization remains high: roughly 4.5 bit/msg, for the representative parame-
+ters of Sect. 9. The recipient can sum up all these bits to get the exact number
+of pertinent messages, and thus robustly detects overﬂow.
+Randomized Digest Compression. Alternatively, we can use the bucket-
+based method in Sect. 5.1 to achieve an compact digest, and compress D accu-
+mulators into one ciphertext to fully utilize all D slots in each ciphertext. In
+particular, we can achieve an amortized digest size of less than 1 bit/msg,
+including retrieval, for suﬃciently large N ≫¯k. See performance in Sect. 9.
+For this methodwe could also use the summation of individual bucket coun-
+ters to get k, but this may still overﬂow if the number of pertinent messages is
+
+Oblivious Message Retrieval
+771
+huge, since each slot is computed homomorphically in the plaintext space Zt
+(e.g. if k ≳tD, where tD > 1012 for typical parameters).12
+OMD via Deterministic Digest Compression. We can use deterministic
+digest compression to construct a non-compact OMD, which we call OMDp1.
+The advantage of this method is that it does not need PVUnpack, and therefore
+greatly reduces the detector running time.
+6.3
+A Practical OMR Scheme
+Figure 1 portrays the high-level components of the resulting scheme, and their
+invocation of diﬀerent encryption schemes.
+By combining all of the above detection optimizations, and adding message
+retrieval analogously to Sect. 5.3, we have a practical OMR scheme OMRp1. Here
+we use the aforementioned Deterministic Digest Compression, which is simpler
+than compact (randomized) detection, and oﬀers better concrete digest size and
+detection time for some parameter choices (cf. Sect. 9). The resulting pseudocode
+is deferred to the full version. The following theorem is proven, and complexity
+analyzed, deferred to the full version:
+Theorem 4. The scheme OMRp1 is an OMR scheme, assuming security of
+PVW encryption (Sect. 4.2), security of BFV leveled HE (Sect. 4.2), when instan-
+tiated with PRF f and an SRLC scheme SRLC.
+6.4
+A Practical Compact OMR Scheme
+While OMRp1 above is practically eﬃcient for many parameters of interest
+(cf. Sect. 9), its asymptotic digest size is still O(N). An alternative approach
+achieves compactness, i.e., a digest size that grows only mildly with N when
+¯k is ﬁxed and ϵp is small (cf. Deﬁnition 1). This can be achieved by using the
+Randomized Digest Compression approach of Sect. 6.2. The resulting practical
+and compact OMR algorithm, OMRp2, and the pseudocode is deferred to the
+full version. The following theorem is proven, and complexity analyzed, details
+deferred to the full version:
+Theorem 5. The scheme OMRp2 in OMRp2 is a OMR scheme for N < D·t/2,
+assuming security of LWE encryption (Sect. 4.2) and security of BFV leveled HE
+(Sect. 4.2), when instantiated with PRF f and an SRLC scheme SRLC. Moreover
+when instantiated with SRLC1, OMRp2 is also compact.
+6.5
+Additional Properties
+Additional modiﬁcations improve the practicality of our algorithm. The following
+points are salient; further discussion is deferred to the full version.
+12 If such parameters are exceeded, we can avoid undetected decoding failures using a
+global counter that represents values in [N] without overﬂow.
+
+772
+Z. Liu and E. Tromer
+Streaming Updates. The detector can break up OMR.Retrieve into several
+phases and some of the phases can be done on-the-ﬂy without receiving ¯k
+from the recipient. With this process, we can greatly reduce the latency during
+retrieval. We defer the details to the full version. Security requires seed secrecy.
+For details see the paper’s full version.
+Handling Overﬂows. Retrieval may fail in case the number k of pertinent
+messages overﬂows the bound ¯k. The possibility is inherent, since information-
+theoretically, a compact digest for a given ¯k cannot represent k ≫¯k messages.
+When an overﬂow occurs, the recipient can robustly detect it and sends another
+retrieval query to the detector, with a larger bound ¯k. To prevent the linka-
+bility of the two queries, the recipient can issue the second query from a fresh
+anonymized network connection, and using unlinkable keys (see Sect. 8).
+Detection Key Size Reduction. The detection key includes the BFV cipher-
+texts ctpvwSK encrypting skpvw, and the BFV public keys (including encryption
+key, relinearization key, and rotation keys as in [37, §5.6]). Their size is O(1),
+but concretely quite large (cf. Sect. 9). We reduce it as follows.
+First, all of the aforementioned components are RLWE ciphertexts of the
+form (⃗a,⃗b), generated by the recipient who knows the corresponding RLWE
+secret key, and who can thus choose a pseudorandom ⃗a that is represented as a
+short PRG seed, thereby halving the ciphertext size. Second, we pack the n · ℓ
+elements of ctpvwSK into just ℓBFV ciphertexts, and involve homomorphic rota-
+tion to compute the inner products. Third, the detection key size is dominated
+by the rotation keys in used for the homomorphic evaluation of slot rotations,
+and most of them can be generated for a low multiplicative level.
+7
+Denial-of-Service Resistance
+Thus far we have assumed, as in prior works, that all clues in the board are gen-
+erated honestly by the prescribed GenClue algorithm, using honestly-generated
+clue keys. However, clues may be generated maliciously, especially if anyone is
+allowed to add messages to the board in reality.
+In a Denial of Service (DoS) attack on an OMR or OMD scheme, the adver-
+sary can maliciously generate any of the clues in board messages, in an attempt
+to induce false positives or false negatives in the subsequent detection/retrieval.
+The adversary could simply create pertinent messages for some recipient, thus
+trying to induce an overﬂow for that recipient (by exceeding their ¯k); this is
+inevitable and handled in Sect. 6.5. But the bigger danger is ampliﬁed DoS: even
+a single maliciously-crafted clue could cause catastrophic failure (e.g., causing
+false negative or positives for many recipients). Furthermore, the adversary may
+also take the role of a recipient in the system, and publish a maliciously-crafted
+clue key, thereby inducing honest senders to unwittingly generate harmful clues.
+Attacks. OMRt1, instantiated with FHEW/TFHE, is susceptible to a wildcard
+ciphertext attack, where a malicious sender populates the clue with ciphertexts
+that decrypt to 1 (hence detected as pertinent) for most recipients, causing
+
+Oblivious Message Retrieval
+773
+overﬂows. FMD [7] is also vulnerable to wildcard ciphertexts, as also observed by
+[40, commit e19b99112e]. PS [44] is likewise vulnerable to wildcard ciphertexts
+(in the single-server version). Moreover, in the PS model, signals are sent to
+servers rather than placed on the board, opens an additional DoS attack vector.
+For instance, a malicious sender can send many pertinent-looking signals to a
+server to overﬂow the message accumulator for recipients.
+7.1
+Modeling DoS Resistance
+DoS Threat Model. In the DoS threat model, the computationally bounded
+adversary has all the power as deﬁned in Sect. 3. Additionally, it is allowed to
+generate any (perhaps malformed) clues and post them on the board, as well
+as generate any (perhaps malformed) clue keys for other senders to use. Thus,
+for correctness and soundness, we assume only that the detector is honest but
+curious. Other parties are malicious. As before, for privacy, everyone but the
+message’s sender and recipient are assumed malicious and colluding.
+DoS Resistance Deﬁnition. We introduce a formal deﬁnition of DoS resis-
+tance, strengthening the OMR deﬁnition of Sect. 3.1. Recall that Deﬁni-
+tion 1assumes that the clues in the board are honestly generated, using honestly
+generated clue keys. In that case, there is a natural ground-truth notion of per-
+tinent messages, deﬁned by which clue key pkclue each clue was generated for;
+hence soundness and completeness are deﬁned in reference to that ground truth.
+Now, however, clues may be maliciously generated and may not obviously
+correspond to any speciﬁc clue key (e.g., consider the wildcard ciphertext above).
+We thus require the existence of an indicator predicate I(c, pkclue) that serves as
+a ground truth for whether a given clue c is pertinent to a given user speciﬁed by
+their clue key pkclue. This predicate should give the natural answer for honestly-
+generated clues and arbitrary but determined answer for otherwise-generated
+clues (i.e., not claiming more than one honest recipient, except with small prob-
+ability) and we call this property collision resistance. The stronger completeness
+and soundness are deﬁned w.r.t such an indicator.
+Soundness and completeness are then redeﬁned w.r.t the indicator I, as
+below. Note that to facilitate tight analysis, the completeness (false negative
+rate) bound ϵn in the deﬁnition is broken up into two components: the rate ϵi at
+which the indicator fails to detect truly pertinent messages (which may be non-
+negligible because a indicator with high thresholds may help achieve collision
+resistance), and the rate ϵn −ϵi at which the scheme fails to retrieve messages
+ﬂagged by the indicator (which may be on-negligible because of error sources in
+the concrete scheme).
+Deﬁnition 4 (DoS-resistant OMR). Let OMR be an OMR scheme for error
+rates ϵn, ϵp (as in Deﬁnition 1). An indicator with an indicator false negative rate
+ϵi ≤ϵn for OMR is a function b ←I(pp, x, c, pkclue, sk) on a public parameter pp,
+a message (x, c), a clue key pkclue, and its corresponding secret key sk, outputs
+b ∈{0, 1}, such that:
+
+774
+Z. Liu and E. Tromer
+– (Indicator completeness) For pp ←GenParams(1λ, ϵp, ϵn), honest-generated
+key pair (sk, pk = (pkclue, ·)) ←KeyGen(), for any payload x, and honest-
+generated clue c ←OMR.GenClue(pkclue, x), it holds that:
+Pr[I(pp, x, c, pkclue, sk) = 1] ≥1 −ϵi −negl(λ) .
+– (Collision resistance) For any PPT adversary A, let pp ←GenParams(1λ, ϵp,
+ϵn), two honest-generated key pairs (sk, pk = (pkclue, ·)) ←OMR.KeyGen() and
+(sk′, pk′ = (pk′
+clue, ·)) ←OMR.KeyGen(), and adversarially-generated (x, c) ←
+A(pk, pk′), for b ←I(pp, x, c, pkclue, sk) and b′ ←I(pp, x, c, pk′
+clue, sk′):
+Pr[b = 1 ∧b′ = 1] ≤ϵp + negl(λ) .
+An OMR scheme OMR is DoS-resistant for ϵn and ϵp if there exists an
+indicator I with an indicator false negative rate ϵi for OMR such that for any
+PPT adversary A, for pp ←GenParams(1λ, ϵp, ϵn), (sk, pk = (pkclue, pkdetect)) ←
+OMR.KeyGen(), and adversarially-generated board BB ←A(pp, pk) where BB =
+( (x1, c1), . . . , (xN, cN) ) and (xi)i∈[N] are unique, for any 0 < ¯k ≤N, letting
+M ←Retrieve(D, pkdetect, ¯k), PL ←Decode(M, sk):
+– (DoS-completeness) Let k = N
+i=0 I(pp, xi, ci, pkclue, sk). Then either k > ¯k
+and PL = overﬂow, or Pr[xj ∈PL | I(pp, x, c, pkclue, sk) = 1] ≥1 −(ϵn −ϵi) −
+negl(λ) for all j ∈[N].
+– (DoS-soundness) Pr[xj ∈PL | I(pp, x, c, pkclue, sk) = 0] ≤negl(λ) for all
+j ∈[N].
+Note that DoS-completeness implies the (weaker) completeness of Deﬁnition 1
+with the same false negative rate ϵn, and DoS-soundness implies the (weaker)
+soundness of Deﬁnition 1 with false positive rate ϵp +ϵn. Completeness is trivial,
+and soundness is given by the following lemma (proof deferred to the full version):
+Lemma 1. Any tuple of algorithms OMR that is ϵp-DoS-sound by Deﬁnition 4
+is (ϵp + ϵn)-sound by Deﬁnition 1.
+The proof of Lemma 1 is deferred to the full version.
+The Oblivious Message Detection deﬁnition is analogously strengthened for DoS.
+7.2
+Attaining DoS-Resistant OMR
+The OMRp1 scheme of Sect. 6 already satisﬁes DoS resistance (for ϵp = poly(λ),
+with a minor change, under the natural computational assumption stated
+in
+Conjecture 1 below). Intuitively, this is because PVW encryption has the prop-
+erty that a ciphertext that decrypts to 0 can be generated by adding up columns
+of the public key, but if the ciphertext is generated in any other way (e.g., from
+a diﬀerent public key, or “out of the blue”), then its decryption is close to uni-
+formly random.
+
+Oblivious Message Retrieval
+775
+Patched OMRp1. The exception to the above intuition is trivial ciphertexts
+(i.e., ciphertext (⃗a = 0n,⃗b ∈Zℓ
+q)), so we redeﬁne the clue space as {(⃗a,⃗b) ∈
+Zn+ℓ
+q
+: ⃗a ̸= 0n}. Accordingly, we change OMRp1.Retrieve to reject clues where
+⃗a = 0n and OMRp1.GenClue such that if generates a clue with ⃗a = 0n, it retries
+with fresh randomness (and aborts after λ attempts).
+Using the patch above, our OMRp1 scheme is DoS resistance under a natural
+conjecture about LWE-based encryption.
+Theorem 6. For any ϵp = poly(λ), OMRp1 (patched as above) is a DoS-
+resistant Oblivious Message Retrieval scheme, when instantiated with any PRF
+f, assuming the hardness of Ring-LWE and Conjecture 1 below.
+To prove our constructions fulﬁll this stronger deﬁnition, we ﬁrst deﬁne an
+indicator in a natural way: given the secret key sk and a clue c = (⃗ua, ⃗ub) ∈C,
+the indicator computes ⃗u = ⃗ub −skT⃗ua using the secret key and outputs 1 iﬀthe
+result in range [−r, r]. This gives use completeness directly. The delicate part is
+to prove the indicator collision-resistance property. Intuitively, no matter what
+strategy is adopted by a PPT adversary, given two public keys it should be hard
+to generate a “snake-eye” ciphertext that decrypts to 0 under both keys, except
+with trivial probability (e.g., encrypting 0 to the ﬁrst key and hoping to succeed
+for the second). The requisite property is formalized in the following deﬁnition13
+and conjecture:
+Deﬁnition 5 (snake-eye-resistant
+encryption).
+An encryption scheme
+(KeyGen, Enc, Dec) is δ-snake-eye-resistant if the following holds: for any PPT
+algorithm A, for keys (sk, pk) ←KeyGen(1λ) and (sk′, pk′) ←KeyGen(1λ), for
+ciphertext c ←A(pk, pk′), it holds that Pr[Dec(sk, c) = 0 ∧Dec(sk′, c) = 0] ≤
+δ + negl(λ).
+Conjecture 1 (Patched Regev05 is snake-eye-resistant).
+The Regev05 scheme
+[57], patched such that decryption rejects any ciphertext (⃗a, b) where ⃗a = ⃗0 and
+the decryption checks the result in range [−r, r] as introduced in Sect. 6.2, is
+2r+1
+t
+-snake-eye-resistant.
+Snake-eye resistance is not generically implied by semantic security of the
+encryption scheme, nor by key privacy. However, Conjecture 1 can be proven under
+the standard (homogeneous) Short Integer Solution (SIS) hardness assumption [1]
+combined with a natural generalization of the Knowledge of Knapsack of Noisy
+Inner Products assumption [10]. We defer the high level explanation of this state-
+ment to the full version. Alternatively the latter assumption can be replaced by a
+zk-SNARK proof [10], appended to the ciphertext, of the statement “(⃗a, b) was
+constructed as a linear combination of public-key vectors”.14
+Conjecture 1 implies a natural generalization to snake-eye resistance of PVW
+encryption, which implies indicator collision resistance, and thus Theorem 6 (see
+the full version for proofs).
+13 We note that for encryption schemes like El Gamal, the snake-eye-resistance is trivial,
+as for a ciphertext to be decrypted to the same plaintext, the secret keys must be
+the same as the decryption function is a one-to-one function.
+14 Such a proof ﬁts in 192 bytes [30, §5.4.9.2] per clue regardless of ℓ, and in Zcash it
+can be merged into pre-existing zk-SNARK proofs in the same transaction [30].
+
+776
+Z. Liu and E. Tromer
+8
+Key Unlinkability
+The security notions discussed thus far, and in prior works, omit another privacy
+consideration: linkability of the detection and clue keys. This occurs in several
+senses. Detection-key to clue-key linkability would reveal clients’ identities to
+the detector serving them. Detection-key to detection-key linkability would allow
+detectors to link recurring clients, facilitating traﬃc analysis of detection queries.
+Clue-key to clue-key linkability is a concern when recipients wish to publish
+several addresses that are unlinkable, but (secretly) correspond to a single secret
+key which controls all of them (as in Zcash’s “diversiﬁed address” [30]).
+Linkability in Prior Work. In FMD [7], the detection keys and clue keys
+are a key pair in an asymmetric encryption scheme and therefore can be linked.
+Both PS schemes [44] link the detection key to the clue key by having a public
+identifying number Ri for each recipient and used in each retrieval. In both FMD
+and PS, the detection key and clue key are ﬁxed for each recipient.
+Deﬁning Unlinkability. We deﬁne, in the natural way, the notion of OMR (or
+OMD) that is detection-to-clue-key-unlinkable. We also deﬁne OMR (or OMD)
+that is full-key-unlinkable: it oﬀers algorithms pk∗
+detect ←RegenDetectKey(sk)
+and pk∗
+clue ←RegenClueKey(sk) that generate new public keys such that cannot
+be linked to other ones for the same sk. See the full version for details.
+Key Unlinkability in OMRp1 and OMRp2. The OMRp1 and OMRp2 schemes
+are detection-to-clue-key-unlinkable, by the semantic security of BFV (applied to
+ctlweSK in pkdetect). Moreover, they are full-key-unlinkable, via a key re-generation
+process. To resample the detection key, we generate a fresh BFV key pair (which
+is trivially unlinkable to prior keys) and encrypt the PVW secret key to the new
+BFV key (this ciphertext is also unlinkable to prior keys, by semantic security of
+BFV). To resample clue keys, we regenerate the PVW public keys from the PVW
+private key; this is indeed unlinkable. We defer the details to the full version.
+Attaining Key Unlinkability for Other Schemes. Our OMRt1 scheme can
+be modiﬁed to achieve full-key-unlinkability similarly. We defer details to the
+full version. PS1 can be analogously modiﬁed to achieve detection-to-clue-key
+unlinkability by changing its PKE and some other modiﬁcations (deferred to the
+full version). It is not obvious how to achieve full-key-unlinkability, or even the
+weaker detection-to-clue-key-unlinkablity, for PS2, FMD1, or FMD2.
+9
+Performance Evaluation
+We implemented the OMRp1 scheme of Sect. 6.3, and the OMRp2 scheme of
+Sect. 6.4 instantiated with SRLC2, in a C++ library (released as open source).
+We used the PALISADE library [52] for PVW encryption, and the SEAL library
+[47] with Intel-HEXL acceleration [12] for the BFV scheme. We benchmarked
+these schemes on several parameter settings, on a Google Compute Cloud
+c2-standard-4 instance type (4 hyperthreads of an Intel Xeon 3.10 GHz CPU
+with 16 GB RAM). This section reports and compares the results.
+
+Oblivious Message Retrieval
+777
+Table 2. Comparison of cost metrics, functionality and security attributes. Costs are
+per message, per recipient. Notation is as in Table 1. The bulletin contains N = 500, 000
+messages, of which k = ¯k = 50 are pertinent to the recipient. “s↔s” means server-to-
+server communication. For PS1/PS2, we used the times from [44, §9.2] (Intel Xeon
+Platinum 8259CL), and some costs are via private communication from their authors.
+If FMD1/FMD2 are used just for detection, the costs are essentially unchanged except
+that communication is ≤1.
+Detection schemes
+Retrieval schemes (including detection)
+ZIP-307
+[23,27]
+PS1
+[44]
+PS2
+[44]
+OMDp1
+§6.2
+Zcash full
+scan [23]
+FMD1
+[7] / [40]
+FMD2
+[7]
+OMRp1
+§6.3
+OMRp2
+§6.4
+Communication (bytes/msg)
+116
+≪1
+≪1 + 3M s↔s
+0.56
+612
+42
+5.3
+1.13
+9.03
+Detector computation
+time (sec/msg)
+1 thread
+N/A
+0.06
+0.25
+0.021
+N/A
+0.011 / 0.00020
+0.043
+0.145
+0.155
+2/4
+0.01/0.0099
+0.075/0.065 0.085/0.072
+Recipient computation
+total time (sec)
+1 thread
+70
+≪10−3
+≪10−3
+0.005
+61
+2.1
+0.29
+0.02
+0.063
+Clue size (bytes)
+N/A
+32
+32
+956
+N/A
+68 / 64.5
+318,530
+956
+956
+Clue key size (bytes)
+N/A
+32
+N/A
+133 k
+N/A
+1.5 k
+1 k
+133 k
+133 k
+Detection key size (bytes)
+N/A
+64
+920
+99 M
+N/A
+768
+512
+129 M
+129 M
+Retrieval privacy
+Full
+Full
+Partitioned
+across
+detectors
+Full
+Full
+pN-msg-
+anonymity
+p = 2−5
+pN-msg-
+anonymity
+p = 2−8
+Full
+Full
+Env. assumptions for
+privacy
+None
+TEE (SGX)
+Non-colluding
+servers
+None
+None
+None
+None
+None
+None
+Env. assumptions for
+Soundness+completeness
+None
+Honest S&R
+Honest S&R
+None
+None
+Honest S&R
+Honest S&R
+None
+None
+Parameters. We set the total number of messages to N = 500, 000 (roughly
+the number of Bitcoin payments per day), and set the cap on the number of
+pertinent message to ¯k = 50. We set a false positive rate ϵp = 2−21 (including
+decryption failure) and a false negative rate ϵn = 2−30. The payload size is 612
+bytes, as in Zcash.
+The internal parameter choice for PVW, BFV and other
+settings in OMRp1/OMRp2 are deferred to the full version of this paper.
+Representative Costs. Table 2 summarizes the main cost metrics and func-
+tionality/security attributes of our scheme, compared to related ones, for the
+above parameters. (See also Table 1 for additional functional/security attributes
+and the full version for asymptotic costs,).
+We see that in both communication and recipient computation, OMRp1 is
+better than any other scheme with retrieval functionality, thereby making it
+attractive for recipients that are limited in bandwidth, computation speed, or
+energy. Furthermore, OMRp1/OMRp2 provide the strongest form of security, and
+under the least assumptions.
+Retrieval Scaling with #Messages. Figure 2 evaluates how the recipient’s
+total cost of retrieval scales with increasing N, keeping ¯k constant. As can be
+seen, our scheme OMRp1 outperforms all prior constructions starting at moder-
+ate bulletin sizes, in both digest size and recipient computation time.
+For N > 8 · 106, our compact OMR scheme OMRp2 takes the lead and
+achieves an amortized digest size of less than 1 bit per message. In general, the
+crossover point grows with k (due to the growing number of buckets in OMRp2),
+so OMRp2 outperforms when N is large but k is small.
+The detector computation time in OMRp1/OMRp2 is worse than for FMD
+and full-scan. It is linear in N for all schemes, and thus follows from Table 2.
+
+778
+Z. Liu and E. Tromer
+(a) Digest size vs. number of messages.
+(b) Total recipient computation time vs.
+number of messages.
+Fig. 2. Retrieval cost comparison (total digest size and recipient computation) for up
+to ¯k = 50 pertinent messages.
+Detection Key. The detection key size is 129 MB, using the techniques of
+Sect. 6.5. (Without these optimizations, the detection key size is ∼13.5 GB.)
+Note that the detection key can be sent to the detector via an insecure channel,
+authenticated by a hash. After the one-time cost of transmission, it can then be
+used to detect an arbitrary number of messages.
+Memory Use. For simplicity, our implementation stores the detection key and
+all intermediate results in RAM, for a total memory use of ∼3.5 GB per thread.
+Streaming Finalization Cost. Using the streaming approach of Sect. 6.5, we
+can reduce the response time to recipients For OMRp1, the ﬁnalization is only
+∼2.1 ms/msg. It can be further reduced to ∼0.35 ms/msg, since we have ﬁxed γ.
+Similar results hold for OMRp2.
+10
+Integration and Limitations
+We proceed to discuss systems aspect of integrating OMR in real-world applica-
+tions, and limitations of our current constructions. For concreteness, we consider
+integration of OMRp1 or OMRp2 with the Zcash cryptocurrency [30] to solve the
+problem of receiver metadata leakage [32] from its light wallet protocol [27]. This
+prospective integration illustrates several hurdles and how they can be resolved.
+We use the same scheme parameters as in Sect. 9.
+Clue Key Distribution. In our OMR approach (as for FMD [7] and single-
+server PS [44]), senders need to obtain the recipient’s clue key to generate clues.
+It is natural to consider the clue key to be an extension of the public address,
+shared by the same trusted channels. Zcash’s Uniﬁed Addresses mechanism [31]
+indeed allows such data to be included with public addresses in a backwards-
+compatible way, and payment URIs [49,59] can be similarly extended. The clue
+
+Oblivious Message Retrieval
+779
+key size of 133 kB (PVW public key) has usability issues. Alternatively, the
+Uniﬁed Address can contain a URL from which the clue key can be fetched.
+Zcash diversiﬁed addresses [30] can be accompanied by diﬀerent clue keys while
+preserving address unlinkability, using the full-key-unlinkability property.
+Clue Embedding. Clues of size 956 bytes need to be attached to every payload.
+This is comparable to the roughly 1.3 kB of data already on-chain per such
+payment. The transaction format can be extended with a dedicated clue ﬁeld,
+or clues can be embedded into OP RETURN data or dummy output descriptions.
+Detection Latency. Detectors needs to see all blockchain data, facilitating
+detection in several ways:
+in the single-shot model, the recipient makes a
+stateless query to the detector. Response latency is high: about 0.145 s/msg
+(cf. Table 2). The subscribe and ﬁnalize model utilizes
+a streaming version of
+OMRp1, as in Sect. 6.5, taking 0.0005 core-s/msg.
+Detection Key. Our OMRp1 and OMRp2 schemes requires recipient to send
+large detection keys (∼129 MB) to detectors. Conversely, OMRt1 instantiated
+with TFHE reduces detection key size to ∼16 MB, but with much slower detec-
+tion. Combining the best of these is an open problem.
+Detection Cost. The detector cost is ∼$1.02 per million payments scanned
+(per recipient), using commodity cloud computing.15 This implies $0.02/month
+detection cost for Zcash’s current shielded payments usage, or $1.66/month for
+the current usage rate of Monero (the highest-volume privacy-enhanced cryp-
+tocurrency). If all of Bitcoin’s payments were instead done as Zcash shielded
+payments, detection cost would grow to $15.3/month ; and even higher for mas-
+sive private messaging applications such as Signal. Acceleration via GPU, FPGA
+or ASIC can improve costs by orders of magnitudes [2,56]. For cryptocurrency
+applications, the recipient can directly pay the server for this anonymously.
+Acknowledgements. We are grateful to Daniele Micciancio for suggesting suitable
+FHE schemes for Sect. 5; to Ran Canetti, Oded Regev and Noah Stephens-Davidowitz
+for observations on Conjecture 1; to Matthew Green, Jack Grigg, Daira Hopwood, Tay-
+lor Hornby and Madarz Virza for ideas and observations regarding Zcash integration
+in Sect. 10; to Istv´an Andr´as Seres and Varun Madathil for assistance in quantitative
+evaluation of [44] and comparisons to our work; to Miranda Christ for excellent edito-
+rial suggestions; and to Wei Dai for assistance in generating level-speciﬁc rotation keys
+using SEAL library.
+This material is based upon work supported by DARPA under Contract
+No. HR001120C0085; the U.S. Department of Energy (DOE), Oﬃce of Science,
+Oﬃce of Advanced Scientiﬁc Computing Research under award number DE-SC-
+0001234, the Columbia-IBM center for Blockchain and Data Transparency; JPMor-
+gan Chase & Co, and LexisNexis Risk Solutions. Any opinions, views, ﬁnd-
+ings and conclusions or recommendations expressed in this material are those
+15 0.065 s/msg (4-core, c2-standard-4 preemptible compute instance, $0.051/h). For
+ﬁnalization, 0.18 ms/msg, 4-core (non-preemptible instance, $0.168/h with sustained
+use discount). Communication cost is negligible: <$10−9/msg egress.
+
+780
+Z. Liu and E. Tromer
+of the authors and do not necessarily reﬂect the views of the U.S. Government, DARPA,
+DOE, JPMorgan Chase & Co. or its aﬃliates, or other sponsors.
+References
+1. Ajtai, M.: Generating hard instances of lattice problems (extended abstract). In:
+ACM Symposium on Theory of Computing, STOC 1996, pp. 99–108. ACM (1996)
+2. Al Badawi, A., Polyakov, Y., Aung, K.M.M., Veeravalli, B., Rohloﬀ, K.: Imple-
+mentation and performance evaluation of RNS variants of the BFV homomorphic
+encryption scheme. IEEE Trans. Emerg. Top. Comput. 9, 941–956 (2021)
+3. Albrecht, M.R., Player, R., Scott, S.: On the concrete hardness of learning with
+errors. J. Math. Cryptol. 9, 169–203 (2015)
+4. Ali, A., et al.: Communication-computation trade-oﬀs in PIR. In: USENIX Security
+2021, pp. 1811–1828. USENIX, August 2021
+5. Angel, S., Chen, H., Laine, K., Setty, S.T.V.: PIR with compressed queries and
+amortized query processing. In: 2018 IEEE S&P. IEEE Computer Society Press
+(2018)
+6. Angel, S., Setty, S.: Unobservable communication over fully untrusted infrastruc-
+ture. In: OSDI 2016, pp. 551–569. USENIX, November 2016
+7. Beck, G., Len, J., Miers, I., Green, M.: Fuzzy message detection. In: The ACM
+Conference on Computer and Communications Security, CCS 2021 (2021)
+8. Ben Sasson, E., et al.: Zerocash: decentralized anonymous payments from bitcoin.
+In: 2014 IEEE S&P, pp. 459–474 (2014)
+9. Bethencourt, J., Song, D.X., Waters, B.: New techniques for private stream search-
+ing. ACM Trans. Inf. Syst. Secur. 12, 16:1–16:32 (2009)
+10. Bitansky, N., Canetti, R., Chiesa, A., Tromer, E.: From extractable collision resis-
+tance to succinct non-interactive arguments of knowledge, and back again. In: ITCS
+2012, pp. 326–349. ACM (2012)
+11. Bittau, A., et al.: Prochlo: strong privacy for analytics in the crowd. In: SOSP, pp.
+441–459 (2017)
+12. Boemer, F., Kim, S., Seifu, G., de Souza, F.D., Gopal, V., et al.: Intel HEXL
+(release 1.2), September 2021. https://github.com/intel/hexl
+13. Brakerski, Z.: Fully homomorphic encryption without modulus switching from clas-
+sical GapSVP. In: Safavi-Naini, R., Canetti, R. (eds.) CRYPTO 2012. LNCS, vol.
+7417, pp. 868–886. Springer, Heidelberg (2012). https://doi.org/10.1007/978-3-
+642-32009-5 50
+14. Brakerski, Z., Gentry, C., Vaikuntanathan, V.: (Leveled) fully homomorphic
+encryption without bootstrapping. In: ITCS 2012. ACM, 8–10 January 2012
+15. Brown, S., Johnson, O., Tassi, A.: Reliability of broadcast communications under
+sparse random linear network coding. IEEE Trans. Veh. Technol. 67(5), 4677–4682
+(2018)
+16. Chillotti, I., Gama, N., Georgieva, M., Izabach`ene, M.: TFHE: fast fully homomor-
+phic encryption over the torus. J. Cryptol. 33(1), 34–91 (2020)
+17. Choi, S.G., Dachman-Soled, D., Gordon, S.D., Liu, L., Yerukhimovich, A.: Com-
+pressed oblivious encoding for homomorphically encrypted search. In: CCS 2021
+(2021)
+18. Chor, B., Gilboa, N., Naor, M.: Private information retrieval by keywords (1998).
+Appeared in the Theory of Cryptography Library. http://ia.cr/1998/003
+
+Oblivious Message Retrieval
+781
+19. Chor, B., Goldreich, O., Kushilevitz, E., Sudan, M.: Private information retrieval.
+In: 36th FOCS, pp. 41–50. IEEE Computer Society Press, 23–25 October 1995
+20. Corrigan-Gibbs, H., Boneh, D., Mazi`eres, D.: Riposte: an anonymous messaging
+system handling millions of users. In: 2015 IEEE S&P, pp. 321–338 (2015)
+21. Danezis, G., Diaz, C.: Space-eﬃcient private search with applications to Rateless
+codes. In: Dietrich, S., Dhamija, R. (eds.) FC 2007. LNCS, vol. 4886, pp. 148–162.
+Springer, Heidelberg (2007). https://doi.org/10.1007/978-3-540-77366-5 15
+22. Ducas, L., Micciancio, D.: FHEW: bootstrapping homomorphic encryption in less
+than a second. In: Oswald, E., Fischlin, M. (eds.) EUROCRYPT 2015, Part I.
+LNCS, vol. 9056, pp. 617–640. Springer, Heidelberg (2015). https://doi.org/10.
+1007/978-3-662-46800-5 24
+23. Electric Coin Company: Zcash Rust crates. Commit hash: 99d877e22d58610dc
+43021b831a28286ef353a89. https://github.com/zcash/librustzcash
+24. Fan, J., Vercauteren, F.: Somewhat practical fully homomorphic encryption. Cryp-
+tology ePrint Archive, Report 2012/144 (2012). https://ia.cr/2012/144
+25. Finiasz, M., Ramchandran, K.: Private stream search at almost the same communi-
+cation cost as a regular search. In: Knudsen, L.R., Wu, H. (eds.) SAC 2012. LNCS,
+vol. 7707, pp. 372–389. Springer, Heidelberg (2013). https://doi.org/10.1007/978-
+3-642-35999-6 24
+26. Gentry, C.: Fully homomorphic encryption using ideal lattices. In: ACM Sympo-
+sium on Theory of Computing, STOC 2009, pp. 169–178. ACM (2009)
+27. Grigg, J., Hopwood, D.: Zcash improvement proposal 307: light client protocol for
+payment detection, September 2018. https://zips.z.cash/zip-0307
+28. Halevi, S.: A suﬃcient condition for key-privacy. Cryptology ePrint Archive, Report
+2005/005 (2005)
+29. Jelle van den Hooﬀ, J., Lazar, D., Zaharia, M., Zeldovich, N.: Vuvuzela: scalable
+private messaging resistant to traﬃc analysis. In: SOSP, pp. 137–152. ACM (2015)
+30. Hopwood, D., Bowe, S., Hornby, T., Wilcox, N.: Zcash Protocol Speciﬁcation
+Version 2021.2.14. https://github.com/zcash/zips/blob/master/protocol/protocol.
+pdf
+31. Hopwood, D., et al.: Zcash improvement proposal 316: uniﬁed addresses and uniﬁed
+viewing keys, April 2021. https://zips.z.cash/zip-0316
+32. Hornby, T.: Fixing privacy problems in the Zcash light wallet protocol, October
+2020. https://defuse.ca/downloads/Fixing%20Privacy%20Problems%20in%20the
+%20Zcash%20Light%20Wallet%20Protocol.pdf
+33. Iliashenko, I., N`egre, C., Zucca, V.: Integer functions suitable for homomorphic
+encryption over ﬁnite ﬁelds. Cryptology ePrint Archive, Report 2021/1335 (2021).
+WAHC 2021
+34. Kaufman, T., Sudan, M.: Sparse random linear codes are locally decodable and
+testable. In: FOCS 2007 (2007)
+35. Khan, A.S., Chatzigeorgiou, I.: Improved bounds on the decoding failure proba-
+bility of network coding over multi-source multi-relay networks. IEEE Commun.
+Lett. 20(10), 2035–2038 (2016)
+36. Kushilevitz, E., Ostrovsky, R.: Replication is not needed: single database,
+computationally-private information retrieval. In: FOCS 1997 (1997)
+37. Laine, K.: Simple encrypted arithmetic library 2.3.1. Microsoft Research, Red-
+mond, WA. https://www.microsoft.com/en-us/research/uploads/prod/2017/11/
+sealmanual-2-3-1.pdf
+
+782
+Z. Liu and E. Tromer
+38. Lazar, D., Zeldovich, N.: Alpenhorn: bootstrapping secure communication without
+leaking metadata. In: OSDI 2016, pp. 571–586. USENIX, November 2016
+39. Le, D., Tengana Hurtado, L., Ahmad, A., Minaei, M., Lee, B., Kate, A.: A tale of
+two trees: one writes, and other reads. In: PETS 2020, pp. 519–536, April 2020
+40. Lewis, S.J.: fuzzytags. https://git.openprivacy.ca/openprivacy/fuzzytags.git
+41. Lewis, S.J.: Discreet log #1: anonymity, bandwidth and fuzzytags, February 2021.
+https://openprivacy.ca/discreet-log/01-anonymity-bandwidth-and-fuzzytags/
+42. Lund, J.: Technology preview: sealed sender for signal, October 2018. https://
+signal.org/blog/sealed-sender/
+43. Lyubashevsky, V., Peikert, C., Regev, O.: On ideal lattices and learning with errors
+over rings. J. ACM 60, 1–35 (2013)
+44. Madathil, V., Scafuro, A., Seres, I.A., Shlomovits, O., Varlakov, D.: Private sig-
+naling. Cryptology ePrint Archive, Report 2021/853 (20210624:145011) (2021)
+45. Martiny, I., Kaptchuk, G., Aviv, A., Roche, D., Wustrow, E.: Improving signal’s
+sealed sender. In: NDSS 2022, January 2021
+46. Matetic, S., W¨ust, K., Schneider, M., Kostiainen, K., Karame, G., Capkun, S.:
+BITE: bitcoin lightweight client privacy using trusted execution. In: USENIX Secu-
+rity 2019, pp. 783–800. USENIX, August 2019
+47. Microsoft SEAL (release 3.6). Microsoft Research, Redmond, WA, November 2020.
+https://github.com/Microsoft/SEAL
+48. Noether, S.: Ring signature conﬁdential transactions for Monero. IACR Cryptology
+ePrint Archive 2015/1098 (2015)
+49. Nuttycombe, K., Hopwood, D.: Zcash improvement proposal 321: payment request
+URIs, August 2010. https://zips.z.cash/zip-0321
+50. Oblivious message retrieval implementation, December 2021. https://github.com/
+ZeyuThomasLiu/ObliviousMessageRetrieval
+51. Ostrovsky, R., Skeith, W.E.: Private searching on streaming data. In: Shoup, V.
+(ed.) CRYPTO 2005. LNCS, vol. 3621, pp. 223–240. Springer, Heidelberg (2005).
+https://doi.org/10.1007/11535218 14
+52. PALISADE lattice cryptography library (release 11.2), June 2021. https://
+palisade-crypto.org/
+53. Paterson, M., Stockmeyer, L.: On the number of nonscalar multiplications neces-
+sary to evaluate polynomials. SIAM J. Comput. 2, 60–66 (1973)
+54. Peikert, C., Vaikuntanathan, V., Waters, B.: A framework for eﬃcient and compos-
+able oblivious transfer. In: Wagner, D. (ed.) CRYPTO 2008. LNCS, vol. 5157, pp.
+554–571. Springer, Heidelberg (2008). https://doi.org/10.1007/978-3-540-85174-
+5 31
+55. Player, R.: Parameter selection in lattice-based cryptography. Ph.D. thesis, Royal
+Holloway, University of London (2018)
+56. Reagen, B., et al.: Cheetah: optimizing and accelerating homomorphic encryption
+for private inference. In: 2021 IEEE HPCA, pp. 26–39 (2021)
+57. Regev, O.: On lattices, learning with errors, random linear codes, and cryptogra-
+phy. J. ACM 56, 1–40 (2009)
+58. Salmond, D., Grant, A.J., Grivell, I., Chan, T.: On the rank of random matrices
+over ﬁnite ﬁelds. CoRR (2014). http://arxiv.org/abs/1404.3250
+59. Schneider, N., Corallo, M.: Bitcoin improvement proposal 21: URI scheme, January
+2012. https://github.com/bitcoin/bips/blob/master/bip-0021.mediawiki
+60. Tassi, A., Chatzigeorgiou, I., Lucani, D.: Analysis and optimization of sparse ran-
+dom linear network coding for reliable multicast services. IEEE Trans. Commun.
+64, 285–299 (2016)
+
+Oblivious Message Retrieval
+783
+61. Wolinsky, D.I., Corrigan-Gibbs, H., Ford, B., Johnson, A.: Dissent in numbers:
+making strong anonymity scale. In: OSDI 2012, pp. 179–182. USENIX, October
+2012
+62. W¨ust, K., Matetic, S., Schneider, M., Miers, I., Kostiainen, K., ˇCapkun, S.: ZLiTE:
+lightweight clients for shielded Zcash transactions using trusted execution. In:
+Goldberg, I., Moore, T. (eds.) FC 2019. LNCS, vol. 11598, pp. 179–198. Springer,
+Cham (2019). https://doi.org/10.1007/978-3-030-32101-7 12
+

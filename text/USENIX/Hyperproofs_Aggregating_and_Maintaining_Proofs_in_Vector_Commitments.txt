@@ -1,0 +1,2524 @@
+This paper is included in the Proceedings of the 
+31st USENIX Security Symposium.
+August 10–12, 2022 • Boston, MA, USA
+978-1-939133-31-1
+Open access to the Proceedings of the 
+31st USENIX Security Symposium is 
+sponsored by USENIX.
+Hyperproofs: Aggregating and Maintaining Proofs 
+in Vector Commitments
+Shravan Srinivasan, University of Maryland; Alexander Chepurnoy, Ergo Platform; 
+Charalampos Papamanthou, Yale University; Alin Tomescu, VMware Research; 
+Yupeng Zhang, Texas A&M University
+https://www.usenix.org/conference/usenixsecurity22/presentation/srinivasan
+
+Hyperproofs: Aggregating and Maintaining Proofs in Vector Commitments
+Shravan Srinivasan
+University of Maryland
+Alexander Chepurnoy
+Ergo Platform
+Charalampos Papamanthou
+Yale University
+Alin Tomescu
+VMware Research
+Yupeng Zhang
+Texas A&M University
+Abstract
+We present Hyperproofs, the first vector commitment (VC)
+scheme that is efficiently maintainable and aggregatable. Sim-
+ilar to Merkle proofs, our proofs form a tree that can be ef-
+ficiently maintained: updating all n proofs in the tree after a
+single leaf change only requires O(logn) time. Importantly,
+unlike Merkle proofs, Hyperproofs are efficiently aggregat-
+able, anywhere from 10× to 41× faster than SNARK-based
+aggregation of Merkle proofs. At the same time, an individ-
+ual Hyperproof consists of only logn algebraic hashes (e.g.,
+32-byte elliptic curve points) and an aggregation of b such
+proofs is only O(log(blogn))-sized. Hyperproofs are also
+reasonably fast to update when compared to Merkle trees
+with SNARK-friendly hash functions.
+As another benefit over Merkle trees, Hyperproofs are ho-
+momorphic: digests (and proofs) for two vectors can be homo-
+morphically combined into a digest (and proofs) for their sum.
+Homomorphism is very useful in emerging applications such
+as stateless cryptocurrencies. First, it enables unstealability, a
+novel property that incentivizes proof computation. Second,
+it makes digests and proofs much more convenient to update.
+Finally, Hyperproofs have certain limitations: they are not
+transparent, have linear-sized public parameters, are slower to
+verify, and have larger aggregated proofs and slower verifica-
+tion than SNARK-based approaches. Nonetheless, end-to-end,
+aggregation and verification in Hyperproofs is 10× to 41×
+faster than in SNARK-based Merkle trees.
+1
+Introduction
+Vector commitment (VC) schemes [21, 39] such as Merkle
+trees [40] are fundamental building blocks in many protocols.
+In a VC scheme, a prover computes a succinct digest d of a
+vector a = [a1,...,an] and proofs π1,...,πn for each position.
+A verifier who has the digest d can later verify a proof πi
+that ai is the correct value at position i. Some VCs, such as
+Merkle trees, are maintainable: when the vector changes all
+proofs can be efficiently updated in sublinear time, rather than
+recomputed from scratch in linear time. Other VCs, such as
+Pointproofs [28], are aggregatable: the prover can take several
+proofs πi for i ∈I and efficiently aggregate them into a single,
+succinct proof πI.
+Unfortunately, no current VC scheme is both maintainable
+and aggregatable; at least not efficiently. Yet emerging appli-
+cations such as stateless cryptocurrencies [12,22,28,41,52,57,
+59] rely on dedicated nodes to efficiently maintain all proofs
+and also on miners to efficiently aggregate proofs. While
+generic argument systems (e.g., SNARKs [30, 49]) can be
+used to add aggregation to maintainable VCs such as Merkle
+trees, this is too slow in practice (see §5.2). This brings us
+to this paper’s main concern: Can we build an efficient VC
+that is both maintainable and aggregatable? In this paper,
+we answer this positively and present Hyperproofs. Similar
+to Merkle trees, Hyperproofs are logn-sized and determine a
+tree. This makes updating all proofs very efficient in logarith-
+mic time. However, Hyperproofs are built from polynomial
+commitments [32,46] rather than hash functions such as SHA-
+256. This enables a natural aggregation algorithm that is 10×
+to 41× faster than “SNARKing" multiple Merkle proofs.
+In addition to aggregation and maintainability, Hyperproofs
+have another very useful property: homomorphism. Specif-
+ically, trees (and digests) for two vectors can be combined
+into a single tree (and digest) for their sum. This has sev-
+eral applications. First, homomorphism allows us to obtain
+unstealability, a property which incentivizes proof computa-
+tion in applications such as stateless cryptocurrencies [64].
+In a nutshell, unstealability allows a prover to watermark
+the proofs she computes with her identity, in an irreversible
+manner. This way, honest provers can be rewarded for the
+proofs they compute while malicious provers cannot steal
+other provers’ proofs. Second, homomorphism makes updat-
+ing digests (and Hyperproofs) more convenient than updating
+Merkle roots (and proofs), which requires having the proof(s)
+for the changed position(s) in the vector. Third, homomor-
+phism allows authenticating data in a streaming setting [48].
+Challenges. In designing Hyperproofs, we surmount three
+key challenges. First, computing n proofs in Papamanthou-
+USENIX Association
+31st USENIX Security Symposium    3001
+
+Shi-Tamassia (PST) polynomial commitments [46] takes
+O(n2) time and is too slow. Second, aggregation of PST proofs
+is difficult without generic SNARKs [30,49], which would be
+too expensive. Third, unstealable proofs must remain main-
+tainable and aggregatable. This precludes solutions based on
+computing SNARKs over proofs which, in addition to being
+slow (see §5.2), would sacrifice updatability (see “Strawmen”
+in §3.4). Furthermore, unstealable proofs must continue to ver-
+ify with respect to one global digest. This precludes solutions
+that embed the identity of the prover inside the vector, which
+results in as many digests as there are provers (and would
+only be practical in a small-scale, permissioned setting).
+Evaluation. In §5.1, we show Hyperproofs are small (1.44
+KiB), they verify quickly (17.4 milliseconds) and are fast to
+maintain (2.6 milliseconds per update). In §5.2, we show Hy-
+perproof aggregation is much faster than Merkle proof aggre-
+gation: 10× faster when using Poseidon hashes [29], which
+likely need more cryptanalysis, and 41× faster when using
+provably-secure Pedersen hashes. However, our faster aggre-
+gation comes at a cost of slower verification for aggregated
+proofs and a larger 52 KiB aggregate proof size. Nonetheless,
+when considering the end-to-end aggregation and verification
+time in stateless cryptocurrencies, Hyperproofs remain 10×
+to 41× faster and outperform Merkle trees (see §5.3).
+Limitations. To commit to a vector of size n, Hyperproofs
+requires public parameters consisting of 2n −1 group ele-
+ments, which must be generated via a trusted setup, typically
+decentralized via multi-party computation protocols [15]. In
+future work, we hope to have a transparent setup by using
+assumptions in hidden-order groups. We also do not explore
+the subtleties of fully-integrating unstealable proofs into a
+statelessly-validated cryptocurrency. Lastly, our macrobench-
+marks only measure the computational overhead of VCs that
+arises on the critical path to a consensus decision. While our
+results show Hyperproofs lead to 10× faster decisions, we
+do not claim this is sufficient to make the stateless setting
+practical.
+1.1
+Overview of Techniques
+Vectors as multilinear extensions (MLEs). We build upon
+previous work [68,69] that represents a vector of size n = 2ℓas
+a multilinear extension (MLE) polynomial. For example, the
+MLE of a = [5,2,8,3] is f(x2,x1) = 5(1−x2)(1−x1)+2(1−
+x2)x1 + 8x2(1 −x1) + 3x2x1. Note that f correctly “selects”
+the right ai given the binary expansion of i as input: f(0,0) =
+5, f(0,1) = 2, f(1,0) = 8 and f(1,1) = 3.
+PST commitments to MLEs. To commit to a vector,
+we compute a Papamanthou-Shi-Tamassia (PST) commit-
+ment [46] to its MLE (see §2.2) . For example, the
+PST commitment to f above is C = gf(s1,s2)
+1
+∈G1, where
+(s1,s2) ∈Z2
+p are secret points encoded in the public pa-
+rameters of the scheme and g1 is the generator of G1.
+For vectors of size 4, these public parameters consist of
+gs1
+1 ,g1−s1
+1
+,g(1−s2)(1−s1)
+1
+, g(1−s2)s1
+1
+,gs2(1−s1)
+1
+,gs2s1
+1
+. Importantly,
+we show that the selectively-secure variant of PST commit-
+ments is actually adaptively-secure when restricted to only
+proving evaluations on the Boolean hypercube {0,1}ℓ(see
+§2.2). This reduces our proof size compared to previous work
+based on PST [68,69].
+Multilinear trees. To prove that ai is the ith value in the vec-
+tor a = [a0,...,an−1], we compute a PST evaluation proof for
+f(iℓ,...,i1) = ai w.r.t. the commitment C, where (iℓ,...,i1) is
+the binary representation of i. Unfortunately, this takes O(n)
+time per position. Thus, computing all n proofs would take
+O(n2) time which is prohibitive. We reduce this to O(nlogn)
+by computing a novel multilinear tree (MLT) of proofs us-
+ing a divide-and-conquer approach. Importantly, our MLT is
+maintainable: updating all proofs after a change to the vector
+only requires O(logn) time.
+Proof aggregation. A proof πi for ai consists of PST com-
+mitments (wi,ℓ,...,wi,1) ∈Gℓ
+1 defined in Fig. 2, such that the
+following pairing equation holds:
+e(C/gai
+1 ,g2) = ∏
+j∈[ℓ]
+e(wi,j,g
+sj−ij
+2
+),
+(1)
+where e : G1 ×G2 →GT is a pairing and g
+sj
+2 ’s are additional
+O(ℓ)-sized PST public parameters in G2. To aggregate b
+proofs, we prove knowledge of wi,j’s that pass Eq. 1 for each i,
+resulting in a succinct O(log(bℓ)) aggregated proof size. Our
+key ingredient is an inner-product argument (IPA) by Bünz et
+al. [19] for proving several pairing equations hold.
+Homomorphism and unstealablity. As we mentioned, Hy-
+perproofs are homomorphic: exponentiating a PST evaluation
+proof (wi,ℓ,...,wi,1) by a constant α yields a proof for posi-
+tion i but in a vector whose values are multiplied by α. We ob-
+serve that if α is the secret key of a proof-serving node (PSN),
+this makes the proof unstealable by other nodes who do not
+have α. Importantly, the proof can still be verified against the
+digest C, except the verifier must also give the node’s corre-
+sponding public key gα
+2: e(C/gai
+1 ,gα
+2) = ∏j∈[ℓ] e(wα
+i,j,g
+s j−ij
+2
+).
+As an optimization, proof-serving nodes can exponentiate the
+PST public parameters by α before computing proofs. This
+way, when computing a multilinear tree (MLT) with these
+parameters, all proofs are implicitly unstealable and the MLT
+remains maintainable.
+1.2
+Related work
+Below, we relate our VC to previous work and summarize in
+Table 1.
+Merkle trees. Our proofs consist of logn (algebraic) hashes
+and can be as small as Merkle proofs if using 256-bit elliptic
+curves [6]. However, Hyperproofs are orders of magnitude
+3002    31st USENIX Security Symposium
+USENIX Association
+
+Table 1: Comparison with other VCs, which are not simultaneously aggregatable and maintainable (see “Agg time” and “UpdAllProofs time” columns). n is
+the size of the vector, πi is a proof for position i and πI is an aggregated proof for k positions. Proof sizes and time complexities are in terms of group elements
+and group exponentiations / field operations, respectively. (In RSA-based VCs [12,20,21,37], we count O(ℓ) group operations as an exponentiation, where ℓis
+the bit-width of VC elements.) Items in red indicate worse performance than Hyperproofs. All schemes∗support UpdDig and UpdProof (see Def. 2.1).
+Scheme
+|πi|
+|πI|
+OpenAll
+time
+Agg
+time
+UpdAllProofs
+time
+Trans-
+parent?
+Homo-
+morphic?
+Gen
+time
+|pp|
+AMT [58]
+logn
+×
+nlogn
+×
+logn
+×
+✓
+n2
+nlogn
+aSVC [59]
+1
+1
+nlogn
+klog2 k
+n
+×
+✓
+nlogn
+n
+BBF [12]
+1
+1
+nlog2 n
+klogn
+nlogn
+×†
+×
+1
+1
+CF-CDH [21,28,37]
+1
+1
+n2
+k
+n
+×
+✓
+n2
+n2
+CF-RSA [20,21,37]
+1
+1
+nlogn
+klog2 k
+n
+×†
+✓
+1
+1
+CFG+RSA [20]
+1
+1
+nlog2 n
+klogklogn
+n
+×†
+×
+1
+1
+Lattice [48,51]
+logn
+×
+n
+×
+logn
+✓
+✓
+1
+logn
+Merkle
+logn
+×
+n
+×
+logn
+✓
+×
+1
+1
+Merkle SNARK
+logn
+1
+n
+klognlog(klogn)
+logn
+×
+×
+1
+1
+Pointproofs [28]
+1
+1
+nlogn
+k
+n
+×
+✓
+n
+n
+Hyperproofs
+logn
+log(klogn)
+nlogn
+klogn
+logn
+×
+✓
+n
+n
+†: BBF, CF-RSA and CFG+RSA avoid the trusted setup if instantiated using class groups of imaginary quadratic order, which are known to be slower than RSA groups.
+∗: Merkle trees, BBF and CFG+RSA require dynamic update hints, rather than static update keys, for digest and proof updates. Only the weakly-binding variant of CFG+RSA supports
+digest updates. CF-CDH and Pointproofs have O(n)-sized update keys, which can be too large for some applications.
+slower to compute and update, when compared to normal
+Merkle trees hashed with SHA-256. Nonetheless, when com-
+pared to aggregatable Merkle trees that use SNARK-friendly
+hash functions (e.g., Poseidon-128 [29]), Hyperproofs are
+only slightly slower to compute and update (see §5.3) but
+have faster aggregation, homomorphism and unstealability.
+SNARK-based works. Ozdemir et al. [45] explore using
+SNARKs to prove knowledge of changes that update a vector
+with digest d into a new vector with digest d′. Lee et al. [38]
+also use SNARKs to prove correctness of state transitions in
+replicated state machines, without having to send the state
+changes. Neither work explores unstealability nor maintaining
+and aggregating proofs efficiently. Similar to our work, ag-
+gregating SNARK proofs [19] and some proof-carrying data
+(PCD) schemes [16] also rely on inner-product arguments.
+Algebraic VCs. Zhang et al. [68, 69] were the first to
+build VCs from PST commitments to MLEs. However, their
+O(logn)-sized proofs are concretely larger and do not support
+updates. Some VCs have O(1)-sized proofs [12, 20, 21, 28,
+35,37,59], which inherently require Θ(n) time to update all
+proofs after a change. Aggregation and verification in these
+VCs is concretely, and sometimes asymptotically, faster (see
+Table 1). They also have smaller aggregated proofs. However,
+these VCs are not efficiently maintainable (see §5.1), which
+precludes using them in settings where provers are rewarded
+to maintain proofs (see §4).
+Previous maintainable VCs [48, 51, 58, 60] do not sup-
+port aggregation; at least not without expensive generic argu-
+ment systems (e.g., SNARKs). The lattice-based construction
+from [48,51] is also homomorphic and additionally transpar-
+ent, with constant-sized public parameters. However, it is too
+slow for practice and non-aggregatable. The authenticated
+multipoint evaluation tree (AMT) construction from [58,60]
+can be viewed as the dual to our construction, but from uni-
+variate polynomials rather than multivariate. Unfortunately, it
+is non-aggregatable, its trusted setup requires O(n2) time and
+it has larger O(nlogn)-sized public parameters.
+Recent work [3,12,61] enhances VCs into key-value com-
+mitments (KVCs), where arbitrary keys (rather than vector
+positions) are mapped to values. Unfortunately, all of these
+constructions have constant-sized proofs and are thus not
+maintainable. Some VCs have transparent setup [12,20,37],
+support incremental aggregation [20], have a “specialiazable”
+CRS [20] and provide time/space trade-offs when computing
+proofs [12,20]. Hyperproofs do not have any of these features.
+Unstealability. To the best of our knowledge, Katz et al. are
+the first to observe that (carefully) tying the identity of the
+prover to a proof she computes allows rewarding the prover
+for her effort [33]. However, their work focuses on watermark-
+ing zero-knowledge proofs of knowledge of a secret witness. In
+contrast, in our work, our proofs need not be zero-knowledge
+and they need not prove knowledge of secret witnesses. Fur-
+thermore, unlike Katz et al.’s result, our notion of unsteal-
+ability captures the difficulty of extracting useful informa-
+tion from watermarked proofs that might help an adversary
+steal proofs faster than computing them from scratch. Subse-
+quently, Wesolowski explores such watermarked proofs in the
+context of verifiable delay functions (VDF) [64]. In contrast,
+we are the first to explore watermarking VC proofs and to
+give security definitions.
+USENIX Association
+31st USENIX Security Symposium    3003
+
+Although no previous VC scheme is unstealable, some can
+be made so using our pairing-based techniques from §3.4.
+Specifically, VCs from pairing-based polynomial commit-
+ments [28, 59, 60] appear compatible with our techniques.
+On the other hand, RSA-based VCs [12,20,21], which lack
+pairings, are less amenable to our techniques. While proofs-of-
+knowledge of exponent (PoKEs) [12] could be used to replace
+the reliance on pairings, this would come at the cost of losing
+maintainability of watermarked proofs. Lastly, our pairing-
+based techniques do not apply to Merkle trees as they are
+based on hash functions. Instead, we discuss watermarking
+Merkle proofs via SNARKs and their pitfalls in §3.4, under
+“Strawmen”.
+2
+Preliminaries
+Notation. Let [0,n) = {0,1,...,n −1}. An ℓ-bit number i
+has binary representation i = (iℓ,...,i1) if, and only if, i =
+∑ℓ−1
+k=0 ik+12k. Note that iℓis the MSB of i and i1 is the LSB.
+We often use i as i’s binary representation and ik as its kth
+bit, without explicit definition. Let r ∈R S denote picking an
+element from S uniformly at random.
+Pairings. (p,G1,G2,GT,e,g1,g2) ←BilGen(1λ) denotes
+generating groups G1, G2 and GT of prime order p, with gi
+a generator of Gi, and a pairing e : G1 ×G2 →GT such that
+∀u ∈G1,w ∈G2 and a,b ∈Zp,e(ua,wb) = e(u,w)ab. A use-
+ful property of e(·,·) is that e(u,h)e(v,h) = e(uv,h),∀u,v,h ∈
+G2
+1 ×G2. In this paper, we assume Type III bilinear groups
+(i.e., without efficiently-computable homomorphisms be-
+tween G1 and G2 or viceversa), which are needed by the
+inner-product argument from §2.4 and are also more efficient
+in practice. Let 1G denote the identity in a group G.
+Vectors.
+Bolded, lower-case
+symbols
+such as
+a =
+[a0,...,an−1] ∈Zn
+p typically denote vectors of field elements.
+Bolded, upper-case symbols such as A = [A1,...,Am] ∈
+Gm typically denote vectors of group elements. |A| de-
+notes the size of the vector A. Ax = [Ax
+1,...,Ax
+m],x ∈Zp,
+A◦B = [A1B1,A2B2,...,AmBm], and ⟨A,B⟩= ∏m
+j=1 e(Aj,Bj)
+denotes a pairing product. Let AL = [A1,...,Am/2] and AR =
+[Am/2+1,...,Am] denote the left and right halves of A. Let
+A||1G denote a vector of size 2|A| that “extends” A to the
+right with the identity of G. (Similarly, 1G||A “extends” A to
+the left.)
+2.1
+Multilinear extension (MLE) of a vector
+Let n = 2ℓand x = (xℓ,...,x1). A vector a = [a0,...,an−1] ∈
+Zn
+p can be represented as a multilinear extension polynomial
+f : Zℓ
+p →Zp which maps each position i to ai:
+f(i) = f(iℓ,...,i2,i1) = ai,∀i ∈[0,n)
+(2)
+For example, the MLE of a = [5,2,8,3] is f(x2,x1) defined
+as:
+5(1−x2)(1−x1)+2(1−x2)x1 +8x2(1−x1)+3x2x1
+(3)
+In general, the unique multilinear extension f of a is:
+f(x) = f(xℓ,...,x1) =
+n−1
+∑
+j=0
+ajS j,ℓ(xℓ,...,x1) =
+n−1
+∑
+j=0
+ajS j,ℓ(x)
+(4)
+where Sj,ℓ, j ∈[0,2ℓ) are selector multinomials defined as:
+Sj,ℓ(x) =
+ℓ
+∏
+k=1
+sel jk(xk),s.t. sel jk(xk) =
+(
+xk,
+if jk = 1
+1−xk,
+if jk = 0
+,
+(5)
+with S0,0(x) = 1. In our example from Eq. 3, we have ℓ=
+2 and so: S0,2(x) = (1 −x2)(1 −x1), S1,2(x) = (1 −x2)x1,
+S2,2(x) = x2(1 −x1) and S3,2(x) = x2x1. We often refer to
+sel jk as a selector monomial. Importantly, note that:
+S j,ℓ(iℓ,...,i1) = Sj,ℓ(i) =
+(
+1,
+i = j
+0,
+i ̸= j ,∀i ∈[0,2ℓ)
+(6)
+By these properties above, we can see why Eq. 2 holds for
+any i:
+f(i) =
+n−1
+∑
+j=0
+ajSj,ℓ(i) = aiSi,ℓ(i)+
+n−1
+∑
+j=1,j̸=i
+a jS j,ℓ(i) = ai ·1+0
+In other words, an MLE f acts as a “multiplexer”, choosing
+the right ai based on the input position i, given as i in binary.
+MLE decomposition. An MLE of size n = 2ℓcan be de-
+composed into two MLEs of size n/2 [69]. For example,
+split a from Eq. 3 into its left and right halves a0 = [5,2]
+and a1 = [8,3], with MLEs f0 = 5(1 −x1) + 2x1 and f1 =
+8(1−x1)+3x1, respectively. Then, observe that the MLE f
+for a is a combination of f0 and f1: i.e., f = (1−x2)f0 +x2 f1.
+In general, the MLE f of any a decomposes as:
+f(x) = (1−xℓ)f0(xℓ−1,...,x1)+xℓf1(xℓ−1,...,x1)
+(7)
+Note that for a = [a0,a1] of size 2, the MLEs f0, f1 are trivial
+(i.e., of size 1) and are simply set to a0 and a1, respectively.
+We use fbℓbℓ−1...bk to denote the MLE of the abℓbℓ−1...bk sub-
+vector, which is a subvector of all ai’s with iℓ= bℓ,iℓ−1 =
+bℓ−1,...,ik = bk. For example, in a vector a = [a0,...,a7],
+f01 is the MLE of a01, which contains all (three bit) positions
+i whose first two bits are 01: i.e., a01 = [a2,a3] because, in
+binary, 2 and 3 are 010 and 011, respectively.
+2.2
+PST commitments to MLEs
+Papamanthou, Shi and Tamassia [46] extend Kate-Zaverucha-
+Goldberg (KZG) univariate polynomial commitments [32]
+3004    31st USENIX Security Symposium
+USENIX Association
+
+g1
+g(1−s1)
+1
+g(1−s1)(1−s2)
+1
+g(1−s1)(1−s2)(1−s3)
+1
+g(1−s1)(1−s2)s3
+1
+g(1−s1)s2
+1
+g(1−s1)s2(1−s3)
+1
+g(1−s1)s2s3
+1
+gs1
+1
+gs1(1−s2)
+1
+gs1(1−s2)(1−s3)
+1
+gs1(1−s2)s3
+1
+gs1s2
+1
+gs1s2(1−s3)
+1
+gs1s2s3
+1
+Figure 1: PST (and Hyperproofs) public parameters. The uth path in this
+tree is actually the update key upku from Eq. 16.
+to multivariate ones. We refer to their scheme as PST and
+restrict its use to multilinear extensions, introduced above.
+Commitments. PST works over a bilinear group obtained via
+BilGen. The PST commitment to a multilinear extension f
+for a vector a of size n = 2ℓis a single group element in G1:
+pst(f) = g f(sℓ,...,s1)
+1
+= g
+∑n−1
+j=0 a jSj,ℓ(s)
+1
+=
+n−1
+∏
+j=0
+
+gSj,ℓ(s)
+1
+a j
+(8)
+Here, s = (sℓ,...,s1) are trapdoors generated via a trusted
+setup that outputs n-sized public parameters: gSj,ℓ(s)
+1
+=
+gSj,ℓ(sℓ,...,s1)
+1
+,∀j ∈[0,2ℓ). Importantly, the setup discards s,
+since knowledge of it directly breaks PST’s security [47].
+We stress that pst(f) can be computed without knowing s, as
+per Eq. 8. Lastly, PST commitments are homomorphic, with
+pst(f + f ′) = pst(f)pst(f ′) for any MLEs f, f ′.
+Evaluation proofs. Papamanthou, Shi and Tamassia give a
+way to prove evaluations f(i) against pst(f) [46], where i is
+the binary representation of i ∈[0,n). Their key observation,
+which we refer to as the PST decomposition, is that:
+f(i) = z ⇔∃qj’s, f(x)−z = ∑
+j∈[ℓ]
+qj(xj−1,...,x1)·(xj −ij)
+(9)
+This yields a PST evaluation proof for f(i) = z consisting
+of commitments w j = g
+qj(s)
+1
+to the quotient polynomials qj.
+To compute the qj’s, the prover first divides f by xℓ−iℓ,
+obtaining qℓand a remainder rℓ. Then, the prover continues
+recursively on the remainder rℓ, which no longer has variable
+xℓ. Specifically, the prover divides rℓby xℓ−1 −iℓ−1, obtaining
+qℓ−1 and rℓ−1. And so on, until he obtains the last quotient
+q1 with remainder r1 = f(i) (see Fig. 2 and [47, Lemma
+1]). Overall, this takes T(n) = O(n) + T(n/2) = O(n) time,
+including the time to commit to the qj’s.
+Note that the qj’s are actually MLEs of size n/2,n/4,...,1.
+As a result, PST’s actual public parameters are gSj,k(s)
+1
+,∀k ∈
+[0,ℓ],∀j ∈[0,2k), so as to also be able to commit to these
+quotient MLEs. Lastly, the parameters form a tree (see Fig. 1)
+and are thus of size 2n−1 G1 elements.
+A verifier who has the commitment pst(f), the claimed
+evaluation (i, f(i) = z) and a logarithmic-sized, publicly-
+known verification key g
+s j
+2 ,∀j ∈[ℓ] can verify the proof using
+PST.Prove(f,ℓ,i = (iℓ,...,i1)) →πi:
+1. If ℓ= 0 (i.e., f is a constant), return ∅.
+2. Otherwise, divide f by xℓ−iℓ, obtaining quotient qℓ(xℓ−1,...,x1)
+and remainder rℓ(xℓ−1,...,x1) such that f = qℓ·(xℓ−iℓ)+rℓ.
+3. Return
+
+gqℓ(s)
+1
+,PST.Prove(rℓ,ℓ−1,(iℓ−1,...,i1))
+
+Figure 2: O(n)-time algorithm for computing a single PST evaluation proof
+πi for f(i) w.r.t. an MLE f of size n = 2ℓ.
+ℓ+1 pairings:
+e(pst(f)/gz
+1,g2) = ∏
+j∈[ℓ]
+e(w j,g
+s j−ij
+2
+)
+(10)
+The check above ensures Eq. 9 holds when x = s, which is
+sufficient for security since s is random and secret. In con-
+structing our VC, we prove a stronger notion of security for
+PST commitments (see §6).
+2.3
+Vector Commitments (VCs)
+We formalize VCs below, similar to Catalano and Fiore [21].
+Definition 2.1 (VC). A VC scheme is a set of PPT algorithms:
+Gen(1λ,n) →pp: Given security parameter λ and maximum vector size
+n, outputs randomly-generated public parameters pp.
+Compp(a) →C: Outputs digest C of a = [a0,...,an−1] ∈Zn
+p.
+Openpp(i,a) →πi: Outputs a proof πi for position i in a.
+OpenAllpp(a) →(π0,...,πn−1): Outputs all proofs πi for a.
+Aggpp(I,(ai,πi)i∈I) →πI: Combines individual proofs πi for values ai
+into an aggregated proof πI.
+Verpp(C,I,(ai)i∈I,πI) →{0,1}: Verifies proof πI that each position i ∈I
+has value ai against digest C.
+UpdDigpp(u,δ,C) →C′: Updates digest C to C′ to reflect position u
+changing by δ ∈Zp.
+UpdProofpp(u,δ,πi) →π′
+i: Updates proof πi to π′
+i to reflect position u
+changing by δ ∈Zp.
+UpdAllProofspp(u,δ,π0,...,πn−1) →(π′
+0,...,π′
+n−1):
+Updates
+all
+proofs πi to π′
+i to reflect position u changing by δ ∈Zp.
+Observations: For simplicity, we give our algorithms oracle
+access to the public parameters pp of the scheme. This way,
+each algorithm can easily access the subset of the parameters
+it needs.
+We formalize OpenAll and UpdAllProofs since, in some
+VCs, these algorithms are faster than n calls to Open and
+UpdProof, respectively. In this sense, we stress that the
+UpdAllProofs algorithm can work in sublinear time, since it
+does not necessarily need to read all input or write all output
+(e.g., in Merkle trees, UpdAllProofs only reads logn sibling
+hashes and overwrites another logn hashes).
+USENIX Association
+31st USENIX Security Symposium    3005
+
+Correctness and soundness. We define VC correctness in
+Def. B.1 and VC soundness in Def. B.2.
+2.4
+Inner Product Arguments (IPA)
+Let CM denote a commitment scheme by Abe et al. [1] for vec-
+tors A,B ∈Gm
+1 ×Gm
+2 and their pairing product Z = ⟨A,B⟩=
+∏m
+i=1 e(Ai,Bi). CM uses a randomly-generated commitment
+key ck = (v,w) ∈Gm
+1 ×Gm
+2 to commit to A,B and Z as:
+C = CM(ck;A,B,Z) = (⟨A,v⟩, ⟨w,B⟩, Z) def
+= (C1,C2,C3)
+(11)
+This commitment scheme is not hiding but is binding under
+Symmetric-eXternal Diffie-Hellman (SXDH) [1,2].
+Bünz et al. [19] give a non-interactive inner-product ar-
+gument (IPA) where a prover convinces a verifier, that the
+prover knows how to open an Abe et al. commitment C to
+(A,B,⟨A,B⟩); i.e. they give an argument for the language:
+Lm
+IPA = {(ck,C) | ∃A ∈Gm
+1 ,B ∈Gm
+2 , s.t.C = CM(ck;A,B,⟨A,B⟩)}
+We abstract Bünz et al.’s [19] non-interactive argument for
+LIPA as three algorithms:
+GIPA(1λ,m) →(PK,VK): Returns PK =VK = ⟨BilGen(1λ),ck = (v ∈R
+Gm
+2 ,w ∈R Gm
+1 )⟩
+PIPA(PK,A,B) →π: Returns a proof π that C = CM(ck;A,B,⟨A,B⟩)
+VIPA(VK,C,π) →{0,1}: Verifies proof π that C = CM(ck;A,B,⟨A,B⟩)
+IPA complexity. PIPA takes O(m) time, VIPA takes O(logm)
+time and the proof size is |π| = O(logm) (see App. A).
+3
+Hyperproofs
+In this section, we intuitively explain how Hyperproofs work,
+often referring to a prover who computes the vector’s digest,
+as well as proofs, and to a verifier who verifies proofs against
+this digest. Without loss of generality, our discussion will
+assume vectors of size exactly n = 2ℓ. Hyperproofs represents
+a vector a = [a0,...,an−1] as a multilinear extension (MLE):
+f(x) =
+n−1
+∑
+i=0
+aiSi,ℓ(x),
+where Si,ℓare selector multinomials as per Eq. 5. The di-
+gest of the vector a is a Papamanthou-Shi-Tamassia (PST)
+commitment to f:
+pst(f) = gf(s)
+1
+,
+where s is the PST trapdoor (see §2.2). Thus, our public pa-
+rameters are the same as PST’s parameters depicted in Fig. 1.
+f1 −f0
+f01 −f00
+f001 −f000
+f000
+= a0
+f001
+= a1
+f011 −f010
+f010
+= a2
+f011
+= a3
+f11 −f10
+f101 −f100
+f100
+= a4
+f101
+= a5
+f111 −f110
+f110
+= a6
+f111
+= a7
+Figure 3: A multilinear tree (MLT) of size 8. Recall from §2 that fbℓbℓ−1...bk
+denotes the MLE of abℓbℓ−1...bk. Each node stores a PST commitment to the
+depicted MLE: e.g., root stores pst(f1 −f0), not f1 −f0. The proof for ai
+consists of all commitments along ai’s path to the root (e.g., for a4, the boxed
+nodes). Sibling leaves [a2 j,a2 j+1] have the same proof. If, say, a4 changes,
+all pink-colored MLEs change, and all boxed commitments must be updated.
+3.1
+Multilinear trees (MLTs)
+A Hyperproof for position i is just a PST evaluation proof
+(see §2.2) for f(i). Unfortunately, if one uses the PST.Prove
+algorithm from Fig. 2 to compute all PST evaluation proofs,
+this takes O(n2) time. Below, we show how to compute all
+n proofs faster, in O(nlogn) time, by avoiding unnecessary
+computations (see Fig. 4).
+Denote the proof for f(i) as πi = (πi,ℓ,...,πi,1). Next, ob-
+serve that if we compute all proofs πi via n calls to:
+PST.Prove(f,ℓ,(iℓ,...,i1)),∀i ∈[n],
+they actually all have the same first quotient qℓcommitted in
+πi,ℓ! This is because all n PST.Prove calls initially divide f by
+xℓ−iℓ, which actually yields the same quotient, independent
+of iℓ. To see this, recall the MLE decomposition from Eq. 7
+and reorganize it in two ways as:
+f = (1−xℓ)· f0 +xℓ· f1 ⇔
+f = (f1 −f0)·(xℓ−1)+ f1
+(12)
+= (f1 −f0)·xℓ+ f0 ,
+(13)
+where f0 is the MLE for the left half a0 of a and f1 is the MLE
+for the right half a1 (recall from §2). Since both divisions
+yield the same qℓ= f1 −f0 quotient, all πi’s share the same
+πi,ℓcommitment to qℓ! We depict this qℓas the root of a
+multilinear tree (MLT) in Fig. 3.
+Next, recall that each one of the n PST.Prove calls recurses
+on its remainder, which was either f0 or f1 (as per Eqs. 12
+and 13). Specifically, the first n/2 calls for i ∈[0,n/2) (i.e.,
+iℓ= 0) recurse on PST.Prove(f0,ℓ−1,(iℓ−1,...,i1)), and
+the other n/2 calls for i ∈[n/2 + 1,n) (i.e., iℓ= 1) recurse
+on PST.Prove(f1,ℓ−1,(iℓ−1,...,i1)). But by the same argu-
+ment above, each group of n/2 calls returns the same first
+quotient commitment. For example, for the first group, we
+have quotient f01 −f00:
+f0 = (f01 −f00)(xℓ−1 −1)+ f01
+(14)
+3006    31st USENIX Security Symposium
+USENIX Association
+
+MLT.Compute(f,ℓ) →[t1,...,t2ℓ−1]:
+1. If ℓ= 0 (i.e., f is a constant), return ∅.
+2. Otherwise, ∀b ∈{0,1}, divide f by xℓ−b, obtaining quotient f1 −f0
+and remainder fb such that f = (f1 −f0)·(xℓ−b)+ fb.
+3. Return
+
+g
+(f1−f0)(s)
+1
+,MLT.Compute(f0,ℓ−1),MLT.Compute(f1,ℓ−1)
+
+Figure 4: Computes an MLT in O(nlogn) time consisting of PST evaluation
+proofs for all f(i) w.r.t. an MLE f of a of size n = 2ℓ. In contrast, n naive
+calls to PST.Prove would take O(n2). Recall that f0 and f1 are MLEs for
+the left and right halves of a. Returns the tree stored in preorder in an array.
+= (f01 −f00)xℓ−1 + f00 ,
+(15)
+Similarly, for the second group, the quotient will be f11 −
+f10. Both quotients are depicted as the children of the root
+in Fig. 3. Continuing recursively in this fashion yields our
+multilinear tree (MLT) from Fig. 3. We describe the algorithm
+for computing it in Fig. 4 and we argue correctness of MLT
+proofs in the extended version of our paper [56].
+3.2
+Updates and homomorphism
+Updating digests and MLTs. Suppose a4 changes by δ in
+our MLT from Fig. 3. Then, by Eq. 4, we know that a’s MLE
+will change to:
+f ′ = f +x3(1−x2)(1−x1)δ = f +S4,3(x)δ
+But what about the MLT? The following highlighted MLEs
+from Fig. 3 will be updated to:
+f ′
+100 = f100 +δ
+f ′
+10 = f10 +(1−x1)δ
+f ′
+1 = f1 +(1−x2)(1−x1)δ
+f ′ = f +x3(1−x2)(1−x1)δ
+These MLEs changing affect the MLEs along a4’s path. For
+example, the root MLE f1 −f0 also changes by the same
+amount as f1: i.e., by + (1 −x2)(1 −x1)δ. Furthermore,
+their corresponding commitments are easy to update via
+the PST homomorphism. For example, the new root will be
+pst(f1 −f0)·g(1−s2)(1−s1)δ
+1
+. However, note that updating com-
+mitments requires knowing g(1−s2)(1−s1)
+1
+, which is referred to
+as an update key. We delve into this next.
+Update keys. Recall that Su,k(x) is the selector multinomial
+for position u ∈[0,2k) in an MLE of size 2k (see Eq. 5).
+However, to easily reason about updates, it is useful to define
+Su,k even when u ≥2k as Su,k = Su mod 2k,k. As explained
+above, updating the MLT after au changes by δ requires some
+auxiliary information referred to as an update key for position
+u. This consists of commitments to all selector multinomials
+for u in MLEs of size 1,2,...,2ℓ:
+upku =
+n
+gSu,k(s)
+1
+: k ∈[0,ℓ]
+o
+=
+
+upku,k : k ∈[0,ℓ]
+	
+(16)
+Recall that Su,0(x) = 1, so that upku,0 = g1,∀u ∈[0,2ℓ). Then,
+the MLT commitments (wu,ℓ,...,wu,1) along u’s path are up-
+dated as:
+w′
+u,k = wu,k ·(upku,k−1)δ = wu,k ·(gSu,k−1(s)
+1
+)δ,∀k ∈[ℓ] (17)
+Note that this implies that any proof πi = (wi,ℓ,...,wi,1) can
+be updated after a change at u: one simply has to identify
+the “intersection” of u’s proof with i’s proof and apply the
+update as above, as if updating a pruned MLT consisting of
+just πi. More formally, suppose i and u have the same t most
+significant bits (i.e., ik = uk,∀k ∈{ℓ,ℓ−1,...,ℓ−t + 1}).
+Then, the updated proof π′
+i is initially set to πi and (partially)
+updated as:
+w′
+i,k = wi,k ·(upku,k−1)δ,∀k ∈{ℓ,...,ℓ−t},1 ≤k ≤ℓ(18)
+The digest updates more simply as:
+pst(f ′) = pst(f)·gSu,ℓ(s)
+1
+= pst(f)·
+ upku,ℓ
+δ
+(19)
+Lastly, we note that the update keys actually coincide with
+our public parameters (see Fig. 1).
+MLTs are homomorphic. Since our multilinear tree stores
+an MLE commitment at each node, we observe that the MLT
+itself is homomorphic: the MLT for a + b can be obtained
+by “node-by-node multiplying” a’s MLT with b’s MLT. In
+other words, every node w in the new MLT is the prod-
+uct of the nodes w in the MLTs for a and b. Specifically,
+pst(f ′′
+w) = pst(fw + f ′
+w) = pst(fw)pst(f ′
+w), where fw, f ′
+w, f ′′
+w
+denote the MLE stored at node w in the MLT for a,b and
+a+b, respectively. This enables our unstealability construc-
+tion from §3.4 and has other applications to authenticating
+data in the streaming setting [48].
+3.3
+Aggregating proofs
+Recall that a proof (w1,...,wℓ) for ai in the vector a of size
+n = 2ℓis just an ℓ-sized PST evaluation proof (see §2.2) and
+verifies as:
+e(C/gai
+1 ,g2) =
+ℓ
+∏
+k=1
+e(wk,gsk−ik
+2
+),
+(20)
+where C is the digest and (gsk−ik
+2
+)k∈[ℓ] is position i’s public
+verification key.
+Warm-up: Compressing proofs. It is useful to first discuss
+compressing a size-ℓproof for ai to size logℓvia the IPA from
+§2.4. For this, we let A = [w1 ...wℓ], B = [gs1−i1
+2
+...gsℓ−iℓ
+2
+],
+Z = e(C/gai
+1 ,g2) and prove that (Z,B) is in the following
+language:
+Lℓ
+PROD =
+n
+Z ∈GT,B ∈Gℓ
+2
+ ∃A ∈Gℓ
+1,Z = ⟨A,B⟩
+o
+(21)
+USENIX Association
+31st USENIX Security Symposium    3007
+
+GBATCH(1λ,b,ℓ) →(PK,VK): Return GIPA(1λ,b·ℓ)
+PBATCH(PK,(Ai,Bi)i∈[b]) →π:
+1. Let A = [A1||A2||...||Ab] and B = [B1||B2||...||Bb]
+2. Let C1 = ⟨A,v⟩(i.e., 1st component of CM(ck;A,B′,1GT ))
+3. Let ri = H(C1,B,i) ∈Zp for i = 1,...,b
+4. Let B′ = [Br1
+1 ||Br2
+2 ||...||Brb
+b ]
+5. Let π∗= PIPA(ck,A,B′) and return π = (C1,π∗).
+VBATCH(VK,(Bi,Zi)i∈[b],π) →{0,1}:
+1. Parse the proof π = (C1,π∗)
+2. Let ri = H(C1,B,i) ∈Zp for i = 1,...,b
+3. Let B′ = [Br1
+1 ||Br2
+2 ||...||Brb
+b ] and Z′ = ∏b
+i=1 Zri
+i
+4. Let C2 = ⟨w,B′⟩(i.e., 2nd component of CM(ck;A,B′,1GT ))
+5. Let C = (C1,C2,Z′) and return VIPA(ck,C,π∗).
+Figure 5: Our argument for Lb,ℓ
+BATCH used to aggregate Hyperproofs. H is a
+random oracle and (GIPA,PIPA,VIPA) is the Bünz et al. IPA from §2.4.
+Next, we can use the IPA from §2.4. Specifically, assume
+our LPROD prover and verifier share a commitment key
+ck = (v,w). First, the prover gives C1 = ⟨A,v⟩to the verifier.
+Second, the verifier computes C2 = ⟨w,B⟩and lets C3 = Z.
+Thus, the verifier now has a commitment C = (C1,C2,C3)
+to A,B and Z. Third, the prover simply runs PIPA from §2.4
+and convinces the verifier that the committed values satisfy
+Z = ⟨A,B⟩and thus that the Hyperproof verifies as per Eq. 20.
+Aggregating proofs. Next, we observe that aggregating
+many proofs (π1,...,πb), each for a position pi in a, reduces
+to proving membership in Lℓ
+PROD for each (Zi,Bi), where
+Zi = e(C/g
+api
+1 ,g2) and Bi is position pi’s verification key. But
+doing this naively would result in a large, O(blogℓ) aggre-
+gated proof size. Instead, we seek a more succinct argument
+for the following new language:
+Lb,ℓ
+BATCH =
+n
+(Zi ∈GT ,Bi ∈Gℓ
+2)i∈[b]
+ ((Zi,Bi) ∈Lℓ
+PROD)i∈[b]
+o
+(22)
+=
+n
+(Zi ∈GT ,Bi ∈Gℓ
+2)i∈[b]
+ (∃Ai ∈Gℓ
+1,Zi = ⟨Ai,Bi⟩)i∈[b]
+o
+In other words, membership in Lb,ℓ
+BATCH guarantees that ∀i ∈
+[b],∃Ai:
+Zi =
+ℓ
+∏
+j=1
+e(Ai,j,Bi,j),
+(23)
+where Ai,j is the jth entry of Ai. Note that we cannot use the
+TIPP argument from [19] to prove membership in LBATCH,
+since it can only prove that ∀i,Zi = e(Xi,Yi), where (Xi,Yi) ∈
+G1 ×G2. Instead, we design a new argument for Lb,ℓ
+BATCH (see
+Fig. 5) which uses a random linear combination to combine
+the ℓ-sized equations from above into a single bℓ-sized one:
+b
+∏
+i=1
+Zri
+i =
+b
+∏
+i=1
+ 
+ℓ
+∏
+j=1
+e(Ai,j,Bi,j)
+!ri
+(24)
+Gen(1λ,n) →pp: Let (p,G1,G2,GT ,e,g1,g2) ←BilGen(1λ). Let s =
+(s1,...,sℓ) ∈R Zℓ
+p, where n = 2ℓ. Let pp consist of
+• pst(Sj,k) = gS j,k(s)
+1
+,∀k ∈[0,ℓ],∀j ∈[0,2k);
+• gsk
+2 ,∀k ∈[ℓ];
+• (PK,VK) ←GBATCH(1λ,b,ℓ).
+We refer to (gsk−ik
+2
+)k∈[ℓ] as position i’s verification key.
+Compp(a) →C: Let C = pst(f) = g f(s)
+1
+= gf(s1,...,sℓ)
+1
+, where f is a’s
+MLE.
+OpenAllpp(a) →(π0,...,πn−1): Return the MLT as per §3.1.
+Openpp(i,a) →πi: Compute only the ith path in the MLT and return it.
+Aggpp(I,{ai,πi}i∈I) →πI: Let m = |I| and let A1,A2,...,Am denote
+proofs (πi)i∈I, ordered by i, and B1,...,Bm denote their corresponding
+verification keys. Return PBATCH(PK,(Ak,Bk)k∈[m]).
+Verpp(C,I,{ai}i∈I,πI) →{0,1}: If I = {i}, parse πI = (w1,...,wℓ) and
+ensure that
+e(C/gai
+1 ,g2) =
+ℓ
+∏
+j=1
+e(wj,g
+sj−i j
+2
+).
+Otherwise, let m = |I| and B1,...,Bm denote the verification keys for
+the proofs, ordered by their position i. Let Z1,Z2,...,Zm be all the
+e(C/gai
+1 ,g2)’s, also ordered by i. Return VBATCH(VK,(Bk,Zk)k∈[m],πI).
+UpdDigpp(u,δ,C) →C′: Let C′ = C·(gSu,ℓ(s)
+1
+)δ.
+UpdProofpp(u,δ,πi) →π′
+i: Update via UpdAllProofs (see below) as if
+πi was a pruned, single-path MLT (see Eq. 18).
+UpdAllProofspp(u,δ,π0,...,πn−1) →(π′
+0,...,π′
+n−1): Assume u’s MLT
+path is (w1,...,wℓ). Update this path as w′
+k = wk · (upku,k−1)δ (for k =
+1,...,ℓ) as per Eq. 17.
+Figure 6: Algorithms for Hyperproofs, implicitly parameterized by the max
+number of proofs b that can be aggregated into a single proof.
+It is well known that, if the ri’s are uniformly random,
+verifying the combined equation above is sufficient (see
+Lemma A.1). As a result, our argument for Lb,ℓ
+BATCH uses the
+IPA from §2.4 on this combined equation in a black-box man-
+ner. (This is similar to the previous Lℓ
+PROD argument, except it
+involves larger vectors and randomization.) We give a precise
+description of its (GBATCH,PBATCH,VBATCH) algorithms in
+Fig. 5, show how it fits in our VC construction in Fig. 6, and
+prove security in App. A.
+Aggregation time and proof size. It is easy to see from Fig. 5
+that the PBATCH time (i.e., the time to aggregate b proofs) is
+O(b·ℓ) and the VBATCH time (i.e., the time to verify the ag-
+gregated proof) is O(b · ℓ). Unfortunately, even though our
+Lb,ℓ
+BATCH argument uses the IPA with fast, O(log(b·ℓ))-time
+KZG-based verification (see §2.4), the VBATCH verifier still
+needs to do O(b · ℓ) work on the Bi vectors. (Note that this
+O(b·ℓ) verifier work seems inherent for processing the b ver-
+ification keys.) Lastly, the argument size (i.e., the aggregated
+proof size) is O(log(b·ℓ)) = O(logb+logℓ).
+Cross-aggregation. In addition to aggregating proofs w.r.t.
+the some digest C, we can also cross-aggregate proofs w.r.t.
+different digests [28]. Specifically, suppose we have b proofs
+3008    31st USENIX Security Symposium
+USENIX Association
+
+πi for positions pi, each w.r.t. a (potentially-different) di-
+gest Ci for a vector with MLE fi. Then, we can use the
+same PBATCH prover from Fig. 5 to cross-aggregate these
+proofs. To verify, the verifier now computes the Zi’s given to
+VBATCH by using the right digest and evaluation point: i.e.,
+Zi = e(Ci/gfi(pi)
+1
+,g2).
+3.4
+Unstealable proofs
+In this subsection, we show how to incentivize proof compu-
+tation by allowing provers, who store the vector and maintain
+proofs, to watermark the proofs they compute. Such water-
+marked proofs are cryptographically-bound to their prover’s
+identity, which means the prover can be monetarily rewarded
+for having computed them (e.g., in cryptocurrencies). Im-
+portantly, this cryptographic binding cannot be undone by
+adversaries. In other words, “stealing” a proof by replacing
+its watermark with your own, is no easier than computing the
+proof from scratch like everyone else. We call such water-
+marked proofs unstealable, formalize and prove their security
+and make Hyperproofs unstealable. We show why and how
+unstealability is helpful in the cryptocurrency setting in §4.
+We also envision other applications could benefit from it.
+Unstealability goals. First, any vector a should continue to
+have a single digest C against which all correct proofs verify,
+whether proofs are watermarked or not. Put differently, un-
+stealability must work in our previous setting where there is a
+single Com algorithm for everyone, which does not take the
+identity of the prover as input. Specifically, only the Open and
+Ver algorithms are given the identity of the prover to water-
+mark proofs and verify them. This ensures compatibility with
+stateless cryptocurrencies, where the state must have a single
+(prover-independent) digest against which (prover-dependent)
+watermarked proofs can be verified. Second, a prover should
+still be able to precompute all its (now) unstealable proofs and
+efficiently maintain them over time as the vector changes. In
+particular, solutions that require provers to watermark proofs
+“on the fly” would be too expensive. Third, unstealable proofs
+should remain aggregatable.
+Strawmen. One idea for unstealability is to have each prover
+commit to the original vector a but “extended” with its identity
+id as aid = (ai||id)i∈[n]. Unfortunately, this results in having
+multiple, prover-specific digests Cid for a. Another idea is to
+add a digital signature on the VC proof. However, the signa-
+ture can simply be removed by the adversary and replaced
+with their own. A last attempt would be to use a non-malleable
+SNARK [5] to augment a VC proof with a proof of knowledge
+of (1) the committed vector and (2) a secret associated with
+the prover’s identity. This would require a stealing adversary
+to maul the SNARK proof so as to verify for their identity.
+However, this approach would be too slow and would not
+preserve maintainability due to the non-malleability of the
+SNARK.
+Unstealability via exponentiations. We make a proof πi =
+(wi,ℓ, ...,wi,1) unstealable by exponentiating it with α as:
+πα
+i = (wα
+i,ℓ,...,wα
+i,1)
+def
+= ( ˆwi,ℓ,..., ˆwi,1),
+(25)
+where α is the prover’s watermarking secret key (WSK). The
+corresponding watermarking public key (WPK) is gα
+2 together
+with a zero-knowledge proof of knowledge (ZKPoK) of α
+(e.g., a Schnorr proof [53]). To verify a proof watermarked
+with gα
+2, one first checks that the ZKPoK of α verifies and that
+α ̸= 0. Second, one checks the proof as normal as per Eq. 20,
+but accounts for the WPK gα
+2:
+e(C/gai
+1 ,gα
+2) ?= ∏
+k∈[ℓ]
+e( ˆwi,k,gsk−ik
+2
+)
+(26)
+The ZKPoK of α is used to prevent stealing by exponentiat-
+ing πα
+i with a δ known by the adversary, since the adversary
+would have to prove knowledge of α·δ. As a result, the ad-
+versary’s only recourse is to remove α from the watermarked
+proof, but this seems to require exponentiating by α−1, which
+the adversary does not know. We prove security in the alge-
+braic group model (AGM) [26] in the extended version of our
+paper [56].
+Aggregation-preserving unstealability. One important prop-
+erty of our unstealable proofs is that they remain aggregatable
+via a call to Agg from Fig. 6. Intuitively, this is because the
+right-hand side of the watermarked verification from Eq. 26
+remains the same as for normal verification in Eq. 20. How-
+ever, the left-hand side changes. Thus, when verifying an
+aggregated proof via Ver in Fig. 6, the verifier has to account
+for the WPKs when computing the Zi’s given to VBATCH in
+Fig. 5. In other words, the verifier needs to have these WPKs.
+In our application setting from §4, we anticipate the verifier
+will already have all of the WPKs, instead of receiving them
+with the aggregated proof.
+Homomorphism-preserving unstealability. Our approach
+to watermarking proofs preserves the PST and MLT homo-
+morphisms. This has a few advantages. First, watermarked
+proofs can still be updated. Specifically, assuming position u
+changed by δ, the watermarked proof πα
+i from Eq. 25 can be
+updated as before (see Eq. 18) if one uses watermarked up-
+date keys (upku,k)α. Second, an MLT of watermarked proofs
+can be computed directly, if the prover uses watermarked
+public parameters. The prover can obtain these in a one-time
+pre-processing step that exponentiates all parameters from
+Fig. 1 with the WSK α:
+ˆgSu,k(s)
+1
+def
+=
+
+gSu,k(s)
+1
+α
+= g
+αSu,k(s)
+1
+,∀k ∈[0,ℓ],∀u ∈[0,2k)
+(27)
+Importantly, these are still valid Hyperproofs parameters, ex-
+cept under a new base ˆg1 = gα
+1. As a result, the prover can
+directly compute a watermarked MLT using these new pa-
+rameters. This is important, as it allows precomputing water-
+marked proofs, ensuring that serving such proofs is as efficient
+USENIX Association
+31st USENIX Security Symposium    3009
+
+as serving normal proofs. Third, a watermarked MLT is ef-
+ficiently maintainable, just like a normal MLT. This follows
+from the updatability of watermarked proofs argued above.
+New UVC algorithms. We must slightly change our VC
+API from Def. 2.1 into an unstealable VC (UVC) API that
+accounts for watermarked proofs and watermarking key-pairs.
+First, we introduce two new algorithms:
+1. WtrmkGen(1λ) →(wsk,wpk): Generates a random
+(wsk,wpk) watermarking key pair.
+2. WtrmkParams(pp,wsk) →wpp: Returns watermarked
+public parameters wpp, under wsk, as per Eq. 27.
+Second, the algorithm Verpp(C,I,(ai,wpki)i∈I,πI) addition-
+ally takes as input the watermarking PK wpki that each proof
+πi is watermarked with. Third, the algorithms for creating and
+updating proofs now operate on watermarked public parame-
+ters. In the interest of brevity, we give the full UVC API, with
+a new correctness definition, in the extended version of our
+paper [56].
+UVC soundness. We model UVC soundness similar to VC
+soundness, except we account for watermarked proofs. Infor-
+mally, we prevent adversaries from creating two inconsistent
+proofs for the same position k, even if those proofs are wa-
+termarked with different, adversarially-generated WPKs (see
+the extended version [56] ).
+UVC unstealability. In the extended version of our pa-
+per [56], we formalize our notion of unstealability which
+captures that an adversary cannot compute a watermarked
+proof on a WPK it knows asymptotically any faster than
+the Open algorithm, despite having adaptive access to a wa-
+termarking oracle on arbitrary choices of WPK. We prove
+that Hyperproofs is unstealable in the algebraic group model
+(AGM) [26].
+In particular, we show that an adversary who outputs a new
+watermarked proof (after having access to the watermarking
+oracle) and runs asymptotically faster than the time it takes
+to run Open can neither explicitly include the oracle proofs
+in the output watermarked proof (or otherwise discrete log is
+broken) nor use the oracle proofs in any other way to speed
+up computation (or otherwise q-SDH is broken).
+4
+Hyperproofs for Cryptocurrencies
+In this section, we discuss how Hyperproofs can be used to
+speed up validation in payment-only stateless cryptocurren-
+cies.
+Stateless validation. In account-based cryptocurrencies [65],
+validators such as miners and P2P nodes store a large amount
+of state to validate transactions and blocks in the consensus
+protocol. This state consists of each user’s account balance
+and can be represented as a vector that maps each user’s public
+key to their balance. Recent work [12,22,28,41,52,57,59]
+trades off storage of the state with additional bandwidth and
+computation. This approach, known as stateless validation,
+commits to the state using a vector commitment (VC) scheme
+and allows validators to store only the digest rather than the
+full state. Next, transactions and blocks are augmented with
+proofs for the accessed state, so validators can check validity
+against the digest, instead of storing the full state.
+Practical relevance. We believe stateless validation addresses
+two important problems in cryptocurrencies. First, in smart-
+contract-based cryptocurrencies, every block validator in the
+network has to store the full state in order to validate. This
+leads to a state explosion problem [17,43], which could be
+ameliorated by having validators store succinct digests of the
+state. Then, each smart contract owner could store its own
+state and maintain its VC proofs, as proposed in previous
+work [28].
+Second, in sharded cryptocurrencies, validators have to
+be frequently shuffled between shards to prevent adversaries
+from corrupting a majority of validators within a shard [34].
+However, shuffling a validator from shard A to shard B re-
+quires that validator to download shard B’s state. This worsens
+performance, but could be ameliorated by statelessly validat-
+ing against a digest of the shard’s state. As a result, when mov-
+ing to shard B, a validator need only download that shard’s
+digest, which is very small.
+Challenges. There are several challenges in stateless vali-
+dation. First, when creating a transaction, the sending user
+needs to include a proof that they have enough balance. In
+this sense, users should be able to fetch their proof from proof-
+serving nodes (PSNs) [52,59], who maintain (a subset of) all
+proofs. Thus, PSNs should be able to efficiently update all
+proofs, as new blocks are confirmed. Second, PSNs should
+be incentivized to maintain proofs. Third, a miner must now
+include each transaction’s proof in a proposed block, so that
+other miners can statelessly validate this block. This calls
+for proofs to be efficiently aggregatable, to save block space.
+Finally, when validating a block, miners must now verify such
+an aggregated proof. Thus, aggregated proofs should verify
+fast.
+Why rely on proof-serving nodes? In theory, each user can
+maintain their proof locally by keeping up with all confirmed
+transactions and updating their proof (e.g., as per Eq. 18).
+However, this overwhelms users with large computation (i.e.,
+updating proofs) and large communication (i.e., downloading
+new blocks). This is why well-incentivized, efficient proof-
+serving nodes (PSNs) are important: they eliminate this bur-
+den from users by allowing them to fetch their latest proof.
+We discuss below how unstealability helps implement well-
+incentivized PSNs.
+Hyperproofs for stateless validation. As described above,
+in the stateless validation setting, it is important to mini-
+mize the time for (1) PSNs to update all proofs to reflect
+3010    31st USENIX Security Symposium
+USENIX Association
+
+Table 2: Single-threaded microbenchmarks for Hyperproofs. Running times
+with an asterisk symbol (*) are too long and have been interpolated. We
+measure aggregation of 1024 proofs. OpenAll and Com are only measured
+once. UpdDig and UpdAllProofs times are averages after a batch of 1024
+changes to the vector. All algorithms are parallelizable.
+ℓ= log2 n
+22
+24
+26
+28
+30
+Com (min)
+3.1
+12.6
+50
+201*
+807*
+OpenAll (hrs)
+0.7
+2.7
+12*
+52*
+225*
+UpdDig
+47.76 µs
+UpdAllProofs (ms)
+1.74
+1.96
+2.15
+2.37
+2.58
+Indiv. Ver (ms)
+8.15
+8.22
+9.10
+10.09
+10.93
+Agg (s)
+105
+109
+114
+118
+123
+Aggr. Ver (s)
+13
+14
+15
+16
+17
+Indiv. proof size (KiB)
+1.06
+1.15
+1.25
+1.34
+1.44
+Aggr. proof size (KiB)
+51.6
+the latest block, (2) miners to propose a new block, with
+aggregated proofs and (3) validators (i.e., miners and P2P
+nodes) to verify this block, including its aggregated proof. In
+§5.3, we show experimentally that Hyperproofs outperforms
+other VCs in this task. This is because VCs with O(1)-sized
+proofs [20, 21, 28, 37, 59] require O(n) time to update all
+proofs, while Hyperproofs only requires O(logn). Further-
+more, when compared to Merkle trees, aggregation is 10× to
+41× faster in Hyperproofs (see §5.2).
+How unstealable proofs help. As highlighted above, proof-
+serving nodes should be rewarded for the proofs they serve.
+One approach would be for users to simply pay the PSN be-
+fore they receive their proof. Unfortunately, this is vulnerable
+to a fair-exchange problem: a malicious PSN will take the pay-
+ment but not send the proof. An alternative approach would
+be for PSNs to first serve the proof and expect payment after.
+This approach poses two challenges.
+First, we must ensure the payment always goes through.
+Fortunately, this can be achieved via the cryptocurrency’s con-
+sensus mechanism. Specifically, the miners can enforce a PSN
+fee whenever a valid PSN proof is included in a block. Second,
+and most importantly, we must ensure that the payment goes
+only to the PSN who served the proof. This requires that a
+proof served by PSN A cannot be mauled to appear as a proof
+served by (a malicious) PSN B. In other words, PSN B should
+have no recourse but to compute a proof from scratch like
+everyone else. Our unstealability design from §3.4 guarantees
+exactly this property.
+5
+Evaluation
+In this section, we measure the performance of Hyperproofs
+and explore their applicability for stateless validation. We do
+not directly compare to VCs with constant-sized proofs due
+to their impractical O(n) cost to update all proofs (see §5.1).
+Instead, we focus on Merkle trees with SNARK-based aggre-
+Table 3: The size of the public parameters from Fig. 1 for various values of
+ℓ= log2 n. Recall that the verification key consists of all selector monomial
+commitments gsk
+2 ,∀k ∈[ℓ], while the proving key consists of all selector
+multinomial commitents gS j,k(s)
+1
+,∀k ∈[0,ℓ], j ∈[0,2k) (see Fig. 1).
+ℓ= log2 n
+Verification
+key
+Proving
+key
+22
+2.11 KiB
+384 MiB
+24
+2.3 KiB
+1.5 GiB
+26
+2.49 KiB
+6 GiB
+28
+2.68 KiB
+24 GiB
+30
+2.88 KiB
+96 GiB
+gation. We use the Golang bindings of the mcl library [42]
+to implement Hyperproofs1. We use BLS12-381, a pairing-
+friendly elliptic curve, which offers 128 bits of security. A
+serialized G1,G2 and GT element in mcl takes 48, 96, and 576
+bytes, respectively. A single exponentiation takes 106 µs in
+G1 and 250 µs in G2. Each experiment ran single-threaded
+on an Intel Core i7-4770 CPU @ 3.40GHz with 8 cores and
+32 GiB of RAM. Unless stated otherwise, we perform 4 runs
+of each experiment and report their average. Also, vectors in
+this section are of size n = 2ℓ.
+5.1
+Microbenchmarks
+We microbenchmark Hyperproofs in Table 2. All microbench-
+marks pick vectors and updates randomly and are single-
+threaded, but trivially parallelizable.
+Public parameters. To commit to vectors of size n, Hyper-
+proofs needs a large proving key consisting of 2n −1 G1
+elements depicted in Fig. 1. For ℓ= 28, this requires around
+24 GiB of space (see Table 3). Verification keys are all derived
+from (gsk
+2 )k∈[ℓ]. Furthermore, to aggregate b proofs, Abe et al.
+commitment keys [2] are needed consisting of ℓ· b G1 and
+ℓ· b G2 elements. For ℓ= 28 and b = 1024, this only adds
+3.94 MiB. Watermarking the public parameters as per §3.4
+requires 2n−1 exponentiations in G1. For ℓ= 28, this takes
+15.87 hours. However, this is a one-time cost.
+Committing and computing multilinear trees. We commit
+to a vector of size n via an O(n)-sized multi-exponentiation.
+For ℓ= 28, this takes 202 minutes. Computing a multilinear
+tree (MLT) involves committing to the MLEs in each node
+via a multi-exponentiation (see Fig. 3). For ℓ= 28, this takes
+52.2 hours (or 1.63 hours with 32 threads). We expect to
+at least double performance via faster multi-exponentiation
+algorithms, which mcl lacks.
+Updating the digest and the multilinear tree. For updating
+the digest, we measure the time to apply a batch of 1024
+updates via a multi-exponentiation, divide this time by 1024
+1Our code is available at: https://github.com/hyperproofs/hyperproofs
+USENIX Association
+31st USENIX Security Symposium    3011
+
+and obtain an average time of 48 µs per update. For the MLT,
+we also measure the time to apply a batch of 1024 updates.
+This way, we can use multi-exponentiations when updating
+nodes in the tree. Dividing the total time by 1024, gives us an
+average time of 1.74 (ℓ= 22) to 2.58 milliseconds (ℓ= 30)
+per update. Recall from §3.4 that updates will be just as fast
+for watermarked multilinear trees.
+Proof size and verification time. Individual proof size is
+ℓG1 elements and is competitive with Merkle trees (e.g.,
+for ℓ= 30, 1.44 KiB in MLTs versus 960 bytes in MHTs).
+Verifying a proof requires ℓ+1 pairings, which we optimize
+into a multi-pairing (i.e., first compute ℓ+ 1 Miller loops
+and then compute a single final exponentiation). This way,
+verifying a proof ranges from 8.2 (ℓ= 22) to 11 milliseconds
+(ℓ= 30). If the proof is watermarked, we discount the WPK
+from the proof size, since the verifier could already have
+the WPK, depending on the application. Furthermore, this
+overhead would be acceptable: 224 bytes. Lastly, verifying
+the ZKPoK for the WPK requires two G2 exponentiations,
+which adds around 500 µs to the proof verification time.
+Proof aggregation. Let I be the set of transactions to be
+aggregated via Aggpp, which calls PBATCH from Fig. 5. In our
+benchmarks, b = |I| = 1024. As shown in Table 2, aggregating
+1024 transactions takes between 105 (ℓ= 22) to 123 seconds
+(ℓ= 30). Verifying such an aggregated proof takes between
+13 (ℓ= 22) to 17.5 (ℓ= 30) seconds. These times are not
+affected by watermarking. In §5.2, we show our aggregation
+is 10× to 41× faster than SNARKs.
+Aggregated proof size. Our aggregated proof size is 52 KiB
+for any ℓ= 22,...,30. This is an artifact of the IPA proof size
+depending on the smallest power of two ≥log(b·ℓ), which is
+the same for all ℓ’s above when b = 1024. As with individual
+proofs, watermarking does not affect proof size when the
+verifier has the WPKs.
+Comparison with Pointproofs. One of the main advantages
+over aggregatable VCs with constant-sized proofs such as
+Pointproofs is that Hyperproofs are maintainable. For ex-
+ample, in Pointproofs, updating all n = 2ℓproofs involves n
+exponentiations, taking 31.7 hours for ℓ= 30. Importantly,
+multi-exponentiations cannot be used here. In contrast, Hy-
+perproofs only takes 3.2 milliseconds. (Unlike the numbers
+from Table 2, these numbers assume no batching.)
+5.2
+Comparison with SNARKs
+In this subsection, we show that Hyperproof aggregation is
+anywhere from 10× to 41× faster than Merkle proof aggre-
+gation via SNARKs (see Fig. 7), depending on the choice of
+hash function. This comes at the cost of larger proofs (52 KiB
+versus 192 bytes) and slower verification. Nonetheless, the
+end-to-end time to aggregate-and-verify remains around 10×
+to 41× faster in Hyperproofs. We find this design trade-off to
+be a good one for stateless cryptocurrencies where, although
+fast verification is important, aggregation times cannot be too
+high (see §5.3).
+Experimental setting. We fix the height of both the Merkle
+tree and our MLT to ℓ= 30, and measure performance when
+aggregating b ∈{22,24,...,214} proofs. We compare to an
+implementation by Ozdemir et al. [45] in Rust [44] which uses
+the state-of-the-art SNARK by Groth [30] to prove knowledge
+of changes to a Merkle tree, updating it from digest d to digest
+d′. To benchmark proof aggregation, we notice that proof ag-
+gregation would involve half of the work done by the Ozdemir
+et al. prover, and directly use their code. This is because prov-
+ing knowledge of k changes involves first verifying k Merkle
+proofs for the original values “inside the SNARK” and then
+updating the Merkle root with the changes, which also in-
+volves k Merkle path verifications. For the SNARK verifier,
+we directly measure its work, which involves an O(b)-sized
+G1 multi-exponentiation and 3 pairings.
+Choice of Merkle hash function. Choosing a “SNARK-
+friendly” hash function for the Merkle tree can signifi-
+cantly reduce the prover time. In this sense, we use the
+recently-proposed Poseidon-128 hash function [29], which
+only requires 316 R1CS constraints per invocation inside the
+SNARK, but lacks sufficient cryptanalysis. As a more secure
+choice, we also use the Pedersen hash function [66] used in
+Zcash [7], which is collision-resistant under the hardness of
+discrete log, but requires 2753 constraints per invocation [45].
+Proving time. The SNARK prover time is dominated by
+several multi-exponentiations and Fast Fourier Transforms
+(FFTs) of size linear in the number of R1CS constraints. For
+example, aggregating b = 210 proofs in a Poseidon-hashed
+Merkle tree of height ℓ= 30, involves 10 million constraints.
+As a result, SNARK aggregation is very slow, taking 1224
+seconds. In contrast, when aggregating b Hyperproofs, also
+in a height ℓMLT, our IPA-based prover from Fig. 5 only
+computes O(bℓ) pairings and O(bℓ) G1,G2 and GT expo-
+nentiations. This only takes 123 seconds. On average, as
+shown in Fig. 7(a), aggregating Hyperproofs is 10× faster
+than aggregating Merkle-Poseidon proofs and 41× faster than
+Merkle-Pedersen.
+Prover memory. The SNARK prover also requires memory
+at least linear in the number of constraints. As a result, on
+our machine with 32 GiB of RAM, SNARK aggregation runs
+out of memory when aggregating ≥211 proofs with Poseidon
+hashing (20 million constraints) or ≥28 proofs with Pedersen
+(23 million constraints). Nonetheless, we extrapolate the prov-
+ing times in Fig. 7. In contrast, our IPA-based aggregation
+from Fig. 5 has a much lower memory footprint and never
+runs out of memory.
+Verification time. In general, verifying a SNARK proof re-
+quires 3 pairings and a G1 multi-exponentiation of size equal
+to the number of verifier-provided inputs [30]. In particular,
+when aggregating b Merkle proofs, this multi-exponentiation
+3012    31st USENIX Security Symposium
+USENIX Association
+
+2
+4
+6
+8
+10
+12
+14
+100
+101
+102
+103
+104
+105
+Hyperproofs
+Merkle (Poseidon)
+Merkle (Pedersen)
+(a) Aggregation time (seconds)
+2
+4
+6
+8
+10
+12
+14
+10−2
+10−1
+100
+101
+102
+Hyperproofs
+Merkle
+(b) Verification time (seconds)
+2
+4
+6
+8
+10
+12
+14
+100
+101
+102
+103
+104
+105
+Hyperproofs
+Merkle (Poseidon)
+Merkle (Pedersen)
+(c) Aggregation plus verification time (seconds)
+Figure 7: SNARK-based Merkle proof aggregation versus Hyperproof aggregation. The x-axis is log2(# of proofs being aggregated). Dotted lines are
+extrapolated, due to the SNARK prover running out of memory. We use the 128-bit secure variant of Poseidon.
+will be of size 2b + 1, since the verifier must input the di-
+gest and the b leaves (i,vi)i∈I being verified. We implement
+verification in Golang using mcl [42] and report the times
+in Fig. 7(b). (We cannot use the Ozdemir et al. code, since
+the verifier only inputs two digests and checks knowledge
+of b changes to the Merkle tree.) When aggregating b = 210
+proofs, it takes 0.11 seconds to verify a SNARK proof and
+17.4 seconds to verify an aggregated Hyperproof. While veri-
+fication is slower in Hyperproofs, when accounting for both
+the time to prove and verify in Fig. 7(c), Hyperproofs are
+faster.
+SNARKs without trusted setup. Recent SNARKs [18,55,
+67] are transparent (i.e., do not need a trusted setup). Even
+better, these SNARKs often have faster provers than pairing-
+based SNARKs. However, compared to Hyperproofs, they are
+still too slow, have larger proof sizes and consume too much
+memory. For example, aggregating b = 214 Merkle proofs
+requires 228 R1CS constraints if using Poseidon hashes. The
+prover time would be around 2.58 hours using Spartan [55,
+Figure 7] and 1.53 hours using Virgo [67]. This is close to
+5× and 3× slower than Hyperproofs, respectively. The proof
+size would be around 1.83 MiB using Spartan and 350 KiB
+using Virgo (estimated using the open-source code of [67]).
+This is around 36× and 7× bigger than Hyperproofs, respec-
+tively. The performance is even worse with Pedersen hashes.
+Moreover, these transparent SNARKs are not as memory-
+efficient as Hyperproofs: Virgo scales to 224 constraints, sim-
+ilar to pairing-based SNARKs (i.e., fails aggregating when
+b ≥211 proofs) while Spartan scales to 226 constraints (i.e.,
+fails for b ≥213). Lastly, other transparent arguments (e.g.,
+STARKs [9], Aurora [10], Hyrax [62], Ligero [4]) have simi-
+lar drawbacks. We defer to [55,67] for a detailed discussion
+on trade-offs.
+5.3
+Macrobenchmarks
+Our single-threaded experiments measure the VC-induced
+overheads of statelessly reaching consensus on a new block,
+as discussed in §4. This consists of three measurements. First,
+the block proposal time (P) to verify individual proofs, ag-
+gregate them into a new block and update the digest. Second,
+the block validation time (V) to verify the aggregated proof
+and the updated digest in this new block, as it propagates
+through the P2P network. In particular, we assume the P2P
+network has diameter h = 20. Third, the proof maintenance
+time (M) for a proof-serving node (PSN) to update all proofs
+after applying the updates from this new block, so that the
+next proposed block can use these proofs.
+We estimate the VC overhead as P+(h·V)+M and sum-
+marize our results in Table 4. Note that we account for P2P
+nodes not forwarding a block before validating it by multiply-
+ing V by h. Overall, Hyperproofs’ overhead is 10× smaller
+than Poseidon-hashed Merkle trees and 41× smaller than
+Pedersen-hashed. This is because Merkle-based stateless vali-
+dation involves a slower, more complex SNARK prover (dis-
+cussed below). Furthermore, Hyperproofs remain competitive
+in terms of proof maintenance cost (M).
+Setting: We assume MLTs and Merkle trees of height ℓ= 30
+and blocks of 1024 transactions. We do not compare to VCs
+with O(1)-sized proofs, due to their large proof maintenance
+cost (i.e., 2ℓG1 exponentiations, or 31.7 hours).
+Limitations: Our macrobenchmarks do not account for all
+the subtleties that would arise in a full prototype, such as
+communication overheads, or miners needing to update the
+proofs in the current block they are working on due to another
+competing block. They also do not account for the overhead
+of signature verification, which is not affected by the chosen
+VC scheme. Instead, they focus on the three key operations
+whose overheads should be minimized: block proposal, block
+validation and proof maintenance. Lastly, while we show
+Hyperproofs are faster than other VCs for stateless validation,
+we do not claim they make the stateless setting practical.
+Block transitions with Hyperproofs versus Merkle trees.
+In a stateless cryptocurrency, the ith block stores the digest di
+of all users’ balances at that point in time. When block i+1
+arrives, it must prove that its new digest di+1 correctly reflects
+the updated balances, after applying its transactions. With
+Hyperproofs, the block includes an aggregated proof for the
+USENIX Association
+31st USENIX Security Symposium    3013
+
+balance of each user sending money. This way, a validator can
+ensure that a block is spending valid coins and then can com-
+pute di+1 from di via UpdDig, subtracting coins from each
+sending user’s account and adding coins to each receiving
+user.
+With SNARK-based Merkle trees, it is not possible to up-
+date the digest di+1 given the old digest di, the SNARK aggre-
+gation proof, and the changes in balances: the Merkle proofs
+for all the changed leaves are also needed as auxiliary infor-
+mation. But including these Merkle proofs in the block would
+defeat the point of aggregating them via SNARKs! Therefore,
+the SNARK circuit must be extended to also verify the transi-
+tion between di and di+1. Specifically, the circuit additionally
+proves that di+1 is obtained by applying the changes in the
+block to di. A block of b transactions involves 2b changes to
+the Merkle tree, and each change requires two Merkle path
+verifications inside the circuit. Therefore, the circuit involves
+4·b Merkle path verifications (4× more expensive than the
+aggregation circuit from §5.2).
+Block overhead. As described above, stateless cryptocur-
+rency blocks additionally store the digest of the state and
+an aggregated proof for all transactions. Both Merkle trees
+and Hyperproofs have similar digest sizes (i.e., 32 bytes ver-
+sus 48 bytes). However, aggregated Hyperproofs are 52 KiB,
+whereas SNARK-aggregated Merkle proofs are only 192
+bytes. Nonetheless, relative to the size of the full block, Hy-
+perproof overhead is modest and only decreases with larger
+blocks. Furthermore, we foresee optimizing the IPA from
+Fig. 8 to reduce the proof size. Lastly, using unstealability
+to incentivize proof-serving nodes (which Merkle trees do
+not support) adds 224 bytes of WPK overhead for each PSN
+involved in the block. As an alternative, if the set of PSNs is
+fixed or grows slowly, then WPKs can be stored as part of the
+public parameters of the system.
+Transaction overhead. Transactions propagating through the
+P2P network in a stateless cryptocurrency need to include
+proofs. With Hyperproofs, this only requires a 1.44 KiB proof
+for the sender’s balance. With Merkle trees, whether Poseidon-
+or Pedersen-hashed, this requires two 960 byte proofs, or
+1.875 KiB, one for the sender and one for the receiver. This is
+because, to update the Merkle root, the miner also needs the
+receiver’s Merkle proof as auxiliary information, whereas in
+Hyperproofs the digest can be updated homomorphically.
+Block proposal. With Hyperproofs, a miner proposing a block
+with 1024 transactions has to (1) verify 1024 individual Hyper-
+proofs, (2) aggregate these proofs, (3) and update the digest.
+With Merkle trees, this remains the same, except steps (2)
+and (3) are done in the SNARK prover. Table 4 shows block
+proposal is 36× (Poseidon) to 149× (Pedersen) faster in Hy-
+perproofs than in SNARKs due to faster aggregation/digest
+updates.
+Block validation. To validate an incoming block, a miner has
+to verify its aggregated proof and check its digest was com-
+Table 4: Single-threaded, stateless cryptocurrency macrobenchmarks that
+measure the time to prepare a block for proposal (P), to validate a proposed
+block (V) and to update all proofs (M) after a new block is seen. A block
+propagates through a P2P network of diameter h = 20. Trees have height
+ℓ= 30 and blocks have 1024 transactions. A Poseidon-128 hash takes 113
+µs using the go-iden3-crypto library [27]. A Pedersen hash takes 37 µs
+using the sapling-crypto library [50].
+Scheme
+Hyperproofs
+Merkle w/
+Poseidon
+Merkle w/
+Pedersen
+Block proposal (P)
+2.23 min
+81 min
+332 min
+Block validation (V)
+17.5 sec
+0.18 sec
+0.18 sec
+Proof maintenance (M)
+5.14 sec
+4.7 sec
+1.54 sec
+Total (P+(h·V)+M)
+8 min
+81 min
+332 min
+puted correctly via UpdDig. In Table 4, we see that SNARKs
+are 97× faster to verify than an aggregated Hyperproof of
+b = 1024 proofs, which require O(bℓ) G1,G2 and GT expo-
+nentiations to verify. While SNARK verification also incurs
+O(b) cost, this only involves a fast G1 multi-exponentiation.
+Nonetheless, when considering the time to propose and vali-
+date a block (P+h·V), Hyperproofs remains 10× (Poseidon)
+to 41× (Pedersen) faster.
+Proof maintenance. Recall that having updated proofs ready
+to be served is important in stateless cryptocurrencies, since
+users need to fetch and include their proofs when sending
+a transaction to a miner. Fortunately, a PSN can update all
+proofs in O(ℓ) time in both Hypeproofs and Merkle trees.
+Table 4 gives the concrete batch update time after 1024 trans-
+actions (or 2048 changes to the tree). Batch-updating Merkle
+trees is slightly faster than applying each update sequentially,
+because each node in the Merkle tree need only be updated
+once, by recomputing a hash (i.e., 113 µs for Poseidon and
+37 µs for Pedersen). In contrast, when batch-updating MLTs,
+each node still needs to be updated several times to account
+for all the leaves that changed underneath it, as per Eq. 18.
+While we optimize this using a multi-exponentiation, MLTs
+will be slightly slower.
+6
+Discussion
+Selective versus adaptive security for PST commitments.
+Papamanthou et al. prove security under ℓ-SDH (see Assum.
+A.1), but only in a selective sense. Specifically, the (selective)
+adversary, whose goal is to equivocate about f(i), must first
+decide on an i and reveal it to the challenger [47, Appendix
+C.1]. In contrast, we prove adaptive security for any point on
+the Boolean hypercube. Specifically, the (adaptive) adversary
+reveals nothing to the challenger about the point i it equiv-
+ocates on and, in our security proof, the reduction simply
+“guesses” this i (see Thm. B.1). One negative consequence of
+this guessing is a security loss of log2 n bits, which we hope
+to address in future work.
+3014    31st USENIX Security Symposium
+USENIX Association
+
+Large public parameters. Hyperproofs for vectors of size n
+require O(n)-sized public parameters (see §2.2) which must
+be generated via a trusted setup. In practice, this setup would
+have to be implemented securely as a multi-party computation
+(MPC) protocol [8,14,15]. Recently, cryptocurrency projects
+have demonstrated the viability of this approach at the scale
+of n ≈227 [13,25,63]. We hope to scale these techniques to
+n ≈230 in future work. Alternatively, large public parameters
+can be avoided by splitting a large vector up into k chunks
+and committing to each chunk. This saves a factor of k in
+the size of the public parameters but leads to a k-sized digest.
+Importantly, one can still aggregate proofs in such a chunked
+vector since Hyperproofs support cross-aggregation. Lastly,
+Hyperproofs can be modified to work in a decentralized set-
+ting where the trapdoor s = (s1,...,sℓ) is secret-shared among
+a set of servers, similar to recent work for bilinear accumu-
+lators [31]. This precludes the need to generate O(n) public
+parameters and could be useful for applications in the permis-
+sioned setting.
+Choice of public parameters. The most popular account-
+based cryptocurrency, Ethereum, currently has less than 185
+million accounts. Thus, it would be sufficient to set ℓ= 28
+in Hyperproofs. Furthermore, once Ethereum’s consensus
+layer will partition accounts over 64 shards [23], a smaller
+ℓ= 22 would suffice. To determine the maximum number
+of aggregated proofs b, we need only consider the maximum
+number of transactions in a block. For example, to handle 2×
+more than the average number of transactions in a Bitcoin
+block, setting b = 4000 is more than adequate.
+Future work. It would be interesting to apply our aggrega-
+tion and unstealability techniques to Verkle trees [36, 39],
+which are q-ary rather than binary Merkle trees. This would
+also help extend Hypeproofs into a key-value commitment
+(KVC) scheme that maps arbitrary keys to values. Building
+Hyperproofs from assumptions in hidden-order groups would
+eliminate the large public parameters and, potentially, the
+trusted setup. Using more malleable inner-product arguments
+would allow us to update aggregated proofs too. Lastly, opti-
+mizing the arguments from Figs. 5 and 8 for our Hyperproof
+setting could speed up aggregation and verification times as
+well as reduce proof size.
+Acknowledgements
+The authors are incredibly thankful to Julian Loss for help-
+ing us understand the subtle differences between the generic
+group model and the algebraic group model. This research
+was supported in part by Ergo Platform, the National Science
+Foundation, VMware, the Ethereum Foundation and Protocol
+Labs.
+References
+[1] Masayuki Abe, Georg Fuchsbauer, Jens Groth, Kristiyan Haralambiev,
+and Miyako Ohkubo. Structure-Preserving Signatures and Commit-
+ments to Group Elements. In Advances in Cryptology – CRYPTO 2010,
+2010.
+[2] Masayuki Abe, Georg Fuchsbauer, Jens Groth, Kristiyan Haralambiev,
+and Miyako Ohkubo. Structure-Preserving Signatures and Commit-
+ments to Group Elements. Journal of Cryptology, 29(2), 2016.
+[3] Shashank Agrawal and Srinivasan Raghuraman. KVaC: Key-Value
+Commitments for Blockchains and Beyond. In Advances in Cryptology
+– ASIACRYPT 2020, 2020.
+[4] Scott Ames, Carmit Hazay, Yuval Ishai, and Muthuramakrishnan Venki-
+tasubramaniam. Ligero. In Proceedings of the 2017 ACM SIGSAC
+Conference on Computer and Communications Security, 2017.
+[5] Shahla Atapoor and Karim Baghery.
+Simulation Extractability in
+Groth’s zk-SNARK. In Data Privacy Management, Cryptocurrencies
+and Blockchain Technology, 2019.
+[6] Paulo S. L. M. Barreto and Michael Naehrig. Pairing-Friendly Elliptic
+Curves of Prime Order. In Selected Areas in Cryptography, 2006.
+[7] E. Ben-Sasson, A. Chiesa, C. Garman, M. Green, I. Miers, E. Tromer,
+and M. Virza. Zerocash: Decentralized Anonymous Payments from
+Bitcoin. In 2014 IEEE Symposium on Security and Privacy, 2014.
+[8] E. Ben-Sasson, A. Chiesa, M. Green, E. Tromer, and M. Virza. Secure
+Sampling of Public Parameters for Succinct Zero Knowledge Proofs.
+In 2015 IEEE Symposium on Security and Privacy, 2015.
+[9] Eli Ben-Sasson, Iddo Bentov, Yinon Horesh, and Michael Riabzev.
+Scalable, transparent, and post-quantum secure computational integrity.
+Cryptology ePrint Archive, Report 2018/046, 2018. https://ia.cr/
+2018/046.
+[10] Eli Ben-Sasson, Alessandro Chiesa, Michael Riabzev, Nicholas
+Spooner, Madars Virza, and Nicholas P. Ward. Aurora: Transparent Suc-
+cinct Arguments for R1CS. In Advances in Cryptology – EUROCRYPT
+2019, 2019.
+[11] Dan Boneh and Xavier Boyen. Short signatures without random ora-
+cles. In International Conference on the Theory and Applications of
+Cryptographic Techniques, 2004.
+[12] Dan Boneh, Benedikt Bünz, and Ben Fisch. Batching Techniques for
+Accumulators with Applications to IOPs and Stateless Blockchains. In
+CRYPTO’19, 2019.
+[13] Sean Bowe and Jason Davies.
+Conclusion of the Powers of Tau
+Ceremony, 2018.
+https://www.zfnd.org/blog/conclusion-of-
+powers-of-tau/.
+[14] Sean Bowe, Ariel Gabizon, and Matthew D. Green. A Multi-party
+Protocol for Constructing the Public Parameters of the Pinocchio zk-
+SNARK. In Financial Cryptography and Data Security, 2019.
+[15] Sean Bowe, Ariel Gabizon, and Ian Miers. Scalable Multi-party Com-
+putation for zk-SNARK Parameters in the Random Beacon Model,
+2017. https://ia.cr/2017/1050.
+[16] Benedikt Bünz, Alessandro Chiesa, Pratyush Mishra, and Nicholas
+Spooner. Recursive Proof Composition from Accumulation Schemes.
+In Theory of Cryptography, 2020.
+[17] Vitalik Buterin. A Theory of Ethereum State Size Management, 2021.
+https://hackmd.io/@vbuterin/state_size_management.
+[18] B. Bünz, J. Bootle, D. Boneh, A. Poelstra, P. Wuille, and G. Maxwell.
+Bulletproofs: Short proofs for confidential transactions and more. In
+Proceedings of the Symposium on Security and Privacy (SP), 2018,
+volume 00, 2018.
+[19] Benedikt Bünz, Mary Maller, Pratyush Mishra, Nirvan Tyagi, and Psi
+Vesely. Proofs for Inner Pairing Products and Applications. Cryptology
+ePrint Archive, Report 2019/1177, 2019. https://ia.cr/2019/1177.
+USENIX Association
+31st USENIX Security Symposium    3015
+
+[20] Matteo Campanelli, Dario Fiore, Nicola Greco, Dimitris Kolonelos,
+and Luca Nizzardo. Incrementally Aggregatable Vector Commitments
+and Applications to Verifiable Decentralized Storage. In Advances in
+Cryptology – ASIACRYPT 2020, 2020.
+[21] Dario Catalano and Dario Fiore. Vector commitments and their appli-
+cations. In Public-Key Cryptography - PKC 2013, 2013.
+[22] Thaddeus Dryja. Utreexo: A dynamic hash-based accumulator opti-
+mized for the Bitcoin UTXO set, 2019. https://ia.cr/2019/611.
+[23] Ethereum.
+Shard chains, 2022.
+https://ethereum.org/en/
+upgrades/shard-chains/.
+[24] Amos Fiat and Adi Shamir. How To Prove Yourself: Practical Solutions
+to Identification and Signature Problems. In Advances in Cryptology —
+CRYPTO’ 86, 1987.
+[25] Filecoin. Trusted Setup Complete!, 2020. https://filecoin.io/
+blog/posts/trusted-setup-complete/.
+[26] Georg Fuchsbauer, Eike Kiltz, and Julian Loss. The Algebraic Group
+Model and its Applications. In Advances in Cryptology – CRYPTO
+2018, 2018.
+[27] go-iden3 crypto.
+go-iden3-crypto, 2020.
+https://github.com/
+iden3/go-iden3-crypto/.
+[28] Sergey Gorbunov, Leonid Reyzin, Hoeteck Wee, and Zhenfei Zhang.
+Pointproofs: Aggregating Proofs for Multiple Vector Commitments. In
+Proceedings of the 2020 ACM SIGSAC Conference on Computer and
+Communications Security, CCS ’20, 2020.
+[29] Lorenzo Grassi, Dmitry Khovratovich, Christian Rechberger, Arnab
+Roy, and Markus Schofnegger. Poseidon: A New Hash Function for
+Zero-Knowledge Proof Systems. In 30th USENIX Security Symposium
+(USENIX Security 21), 2021.
+[30] Jens Groth. On the size of pairing-based non-interactive arguments. In
+Advances in Cryptology - EUROCRYPT 2016 - 35th Annual Interna-
+tional Conference on the Theory and Applications of Cryptographic
+Techniques, 2016.
+[31] Lukas Helminger, Daniel Kales, Sebastian Ramacher, and Roman
+Walch. Multi-party Revocation in Sovrin: Performance through Dis-
+tributed Trust. In Topics in Cryptology – CT-RSA 2021, 2021.
+[32] Aniket Kate, Gregory M. Zaverucha, and Ian Goldberg. Constant-
+Size Commitments to Polynomials and Their Applications. In ASI-
+ACRYPT’10, 2010.
+[33] Jonathan Katz, Rafail Ostrovsky, and Michael O. Rabin. Identity-Based
+Zero-Knowledge. In Security in Communication Networks, 2005.
+[34] E. Kokoris-Kogias, P. Jovanovic, L. Gasser, N. Gailly, E. Syta, and
+B. Ford. OmniLedger: A Secure, Scale-Out, Decentralized Ledger via
+Sharding. In IEEE S&P’18, 2018.
+[35] Johannes Krupp, Dominique Schröder, Mark Simkin, Dario Fiore,
+Giuseppe Ateniese, and Stefan Nürnberger.
+Nearly optimal verifi-
+able data streaming. In Public-Key Cryptography - PKC 2016 - 19th
+IACR International Conference on Practice and Theory in Public-Key
+Cryptography, 2016.
+[36] John Kuszmaul. Verkle Trees: V(ery short M)erkle Trees. In MIT
+PRIMES Conference ’18, 2018.
+[37] Russell W. F. Lai and Giulio Malavolta.
+Subvector commitments
+with application to succinct arguments. In Advances in Cryptology
+- CRYPTO 2019 - 39th Annual International Cryptology Conference,
+2019.
+[38] J. Lee, K. Nikitin, and S. Setty. Replicated state machines without
+replicated execution. In 2020 IEEE Symposium on Security and Privacy
+(SP), 2020.
+[39] Benoît Libert and Moti Yung. Concise Mercurial Vector Commitments
+and Independent Zero-Knowledge Sets with Short Proofs. In TCC’10,
+2010.
+[40] Ralph C. Merkle. A Digital Signature Based on a Conventional En-
+cryption Function. In CRYPTO ’87, 1988.
+[41] Andrew Miller.
+Storing UTXOs in a balanced Merkle tree (zero-
+trust nodes with O(1)-storage), 2012. https://bitcointalk.org/
+index.php?topic=101734.msg1117428.
+[42] Mitsunari Shigeo. mcl: a portable and fast pairing-based cryptography
+library. https://github.com/herumi/mcl/, 2015. Accessed: 2020-
+10-14.
+[43] Nervos Network.
+How Nervos is Tackling the State Ex-
+plosion
+Problem
+Facing
+Smart
+Contract
+Blockchains, 2021.
+https://medium.com/nervosnetwork/how-nervos-is-
+tackling-the-state-explosion-problem-facing-smart-
+contract-blockchains-a9acc4c5708e.
+[44] Alex Ozdemir. bellman-bignat, 2020. https://github.com/alex-
+ozdemir/bellman-bignat.
+[45] Alex Ozdemir, Riad Wahby, Barry Whitehat, and Dan Boneh. Scaling
+Verifiable Computation Using Efficient Set Accumulators. In 29th
+USENIX Security Symposium (USENIX Security 20), 2020.
+[46] Charalampos Papamanthou, Elaine Shi, and Roberto Tamassia. Signa-
+tures of Correct Computation. In TCC’13.
+[47] Charalampos Papamanthou, Elaine Shi, and Roberto Tamassia. Signa-
+tures of Correct Computation, 2011. https://ia.cr/2011/587.
+[48] Charalampos Papamanthou, Elaine Shi, Roberto Tamassia, and Ke Yi.
+Streaming Authenticated Data Structures. In EUROCRYPT 2013, 2013.
+[49] Bryan Parno, Jon Howell, Craig Gentry, and Mariana Raykova. Pinoc-
+chio: Nearly practical verifiable computation. In 2013 IEEE Symposium
+on Security and Privacy, SP 2013, 2013.
+[50] Electric Coin Company Prototypes and Experiments. sapling-crypto,
+2021. https://github.com/zcash-hackworks/sapling-crypto.
+[51] Yi Qian, Yupeng Zhang, Xi Chen, and Charalampos Papamanthou.
+Streaming Authenticated Data Structures: Abstraction and Implemen-
+tation. In ACM CCSW’14, 2014.
+[52] Leonid Reyzin, Dmitry Meshkov, Alexander Chepurnoy, and Sasha
+Ivanov. Improving Authenticated Dynamic Dictionaries, with Applica-
+tions to Cryptocurrencies. In FC’17, 2017.
+[53] C. P. Schnorr. Efficient Identification and Signatures for Smart Cards.
+In Advances in Cryptology — CRYPTO’ 89 Proceedings, 1990.
+[54] Jacob T Schwartz. Probabilistic algorithms for verification of polyno-
+mial identities. In International Symposium on Symbolic and Algebraic
+Manipulation, 1979.
+[55] Srinath Setty. Spartan: Efficient and General-Purpose zkSNARKs
+Without Trusted Setup. In Advances in Cryptology – CRYPTO 2020,
+2020.
+[56] Shravan Srinivasan, Alex Chepurnoy, Charalampos Papamanthou, Alin
+Tomescu, and Yupeng Zhang. Hyperproofs: Aggregating and Maintain-
+ing Proofs in Vector Commitments. Cryptology ePrint Archive, Report
+2021/599, 2021. https://ia.cr/2021/599.
+[57] Peter Todd. Making UTXO set growth irrelevant with low-latency
+delayed TXO commitments, 2016. https://petertodd.org/2016/
+delayed-txo-commitments.
+[58] Alin Tomescu. How to Keep a Secret and Share a Public Key (Using
+Polynomial Commitments). PhD thesis, Massachusetts Institute of
+Technology, 2020.
+[59] Alin Tomescu, Ittai Abraham, Vitalik Buterin, Justin Drake, Dankrad
+Feist, and Dmitry Khovratovich. Aggregatable Subvector Commit-
+ments for Stateless Cryptocurrencies. In Security and Cryptography
+for Networks, 2020.
+[60] Alin Tomescu, Robert Chen, Yiming Zheng, Ittai Abraham, Benny
+Pinkas, Guy Golan Gueta, and Srinivas Devadas. Towards Scalable
+Threshold Cryptosystems. In IEEE S&P’20, 2020.
+3016    31st USENIX Security Symposium
+USENIX Association
+
+[61] Alin Tomescu, Yu Xia, and Zachary Newman. Authenticated Dictionar-
+ies with Cross-Incremental Proof (Dis)aggregation. Cryptology ePrint
+Archive, Report 2020/1239, 2020. https://ia.cr/2020/1239.
+[62] R. S. Wahby, I. Tzialla, A. Shelat, J. Thaler, and M. Walfish. Doubly-
+Efficient zkSNARKs Without Trusted Setup. In 2018 IEEE Symposium
+on Security and Privacy (SP), 2018.
+[63] Thomas Walton-Pocock.
+AZTEC CRS: The Biggest MPC Setup
+in History has Successfully Finished, 2020. https://medium.com/
+aztec-protocol/aztec-crs-the-biggest-mpc-setup-in-
+history-has-successfully-finished-74c6909cd0c4.
+[64] Benjamin Wesolowski. Efficient Verifiable Delay Functions. In Ad-
+vances in Cryptology – EUROCRYPT 2019, 2019.
+[65] Gavin Wood. Ethereum: A secure decentralised generalised transaction
+ledger. https://gavwood.com/paper.pdf, 2014.
+[66] Zcash.
+What is jubjub?, 2017.
+https://z.cash/technology/
+jubjub/.
+[67] Jiaheng Zhang, Tiancheng Xie, Yupeng Zhang, and Dawn Song. Trans-
+parent polynomial delegation and its applications to zero knowledge
+proof. In IEEE S&P 2020, 2020.
+[68] Y. Zhang, D. Genkin, J. Katz, D. Papadopoulos, and C. Papamanthou.
+vRAM: Faster verifiable ram with program-independent preprocessing.
+In 2018 IEEE Symposium on Security and Privacy (SP), volume 00.
+[69] Y. Zhang, D. Genkin, J. Katz, D. Papadopoulos, and C. Papaman-
+thou. vSQL: Verifying arbitrary sql queries over dynamic outsourced
+databases. In 2017 IEEE Symposium on Security and Privacy (SP),
+2017.
+[70] Richard Zippel. Probabilistic algorithms for sparse polynomials. In
+International Symposium on Symbolic and Algebraic Manipulation,
+1979.
+A
+Assumptions, definitions and primitives
+We prove Hyperproofs satisfy soundness, as per Def. B.2,
+under q-Strong Diffie-Hellman (q-SDH) assumption, defined
+below.
+Assumption A.1 (q-SDH [11]). For any PPT adversary A,
+Pr
+
+
+(p,G1,G2,GT ,e,g1,g2) ←BilGen(1λ),s ∈R Z∗
+p,
+pp = ((p,G1,G2,GT ,e,g1,g2),gs
+2,gs
+1,...,gsq
+1 ) :
+(a,g
+1
+s+a
+1
+) ←A(1λ,pp)
+
+≤negl(λ)
+Inner Product Arguments (IPA). We give the interactive
+variant of the Bünz et al. [19] IPA in Fig. 8. Here, the prover
+interacts with the verifier over logm rounds. This interactive
+IPA is knowledge-sound assuming Abe et al. commitments
+are binding [19, Theorem 1]. It is made non-interactive via
+the Fiat-Shamir transform [24] and proved secure in a new
+algebraic commitment model and in the random oracle model
+(ROM) [19, Appendix D.2].
+Faster verifier. As described Fig. 8, the prover and verifier
+take O(m) time and the proof size is |π| = O(logm), if the
+argument is made non-interactive via the Fiat-Shamir trans-
+form [24]. However, Bünz et al. show how to reduce the veri-
+fier time by using a “structured” commitment key ck = (v,w),
+similar to a q-SDH common reference string (see Assum.
+A.1). This allows the verifier to outsource the computations
+P ↔
+IPA(ck = (v,w);A,B):
+V ↔
+IPA(ck = (v,w);C) →{0,1}:
+If m = 1
+A = [A1],B = [B1]
+Return 1 iff.
+C ?= CM(ck;[A1],[B1],e(A1,B1))
+Else (i.e., if m ≥2)
+ZL = ⟨AR,BL⟩
+CL = CM(ck;AR||1G1,1G2||BL,ZL)
+ZR = ⟨AL,BR⟩
+CR = CM(ck;1G1||AL,BR||1G2,ZR)
+CL,CR
+x ∈R Zp
+A′ = AL ◦(AR)x
+v′ = vL ◦(vR)(x−1)
+B′ = BL ◦(BR)(x−1)
+Computes v′,w′ just like the prover
+w′ = wL ◦(wR)x
+C′ = (CL)x ◦C◦(CR)(x−1)
+Recurse on (ck′ = (v′,w′),A′,B′)
+Recurse on (ck′ = (v′,w′),C′)
+Figure 8: The interactive IPA by Bünz et al. for m = 2k (wlog). The prover
+convinces the verifier that he knows (A,B) ∈Gm
+1 ×Gm
+2 such that A,B,Z are
+committed in C (under commitment key ck) and that Z = ⟨A,B⟩. See §2 for
+IPA-specific notation such as 1Gb,AL,A◦B,CM,AR||1G or Ax
+L.
+of v′ and w′ to the untrusted prover and reduces verification
+time from O(m) to O(logm). However, this comes at the cost
+of additionally relying on the q-SDH assumption (see Assum.
+A.1) and the q-ASDBP assumption [19]. Our work implicitly
+assumes this optimized verifier, which we later implement in
+§5. We refer the reader to [19, Section 5] for the details of
+this optimization, which is beyond the scope of this paper.
+Lemma A.1 (Random linear combinations lemma). Let Zi ∈
+GT, Ai ∈Gm
+1 and Bi ∈Gm
+2 for i = 1,...,N. Assume each ri is
+chosen uniformly at random from Zp. Then, with probability
+at least 1−1/p, all Eq. 23 are satisfied iff. Eq. 24 is satisfied.
+Proof (sketch) for Lemma A.1. Clearly if Eq. 23 are satisfied
+then Eq. 24 is also satisfied. For the other direction, by the
+Schwartz-Zippel lemma [54,70], if at least one equation from
+Eq. 23 does not hold, Eq. 24 holds at randomly selected values
+ri with probability 1/p, completing the proof.
+Theorem A.1. (GBATCH,PBATCH,VBATCH) from Fig. 5 is
+a non-interactive argument of knowledge for Lb,ℓ
+BATCH from
+Eq. 22 that has knowledge soundness under the same assump-
+tions as the non-interactive IPA from §2.4 (i.e., algebraic com-
+mitment model [19], the random oracle model, (2bℓ)-SDH,
+(bℓ)-ASDBP).
+Proof (sketch) for Thm. A.1. This follows from Lemma A.1
+and the knowledge soundness of the Bünz et al. IPA, which is
+used in a black box fashion.
+USENIX Association
+31st USENIX Security Symposium    3017
+
+B
+VCs and Hyperproofs
+Definition B.1 (VC Correctness). A VC is correct, if for
+all λ ∈N and n = poly(λ), for all pp ←Gen(1λ,n), for
+all vectors a = [a0,...,an−1], if C = Compp(a) and πi =
+Openpp(i,a),∀i ∈[0,n) (or from OpenAllpp(a)), then, for
+any polynomial number of updates (u,δ) resulting in a
+new vector a′, if C′ and π′
+i, for all i, are the updated
+digest and proofs obtained via calls to UpdDigpp and
+UpdProofpp (or to UpdAllProofspp) respectively, then (1)
+Pr[1 ←Verpp(C′,{i},a′
+i,π′
+i)] = 1 for all i; (2) ∀I ⊆[n],Pr[1 ←
+Verpp(C′,I, (a′
+i)i∈I, Aggpp(I,(a′
+i,π′
+i)i∈I))] = 1.
+Observation: At a high-level, correctness says that proofs
+created via Open or OpenAll verify successfully via Ver, even
+in the presence of updates and aggregated proofs.
+Definition B.2 (VC Soundness). ∀PPT adversaries A,
+Pr
+
+
+pp ←Gen(1λ,n),
+(C,I,J,(ai)i∈I,(a′
+j)j∈J,πI,π′
+J) ←A(1λ,pp) :
+1 ←Verpp(C,I,(ai)i∈I,πI) ∧
+1 ←Verpp(C,J,(a′
+j)j∈J,π′
+J) ∧
+∃k ∈I ∩J s.t. ak ̸= a′
+k
+
+
+≤negl(λ)
+Observation: Soundness says that no adversary can output
+two inconsistent proofs for different values ak ̸= a′
+k at position
+k with respect to an adversarially-produced digest d. Note
+that such a definition allows the digest C to be produced
+adversarially. This is stronger than what is required in our
+cryptocurrency setting from §4, where the digest is produced
+correctly from the agreed transactions. Nonetheless, having
+a stronger definition makes our VC from §3 more widely
+useful.
+Theorem B.1 (Individual Hyperproofs are sound). Our in-
+dividual logn-sized (non-aggregated) proofs from §3.1 are
+sound as per Def. B.2 under q-SDH (see Assum. A.1).
+Proof for Thm. B.1. Suppose there exists an adversary A that
+breaks Def. B.2. We show how to build another adversary
+B that breaks the ℓ-SDH assumption (see Assum. A.1). We
+first assume A returns individual (non-aggregated) proofs and
+then generalize to A returning aggregated proofs.
+B
+is
+given
+ℓ-SDH
+public
+parameters
+pp =
+((p,G1,G2,GT,e,g1,g2), gs
+2,gs
+1,...,gsℓ
+1 ), and must (some-
+how) break ℓ-SDH by outputting (a,g
+1
+s−a
+1
+) for some a ̸= s.
+For this, B will leverage A into helping him.
+First, B “guesses” the position i on which A will forge,
+which he can do with probability 1/poly(λ), where λ is our
+security parameter. Second, B “tweaks” the ℓ-SDH public
+parameters into the Hyperproofs public parameters from
+Fig. 1, which he then calls A with. Specifically, B sets
+sk −ik = rk(s −i1),∀k ∈[ℓ], where r1 = 1, the rest of the
+rk’s are random, and iℓ,...,i1 is the binary representation of i.
+Importantly, note that B can do this without knowledge of s,
+since B can compute any product g∏i∈S si
+1
+,S ∈2{1,2,...,ℓ} from
+the gsi
+1 ’s. Similarly, B can compute any gsk
+2 from gs
+2. Third, B
+calls A with the “tweaked” public parameters as input and
+obtains a digest C and two inconsistent proofs π = (wk)k∈[ℓ],
+π′ = (w′
+k)k∈[ℓ] for position i having values both v and v′. (If A
+outputs proofs for a different position i′ ̸= i, B retries.)
+Since both proofs verify, the following equations hold,
+where iℓ,...,i1 is the binary expansion of the position i:
+e(C/gv
+1,g2) = ∏
+k∈[ℓ]
+e(wk,gsk−ik
+2
+)
+(28)
+e(C/gv′
+1 ,g2) = ∏
+k∈[ℓ]
+e(w′
+k,gsk−ik
+2
+)
+(29)
+Next, dividing the top equation by the bottom one and substi-
+tute sk −ik = rk(s−i1),∀k ∈[ℓ]:
+e(gv′
+1 /gv
+1,g2) = ∏
+k∈[ℓ]
+e(wk/w′
+k,gsk−ik
+2
+) ⇔
+(30)
+e(gv′−v
+1
+,g2) = ∏
+k∈[ℓ]
+e(wk/w′
+k,grk(s−i1)
+2
+) ⇔
+(31)
+e(g1,g2)v′−v =
+ 
+∏
+k∈[ℓ]
+e(wk/w′
+k,grk
+2 )
+!s−i1
+⇔
+(32)
+e(g1,g2)
+1
+s−i1 =
+ 
+∏
+k∈[ℓ]
+e(wk/w′
+k,grk
+2 )
+!
+1
+v′−v
+⇔
+(33)
+e(g
+1
+s−i1
+1
+,g2) = ∏
+k∈[ℓ]
+e
+ wk/w′
+k
+ rk
+v′−v ,g2
+
+⇔
+(34)
+e(g
+1
+s−i1
+1
+,g2) = e
+ 
+∏
+k∈[ℓ]
+ wk/w′
+k
+ rk
+v′−v ,g2
+!
+(35)
+Thus, g
+1
+s−i1
+1
+= ∏k∈[ℓ]
+ wk/w′
+k
+ rk
+v′−v and B can output (i1,g
+1
+s−i1
+1
+)
+and break ℓ-SDH.
+Theorem B.2 (Aggregated Hyperproofs are sound). Our ag-
+gregated proofs from §3.3 are sound as per Def. B.2 under
+the knowledge-soundness of the LBATCH argument (see Thm.
+A.1).
+Proof. See the extended version of this paper [56]
+3018    31st USENIX Security Symposium
+USENIX Association
+

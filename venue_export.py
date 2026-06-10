@@ -440,9 +440,13 @@ def query_dblp_for_venue(raw_reference: str) -> str:
             seen.add(candidate)
             variants.append(candidate)
 
+    _MISS = "__miss__"  # sentinel: variant was queried and got nothing from DBLP
+
     for i, variant in enumerate(variants):
         # Check cache before hitting DBLP
         if variant in dblp_cache:
+            if dblp_cache[variant] == _MISS:
+                continue  # confirmed miss for this prefix — try next shorter variant
             raw_venue = dblp_cache[variant].get("venue", "")
             if isinstance(raw_venue, list):
                 raw_venue = raw_venue[0] if raw_venue else ""
@@ -460,8 +464,9 @@ def query_dblp_for_venue(raw_reference: str) -> str:
             raw_venue = info.get("venue", "")
             if isinstance(raw_venue, list):
                 raw_venue = raw_venue[0] if raw_venue else ""
-            dblp_cache[variant] = info  # cache full info dict; misses retried next run
+            dblp_cache[variant] = info
             return _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
+        dblp_cache[variant] = _MISS
         if i < len(variants) - 1:
             time.sleep(1.0)  # match inter-ref cadence; genuine miss, not rate-limit
 

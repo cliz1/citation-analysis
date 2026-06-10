@@ -1,0 +1,2612 @@
+Certifying Zero-Knowledge Circuits with Refinement Types
+Junrui Liu
+University of California, Santa Barbara
+junrui@cs.ucsb.edu
+Ian Kretz
+The University of Texas at Austin
+kretz@cs.utexas.edu
+Hanzhi Liu
+University of California, Santa Barbara
+Veridise Inc.
+hanzhi@ucsb.edu
+Bryan Tan
+Veridise Inc.
+bryan@veridise.com
+Jonathan Wang
+Axiom
+jonathanpwang@protonmail.com
+Yi Sun
+Axiom
+yi.sun@post.harvard.edu
+Luke Pearson
+Polychain Capital
+luke@polychain.capital
+Anders Miltner
+Simon Fraser University
+miltner@cs.sfu.ca
+Is¸ıl Dillig
+The University of Texas at Austin
+Veridise Inc.
+isil@cs.utexas.edu
+Yu Feng
+University of California, Santa Barbara
+Veridise Inc.
+yufeng@cs.ucsb.edu
+Abstract—Zero-knowledge (ZK) proof systems have emerged
+as a promising solution for building security-sensitive ap-
+plications. However, bugs in ZK applications are extremely
+difficult to detect and can allow a malicious party to silently
+exploit the system without leaving any observable trace. This
+paper presents CODA, a novel statically-typed language for
+building zero-knowledge applications. Critically, CODA makes
+it possible to formally specify and statically check properties of
+a ZK application through a rich refinement type system. One
+of the key challenges in formally verifying ZK applications is
+that they require reasoning about polynomial equations over
+large prime fields that go beyond the capabilities of automated
+theorem provers. CODA mitigates this challenge by generating
+a set of Coq lemmas that can be proven in an interactive
+manner with the help of a tactic library. We have used CODA to
+re-implement 77 arithmetic circuits from widely-used Circom
+libraries and applications. Our evaluation shows that CODA
+makes it possible to specify important and formally verify
+correctness properties of these circuits. Our evaluation also
+revealed 6 previously-unknown vulnerabilities in the original
+Circom projects.
+1. Introduction
+Zero-knowledge (ZK) proof systems [21] have emerged
+as a promising solution for building security-sensitive ap-
+plications. Because ZK proof systems allow users to prove
+that they know a secret without actually revealing what that
+secret is, they have found numerous use-cases in the context
+of blockchain technology. For example, privacy-protecting
+digital currencies like ZCash utilize zero-knowledge proofs,
+as do layer-2 blockchain scaling solutions known as ZK-
+rollups [25], [37], [34].
+The goal of a zero-knowledge proof system is to gen-
+erate two entities, namely a prover and a verifier. Given
+an input I chosen by the verifier, the goal of the prover
+is to construct a proof that they know a secret W sat-
+isfying a relation R(I, W). In most ZK proof systems,
+the relation R is encoded using arithmetic circuits, which
+represent polynomials over a finite field. However, because
+manually constructing such arithmetic circuits is extremely
+difficult and error-prone, domain-specific languages like Cir-
+com [7] try to facilitate this process by generating most of
+the arithmetic circuit automatically from the user-specified
+computation. But, even despite compiler support, building
+correct zero-knowledge applications remains a significant
+challenge. Indeed, several recent attacks [42], [4], [16] have
+shown that bugs in zk applications can allow attackers to
+construct bogus proofs that are accepted by the verifier.
+For example, a vulnerability in the ZCash protocol [16]
+could enable the generation of counterfeit coins, and a recent
+vulnerability [46] in the circom-pairing library could have
+allowed attackers to forge signatures.
+A particularly problematic aspect of bugs in ZK applica-
+tions is that they are extremely difficult to detect, even once
+they are exploited. Unlike other common types of attacks
+like denial-of-service or privilege escalation, ZK attacks
+allow a malicious party to silently exploit the system, with-
+out leaving any observable trace. Hence, traditional defense
+mechanisms, such as run-time monitoring or sandboxing,
+are completely powerless at mitigating attacks caused by
+bugs in ZK proof system implementations. This leaves static
+analysis & verification as the only viable mechanism for
+preventing silent attacks on ZK proof systems.
+Motivated by this observation, this paper presents a
+new statically-typed language called CODA for building ZK
+applications. Critically, CODA makes it possible to formally
+specify and statically check properties of a ZK application
+1
+
+through a rich refinement type system. Intuitively, the re-
+finement type specifications in CODA make it possible to
+express the correspondence between the computation that
+the programmer has in mind and the actual arithmetic circuit
+that underlies the zero-knowledge proof system. As a result,
+refinement types serve as a bridge between the developers’
+mental computational model and the mathematical objects
+that are used to realize that computation in a zero-knowledge
+way.
+At a high level, CODA serves the same role as a domain-
+specific language like Circom, in that it is intended to facil-
+itate the construction of arithmetic circuits. However, unlike
+Circom which is a low-level imperative language, CODA is a
+functional language with higher-order combinators. Beyond
+making it possible to express the same computation in
+a more concise and declarative way, CODA is designed
+to facilitate static type checking. In particular, given the
+refinement type specifications annotated by the user, the
+CODA compiler generates a set of logical formulas whose
+validity entails the correctness of the circuit. That is, if the
+formulas generated by the CODA compiler can be proven to
+be logically valid, this constitutes a proof that the program
+conforms to its specification. Thus, type checking in CODA
+essentially amounts to formal verification.
+One of the key challenges in formally verifying ZK
+applications is that they require reasoning about polynomial
+equations over large prime fields. This fact is important
+because current automated theorem provers (in particular,
+SMT solvers) do not provide adequate support for logical
+reasoning in such a theory. Hence, in contrast to recent work
+on logically qualified data types [35], [36], [43], [44], [39]
+that discharges typing constraints via an SMT solver, doing
+so is unfortunately not an option for the CODA compiler.
+To deal with this challenge, CODA outputs a set of lemmas
+in Coq [24] that can be proven in an interactive manner.
+Because many of the lemmas output by the CODA type
+checker correspond to complex number-theoretic theorems,
+it is unrealistic to expect that they can be discharged com-
+pletely automatically. Thus, while human involvement in the
+type checking process is unavoidable in some cases, CODA
+tries to reduce the manual proof burden by providing tactics
+to codify common proof patterns in this domain.
+We have used CODA to re-implement and formally ver-
+ify 77 complex arithmetic circuits from 9 Circom projects.
+Out of the 77 circuits under consideration, we were able
+to use CODA to formally verify 66 circuits and uncovered
+6 previously unknown vulnerabilities in popular Circom
+projects.
+To summarize, this paper makes the following key con-
+tributions:
+• We introduce CODA, a statically-typed functional DSL for
+facilitating the construction of arithmetic circuits and their
+compilation down to R1CS constraints [11].
+• We describe a refinement type language for specifying
+functional correctness properties of ZK applications and
+present type checking rules that are formally proven to
+be sound. In other words, we show that type checking in
+CODA corresponds to formal verification.
+1
+template BigLessThan(k){
+2
+signal input a[k];
+3
+signal input b[k];
+4
+signal output out;
+5
+component lt[k];
+6
+component eq[k];
+7
+for (var i = 0; i < k; i++) {
+8
+lt[i] = LessThan();
+9
+lt[i].in[0] === a[i];
+10
+lt[i].in[1] === b[i];
+11
+eq[i] = IsEqual();
+12
+eq[i].in[0] === a[i];
+13
+eq[i].in[1] === b[i];
+14
+}
+15
+component ors[k - 1];
+16
+component ands[k - 1];
+17
+component eq_ands[k - 1];
+18
+for (var i = 0; i <= k - 2; i++) {
+19
+ands[i] = AND();
+20
+eq_ands[i] = AND();
+21
+ors[i] = OR();
+22
+if (i == 0) {
+23
+ands[i].a === eq[1].out;
+24
+ands[i].b === lt[0].out;
+25
+eq_ands[i].a === eq[1].out;
+26
+eq_ands[i].b === eq[0].out;
+27
+ors[i].a === lt[1].out;
+28
+ors[i].b === ands[i].out;
+29
+} else {
+30
+// Bug! The next line should be:
+31
+// ands[i].a === eq_ands[i-1].out
+32
+ands[i].a === ands[i-1].out;
+33
+ands[i].b === lt[i].out;
+34
+eq_ands[i].a === eq_ands[i-1].out;
+35
+eq_ands[i].b === eq[i].out;
+36
+ors[i].a === ors[i-1].out;
+37
+ors[i].b === ands[i].out;
+38
+}
+39
+}
+40
+out === ors[k-1].out;
+41
+}
+Figure 1. A Circom program for expressing the less-than relation between
+a and b. The out signal is expected to be a binary field element that is
+equal to 1 if and only iff a represents a smaller integer than b.
+• We re-implement 77 widely-used ZK circuits from pop-
+ular Circom projects in CODA and show that CODA is
+useful for specifying and formally verifying these circuits.
+Furthermore, our verification effort uncovered previously
+unknown vulnerabilities.
+2. Overview
+In this section, we motivate our proposed approach with
+the aid of a motivating example. To this end, we first present
+an existing circuit written in Circom and then explain the
+CODA workflow.
+2.1. Motivating Example
+Figure 1 shows a function called BigLessThan imple-
+mented in Circom. This function takes two arrays a and
+b representing two integers in Big Endian notation. For
+a specific value of k (representing the number of bits),
+2
+
+the Circom compiler generates an arithmetic circuit (i.e., a
+polynomial equation over a finite field) such that the (binary)
+output signal called out is 1 iff the integer represented
+by a is less than that represented by b, and 0 otherwise.
+While computing the correct value of out may not seem
+particularly challenging, what makes this task tricky is that
+we actually need to generate a set of constraints over
+the signals out, a, and b satisfying a certain property. If
+the generated set of constraints is incorrect, a malicious
+party can engineer bogus proofs that are accepted by the
+verifier [46].
+For the purposes of this paper, it is not necessary to
+understand the Circom code shown in Figure 1 except
+to realize that the Circom code is actually quite involved
+despite being based on the following simple observations:
+• Observation 1: The length-i prefix of a is less than the
+length-i prefix of b if the length-(i−1) prefix of a is less
+than the length-(i−1) prefix of b, or if the length-(i−1)
+prefixes are equal but a[i] < b[i].
+• Observation 2: The length-i prefix of a is equal to the
+length-i prefix of b if the length-(i−1) prefixes are equal
+and a[i] = b[i].
+Unfortunately, the actual Circom code generating the
+constraints (using the === operator) is quite non-trivial and
+uses the lt and eq components (which are similar to library
+functions) to help implement this logic. While understanding
+the exact details of the Circom code is not necessary for this
+paper, the key take-away is that the code is far from trivial,
+and, in fact, contains a subtle bug at line 32, with the appro-
+priate fix indicated in comments immediately above. Such
+a bug can allow a malicious prover to construct the input
+arrays a and b in such a way that the generated constraints
+will be satisfied even though the integer represented by a is
+larger than that represented by b.
+The bug in this example may look relatively innocuous,
+but the consequences of such a mistake can be quite catas-
+trophic in the context of a ZK application. For example,
+if this circuit was used in a DeFi application to ensure
+that parties cannot transfer more money than they have, an
+attacker could exploit this bug to transfer money than they
+actually own. Furthermore, in such a privacy-centric DeFi
+application based on a ZK proof system, it would be very
+difficult to detect that something bad is happening: since
+no one except the attacker knows exactly how much money
+they own, no party can detect that money is being stolen if
+the verifier itself is buggy.
+2.2. Our approach
+Figure 2 shows the implementation of the BigLessThan
+function in CODA. Even though the CODA code in Figure 2
+compiles down to the same R1CS constraint representation
+as the Circom code from Figure 1, the CODA program is
+much more concise and declarative and allows the user
+to directly implement Observation 1 and Observation 2
+without being bogged down in low-level, orthogonal details.
+1
+circuit BigLessThan
+2
+(k: {Z | 0 <= v})
+3
+(a: {F | binary v}ˆk)
+4
+(b: {F | binary v}ˆk)
+5
+-> {F | v = (|a| < |b|)} {
+6
+let (lt, _) = iter 0 (k-1) (
+7
+\i. \(lt, eq). (
+8
+#Or lt (#And eq (#LessThan a[i] b[i])),
+9
+#And eq (#Eq a[i] b[i]))
+10
+)
+11
+(0, 1)
+12
+inv:(\i.
+13
+{F | v = (|a[:i]| < |b[:i]|)} *
+14
+{F | v = (|a[:i]| = |b[:i]|)})
+15
+in lt
+16
+}
+Figure 2. A CODA DSL program for the same function in Figure 1.
+In particular, the implementation of BigLessThan in CODA
+uses the functional iter construct of the form:
+iterτ es ee ef ea
+where es, ee denote the start and end indices of the iterator,
+ef is a lambda abstraction that is repeatedly applied to the
+accumulator, and ea is the initial value of the accumulator.
+Hence, the code in Figure 2 iterates from 0 to k −1
+(inclusive) and repeatedly applies ef to the accumulator,
+which is initialized to the value (0, 1). In this case, the
+accumulator is a pair of booleans (lt, eq) where lt (resp.
+eq) indicates whether the length i prefix of a is less than
+(resp. equal to) that of b. Observe that the new value of lt
+is calculated as:
+lt ∨(eq ∧(a[i] < b[i]))
+which corresponds directly to Observation 1 from ear-
+lier. Similarly, the computation of eq also directly fol-
+lows Observation 2. Hence, the CODA implementation
+of BigLessThan allows the developer to implement the
+core logic in a relatively straightforward way by compos-
+ing existing circuits that implement boolean disjunction
+(#Or), conjunction (#And), and field element comparison
+(#LessThan).
+Specifying circuit behavior. Beyond making it significantly
+easier to construct arithmetic circuits, a key aspect of the
+CODA DSL is that it allows specifying important properties
+of the circuit as refinement types, which are indicated in
+blue in Figure 2. As we can see from the type annotation
+on the input k, refinement types have the form {T | ϕ}
+where T is a base type and ϕ is a logical qualifier. In this
+case, the base type of k is an integer, denoted as Z, and
+the logical qualifier 0 ≤ν further states that the value of
+k is non-negative. The type annotations on a and b are of
+the form τ k, indicating that they are arrays of size k with
+elements of type τ. In this case, the element types of a and b
+are field elements (indicated as F), and the logical qualifier
+further restricts their values to be binary.
+The most interesting part of the specification is the type
+annotation for the return value of BigLessThan, which has
+the following refinement type:
+{F | ν = (|a| < |b|)}
+3
+
+This states that the return value of the function is a binary
+field element which is 1 iff the integer represented by a is
+less than the one represented by b, where the operator |x|
+interprets an array as a base-2 big integer. We note that the
+expression |a| < |b| is valid in CODA’s type system, but it
+is fundamentally not a valid program expression. In fact, it
+is impossible to define the custom | · | operator as a CODA
+function to map an array of field elements to the integer
+that it represents (as a field element), since the array may
+represent an integer larger than the size of the finite field.
+Specifying invariants. In order to prove that the CODA
+implementation of BigLessThan adheres to its specification,
+the developer also needs to annotate the iter construct with
+a so-called loop invariant, which specifies the refinement
+type of the accumulator. For this example, the annotation
+at lines 12-14 specifies that the accumulator is a pair of
+(binary) field elements, where the first element indicates
+whether the length-i prefix of a is less than the length-i
+prefix of b, and the second pair indicates whether they are
+equal. Because automated inference of loop invariants is,
+in general, not always possible, the CODA DSL requires
+the developer to annotate every usage of the iter construct
+with a refinement type specification of its accumulator and
+utilizes it in the verification process.
+Verification. In order to prove that the implementation
+of BigLessThan conforms to its specification, CODA
+performs static type checking. In particular, CODA uti-
+lizes the refinement type annotations to generate a set
+of proof obligations, also referred to as lemmas. If all
+of these lemmas are proven to hold, this constitutes a
+formal proof that the implementation conforms to its
+specification. For our running example, CODA generates
+a total of 15 lemmas, one of which is the following:
+∀(k i : nat)(a b : F list),
+length(a) = k ∧length(b) = k
+∧0 ≤i < k ∧|a[: i]| < |b[: i]|
+=⇒|a[: i + 1]| < |b[: i + 1]|.
+Essentially, this lemma states that, if the length-i prefix of
+a represents an integer smaller than the length-i prefix of b,
+then the same is true for the length-(i+1) prefixes. Note that
+this lemma is needed for proving the correctness of the loop
+invariant, which in turn is essential for establishing that the
+return value of BigLessThan has the intended refinement
+type specification.
+Discharging proof obligations. Since proving properties
+about ZK applications often requires proving number-
+theoretic lemmas, there is unfortunately little hope of
+discharging the proof obligations generated by the CODA
+type checker completely automatically. Thus, rather than
+using an automated thorem prover (e.g., SMT solver), the
+CODA type checker instead outputs Coq theorems [24] to
+be proven interactively with the aid of CODA’s domain-
+specific Coq tactics. In our running example, 10 of the
+lemmas can be discharged fully automatically and are not
+shown to the user. The user does need to be involved for
+proving the remaining 5 lemmas; however, CODA’s tactics
+(as well as existing tactics provided by Coq and the Fiat
+crypto library [17]) are still useful for simplifying the proof.
+Code generation. Once proof obligations are discharged
+and type checking succeeds, the CODA compiler generates a
+Rank-1 Constraint System (R1CS) [11] representation of the
+corresponding CODA program. We choose to compile CODA
+code down to R1CS because there are existing zkSNARK
+generators [23] that can be used to produce a prover and
+verifier from a set of R1CS constraints. For our running
+example, the R1CS constraints generated by the CODA
+compiler are roughly of the same size and quality as the
+constraints generated by the Circom compiler for the code
+from Figure 1.1
+Threat model. We consider a trustless setup where the
+attacker has full access to the implementation of the ZK
+circuit, both at the source code level as well as the R1CS
+level. We also assume that the attacker has access to both
+the prover and the verifier generated from this circuit. We
+further assume that the attacker does not have to use the
+zero-knowledge proof generated by the prover; instead, they
+can replace the proof with their own bogus version.
+3. The CODA Language
+In this section, we present the syntax, semantics, types,
+and compilation procedure of the CODA DSL.
+3.1. CODA Syntax and Semantics
+At a high level, the CODA DSL is designed with three
+key goals in mind:
+• Programmability: The DSL should make it possible to
+concisely and conveniently express arithmetic circuits of
+practical interest. To achieve this goal, CODA is modular
+and allows composing different circuits. It also incorpo-
+rates higher-order combinators that allow mapping over
+arrays and performing aggregation.
+• Compilability: Since our ultimate goal is to facilitate the
+generation of a ZK proof system (consisting of a prover
+and verifier), it should be possible to compile CODA
+programs down to R1CS constraints, for which existing
+techniques can generate ZK proof systems. To achieve this
+goal, CODA primarily allows computation over finite field
+elements and only allows using other values like integers
+and booleans in restricted ways.
+• Verifiability: To allow CODA programs to be statically
+verified, CODA is both purely functional and based on
+a static refinement type system. Furthermore, to allow
+complex properties to be verified, CODA does not insist on
+decidable type checking. Instead, it outputs Coq lemmas
+to be proven semi-automatically using a combination of
+proof tactics and manual intervention where necessary.
+1. The size of the R1CS constraints is important both for efficiency and
+also for reducing the time and space costs of producing the proof [1].
+4
+
+r
+::=
+circuit C −−−−−→
+(xi : Ti) →T {e}
+Circuit declaration
+e
+::=
+Expression:
+|
+c
+constants
+|
+x
+variable
+|
+⋆
+wild card
+|
+b | z | f
+arithmetic expressions
+|
+assert e1 = e2
+assertion
+|
+e1 ⊘e2
+binary relation
+|
+#C −
+→
+ei
+circuit reference
+|
+a
+array operator
+|
+t
+product operator
+|
+λx : τ. e
+function abstraction
+|
+e1 e2
+function application
+|
+let x = e1 in e2
+variable binding
+|
+iterλi.τ es ee ef ea
+iteration
+b
+::=
+¬e | e1 ⊙e2
+Boolean expression
+z
+::=
+−Ze | e1 ⊕e2
+Integer expression
+f
+::=
+−e | e1 ⊗e2
+Field expression
+t
+::=
+Product operator:
+|
+(e1, . . . , en)ϕ
+product constructor
+|
+match e with (x1, . . . , xn) →e′
+product destructor
+|
+e.i
+product indexing
+a
+::=
+Array operator:
+|
+e1 :: e2
+array constructor
+|
+map e1 e2
+map
+|
+length e
+length
+|
+sum e1 e2 e3
+sum
+|
+e1 [e2]
+array indexing
+⊙
+∈
+{∧, ∨}
+Boolean operators
+⊕
+∈
+{+Z, −Z, ∗Z}
+Integer operators
+⊗
+∈
+{+, −, ∗, /}
+Field operators
+⊘
+∈
+{=, <, ≤}
+Binary relations
+Figure 3. Syntax of CODA Programs
+Figure 3 shows the syntax for CODA programs. Top-level
+CODA programs are referred to as circuits (parametrized
+over a finite field F) and consist of three components: (1)
+xi : Ti, which is a sequence of input parameters xi and
+their corresponding type Ti, (2) T, the output type of the
+circuit, and (3) e, the body of the circuit. Given some
+choice of values for xi, a CODA program evaluates the body
+expression e and returns the evaluation result v. At a high
+level, CODA is a functional programming language with
+domain specific constructs for building ZK circuits as well
+as several standard functional combinators. In what follows,
+we explain the key features of the CODA language.
+Standard functional constructs in CODA include integer
+and boolean expressions, arrays and tuples, lambda abstrac-
+tions, function applications, iterators, and variable bindings.
+A variable binding let x = e1 in e2 binds the result of
+evaluating expression e1 to the (immutable) variable x and
+evaluates e2. The expression iterλi.τ es ee ef ea performs
+aggregation over indices. Specifically, es, ee are start and
+end indices respectively, ef is a function, and ea is the initial
+value of the accumulator. Starting with the initial value ea,
+the function ef is applied on the accumulator to produce
+a new value, and this process continues for all indices in
+the range [es, ee). Note that this construct has a subscript
+λi.τ indicating the loop invariant, which is used in type-
+checking, as discussed in Section 3.3.
+Beyond the standard functional constructs, CODA allows
+expressing computations over finite fields, which are crucial
+for building ZK circuits. Finite field expressions in CODA
+include field addition, subtraction, and multiplication. These
+operations are similar to their integer counterparts except
+that they occur modulo the field size F and may therefore
+over- or under-flow where their corresponding integer coun-
+terparts do not.
+As CODA programs need to encode relations (rather
+than mathematical functions), they allow non-determinism,
+which is expressed via the ⋆construct in the DSL, which can
+evaluate to any field element. Thus, a given CODA program
+can have multiple outputs even when executed on the same
+input. For example, a CODA function that takes as input a
+value x and “returns” ⋆corresponds to a relation R that
+evaluates to true for any pair (x, y) (where y is the “output”
+of the CODA function).
+In addition to allowing completely non-deterministic
+choices, CODA also allows constraining non-determinism
+via assertions. For example, consider the following CODA
+circuit:
+circuit C (a : F) : F =
+let b = ⋆in
+let _ = assert a * b = 0 in b
+This circuit essentially corresponds to a relation C(a, b)
+that evaluates to true if and only if a ∗b = 0 for some
+field elements a, b. Note that assertions are restricted to
+predicates of the form e1 = e2, as the resulting constraint
+must be compilable down to R1CS, which may not feasible
+for arbitrary predicates.
+We conclude our discussion of CODA syntax with circuit
+references of the form #C(x). At a high-level, circuit
+references allow CODA programs to refer to other circuits in
+a compositional way. Operationally, they allow developers
+to pretend that CODA circuits can be called like regular
+functions (even though they are not). For instance, consider
+a CODA program that returns #C(x), where C is some
+circuit representing a relation R(x, y). Then, the top-level
+CODA circuit C′ can be viewed as syntactic sugar for the
+following program:
+circuit C’ (a : F) : F =
+let b = ⋆in
+let _ = assert R(a, b) in b
+3.2. CODA Semantics
+The semantics of CODA require valuations, mappings
+from variables to values. We formalize the semantics of
+CODA expressions using judgments of the form σ ⊢e ⇓v,
+indicating that e can evaluate to value v under valuation
+σ. As emphasized earlier, CODA programs denote relations
+rather than mathematical functions; hence, it is possible for
+an expression e to evaluate to two distinct values v, v′ under
+the same valuation.
+While we present the semantics of the full CODA lan-
+guage in Appendix A, Figure 4 shows the semantics for a
+representative subset of CODA expressions. The semantics
+utilize an environment ∆mapping circuits to their defini-
+tions in the E-CREF rule, and the iterator semantics are
+defined recursively. Finally, note that, for assert statements,
+evaluation gets stuck for field elements that do not satisfy
+5
+
+v
+::=
+Values:
+|
+c
+constants
+|
+(v1, . . . , vn)
+product value
+|
+v1 :: v2
+array value
+|
+Closure(λx : τ. e, σ)
+closure
+σ
+::=
+Valuation:
+|
+∅
+empty valuation
+|
+σ[x 7→v]
+augmentation
+σ ⊢v ⇓v E-VALUE
+σ(x) = v
+σ ⊢x ⇓v E-VAR
+v ∈F
+σ ⊢⋆⇓v E-NONDET
+σ ⊢e1 ⇓f
+σ ⊢e2 ⇓f
+f ∈F
+σ ⊢assert e1 = e2 ⇓unit
+E-ASSERT
+σ ⊢e1 ⇓f1
+σ ⊢e2 ⇓f2
+f1 ⊗f2 = f
+σ ⊢e1 ⊗e2 ⇓f
+E-FBINOP
+σ ⊢λx : . e ⇓Closure(λx : . e, σ) E-LAM
+σ ⊢e1 ⇓Closure(λx : . e, σ′)
+σ ⊢e2 ⇓v
+σ′[x 7→v] ⊢e ⇓v′
+σ ⊢e1 e2 ⇓v′
+E-APP
+σ ⊢el ⇓vl
+for all l ∈{s, e, f, a}
+vs ∈Z
+ve ∈Z
+vs ≥ve
+σ ⊢iterλi.τ es ee ef ea ⇓va
+E-ITER0
+σ ⊢el ⇓vl
+for all l ∈{s, e, f, a}
+vs ∈Z
+ve ∈Z
+vs < ve
+σ ⊢iterλi.τ (vs +Z 1) ve vf (vf va) ⇓v
+σ ⊢iterλi.τ es ee ef ea ⇓v
+E-ITERS
+∆(C) = circuit R (x1 : T1) · · · (xn : Tn) →T {e}
+σ ⊢ei ⇓vi
+for all i ∈{1, . . . , n}
+σ[x1 7→v1] · · · [xn 7→vn] ⊢e ⇓v
+σ ⊢#C e1 · · · en ⇓v
+E-CREF
+Figure 4. Selected Semantics Rules of CODA Expressions
+T
+::=
+Basic types:
+F
+field element
+|
+Int
+integer
+|
+Bool
+boolean
+|
+T1 × · · · × Tn
+product (Unit denotes empty)
+|
+[T]
+array type
+|
+{ν : T | ϕ}
+refinement type
+τ
+::=
+T
+|
+x : τ1 →τ2
+Function type
+ϕ
+::=
+Logical qualifiers:
+|
+t
+refinement term
+|
+¬ϕ | ϕ ∧ϕ | ϕ ∨ϕ
+boolean operators
+|
+∀i∈[0,k). ϕ
+bounded quantification
+t
+::=
+Refinement terms:
+true | false
+boolean constants
+|
+F
+field size
+|
+e
+expression
+|
+toN(t) | toZ(t)
+field to integer conversion
+Figure 5. Syntax of CODA Types
+the predicate. Thus, if we think of a CODA circuit C with
+inputs x and body e as a relation RC((x1, . . . , xn), y), we
+have RC((in1, . . . , inn), out) evaluates to true if and only
+if (x1 7→in1, . . . , xn 7→inn) ⊢e ⇓out.
+3.3. CODA Type System
+CODA facilitates static verification through its rich type
+system based on refinement types. At a high level, refinement
+types allow developers to express functional correctness
+requirements on their ZK circuits as type annotations that
+must be checked by the compiler.
+Figure 5 shows the syntax for CODA’s refinement type
+system, which can be split into four core classes, namely,
+base types, compound types, function types, and refinement
+types. The three base types include F, Int, and Bool, in-
+dicating field elements, integers, and booleans respectively.
+As standard, compound types include array types [T], de-
+noting an array of elements of type T, and product types,
+T1 ×. . .×Tn, denoting tuples (e1, . . . , en) where each tuple
+element ei has type Ti. Function types are of the form
+x : τ1 →τ2, where τ1 is the type of the input and τ2 is
+the type of the output. The crucial part of the CODA type
+system are refinement types of the form {ν : T | ϕ} which
+qualify standard types with an additional logical qualifier
+ϕ that the value must satisfy. As a simple example, the
+refinement type {ν : F × F | ν.1 = ν.2} describes a pair
+whose first element is equal to its second element. In more
+detail, logical qualifiers in CODA are (possibly universally
+quantified) boolean combinations of atomic predicates in-
+volving terms t. Terms in the refinement type syntax include
+all expressions allowed in the CODA syntax as well as built-
+in functions like toN and toZ used for converting fields to
+signed and unsigned integers, respectively. We found such
+field-element-to-integer conversion functions to be crucial
+for concisely expressing many specifications of practical
+interest; hence, we include them as primitives in our type
+syntax. However, we also note that CODA’s refinement term
+language is extensible, meaning that the developer can define
+additional functions to use as part of their specification.
+3.3.1. Type Checking Rules. While refinement types allow
+developers to write specifications for their ZK circuits, we
+still need an algorithm that can be used to statically verify
+the type annotations, which is the job of the type checker.
+We formalize CODA’s type checking algorithm using three
+kinds of typing judgments, namely (1) a circuit typing judg-
+ment, (2) an expression typing judgment, and (3) a subtyping
+judgment, which utilize the following environments:
+6
+
+∆; x1 : T1, . . . , xn : Tn ⊢e : Ty
+∆⊢C circuit C (x1 : T1) · · · (xn : Tn) →Ty {e} T-CIRCDECL
+Γ(x) = {ν : T | ϕ}
+∆; Γ ⊢x : {ν : T | ν = x} TE-VAR
+Γ(f) = x : τ1 →τ2
+∆; Γ ⊢f : (x : τ1 →τ2) TE-VAR-FUNC
+∆; Γ ⊢⋆: {ν : F | true} TE-NONDET
+f ∈Fp
+∆; Γ ⊢f : {ν : F | ν = f} TE-CONSTF
+∆; Γ ⊢x : {ν : F | ϕ1}
+∆; Γ ⊢y : {ν : F | ϕ2}
+∆; Γ ⊢assert x = y : {ν : Unit | x = y}
+TE-ASSERT
+∆; Γ ⊢x : {ν : F | ϕ1}
+∆; Γ ⊢y : {ν : F | ϕ2}
+∆; Γ ⊢x ⊗y : {ν : F | ν = x ⊗y}
+TE-BINOPFIELD
+∆; x : τ1, Γ ⊢e : τ2
+∆; Γ ⊢λx : τ1. e : (x : τ1 →τ2) TE-ABS
+∆; Γ ⊢x1 : (s : τs →τr)
+∆; Γ ⊢x2 : τs
+∆; Γ ⊢x1 x2 : τr[s 7→x2]
+TE-APP
+s, e, j, f, a fresh
+τf = j : {ν : Int | s ≤ν < e} →τ[i 7→j] →τ[i 7→j + 1]
+τa = τ[i 7→s]
+τr = τ[i 7→e]
+∆; Γ ⊢iterλi.τ : s : Int →e : Int →f : τf →a : τa →τr
+TE-ITER
+∆(C) = circuit (x1 : T1) · · · (xn : Tn) →(y : Ty)
+∆; Γ ⊢#C : (x1 : T1 →· · · →xn : Tn →Ty)
+TE-CREF
+∆; Γ ⊢e : τ ′
+Γ ⊨τ ′ <: τ
+∆; Γ ⊢e : τ
+TE-SUB
+Figure 6. Selected typing rules for CODA expressions and programs
+• Circuit store: The circuit store ∆keeps track of previ-
+ously defined circuits. In particular, it maps the name of
+a circuit to the input and output type and is used for type
+checking circuit references.
+• Type environment: The type environment Γ maps vari-
+able names to their types and is used to type check
+variable references.
+Figure 6 presents our system’s typing rules. We elided
+some of the standard, uninteresting rules for space.
+Circuit typing. The top-level typing judgment, labeled T-
+CIRCDECL, is used to type check CODA circuits. If the body
+e of the circuit has type Ty under the assumption that each
+argument xi has type Ti, then the whole circuit is well-
+typed.
+Expression typing. We describe well-typed expressions
+with the typing judgment ∆; Γ ⊢e : τ, meaning that “under
+context Γ, the expression e has type τ.” Due to space
+constraints, we only describe the most important expression
+typing rules in the following discussion; however, the inter-
+ested reader can find all expression typing rules (together
+with their soundness proof) in Appendix B. We start with
+the standard rules first and work our way down to the more
+involved type checking rules.
+Variables. The rules TE-VAR and TE-VAR-FUNC are used
+for typing variables. In both of these rules, the type of
+the variable is found in the context. For non-functional
+variables, we additionally retain the information that the
+returned data is the same as what is present in the variable
+itself. This enables simple, lightweight equality reasoning.
+Constants. The rule TE-NONDET and TE-CONSTLIST
+are used for typing constants. Note that ⋆corresponds to
+non-deterministically chosen field elements; hence, ⋆al-
+ways has type F. Furthermore, a field constant f has type
+{ν : F | ν = f}, which essentially corresponds to the
+singleton set {f}. (The typing rules for boolean and integer
+constants are similar.)
+Assertions. The type checking rule for assertions, labeled
+TE-ASSERT, keeps track of the constraint being asserted in
+the type environment. Assertions only ensure the asserted
+information so the base type is Unit.
+Binops. The rule TE-BINOPFIELD deals with binary ex-
+pressions. For a given expression x ⊗y to type check, x and
+y must both be field elements. The type of the expression is
+then {ν : T | ν = x ⊗y}. The elided binop rules, defined
+on data types like booleans, follow a similar structure.
+Functions. The rules for function abstraction (TE-ABS)
+and application (TE-APP) are standard: The abstraction rule
+binds the type of x to its declared type τ1 and checks that
+e2 has type τ2 under this assumption. The application rule
+x1x2 checks that x1 has function type s : τs →τr and that
+x2 has type τs. Then, the resulting type of the application
+is the return type τr, with occurrences of s in τr substituted
+by x2.
+Iteration. The type checking rule for the iter construct es-
+sentially checks the validity of the annotated loop invariant.
+In particular, recall that the iter construct is annotated with
+an invariant of the form λi.τ, indicating that the result of
+the aggregation has type τ for each index i. Hence, this rule
+asserts that (1) the initial value of the accumulator has type
+τ[i 7→s] (where s is the start index), (2) the return value has
+type τ[i 7→e] (where e is the end index), and (3) the function
+f has a suitable type of the form τf ≡j : τ1 →(τ2 →τ3),
+where τ1 states that the index j is in the range [s, e) and the
+return type τ2 →τ3 states that the accumulator invariant τ
+is preserved, since τ2 ≡τ[i 7→j] and τ3 ≡τ[i 7→j + 1].
+Circuit references. Circuit references are type-checked sim-
+ilarly to function applications. In particular, if C is a circuit
+with n inputs of type T1, . . . , Tn and an output of type τy,
+7
+
+Γ ⊨τ <: τ TSUB-REFL
+Γ ⊨τ1 <: τ2
+Γ ⊨τ2 <: τ3
+Γ ⊨τ1 <: τ3
+TSUB-TRANS
+Γ ⊨T1 <: T2
+P ≡[[ϕ1]] =⇒[[ϕ2]]
+∀⃗x ∈dom(Γ). ∀ν. Encode(Γ) =⇒P
+Γ ⊨{ν : T1 | ϕ1} <: {ν : T2 | ϕ2}
+TSUB-REFINE
+Γ ⊨τy <: τx
+z fresh
+Γ ⊨τr[x 7→z] <: τs[y 7→z]
+Γ ⊨(x : τx →τr) <: (y : τy →τs)
+TSUB-FUN
+Γ ⊨T1 <: T2
+Γ ⊨[T1] <: [T2] TSUB-ARRAY
+Γ ⊨Ti <: T ′
+i
+for all i ∈{0, . . . , n}
+Γ ⊨T1 × . . . × Tn <: T ′
+1 × . . . × T ′
+n
+TSUB-PRODUCT
+Figure 7. Subtyping rules for CODA
+then the expression #C has type x1 : T1 →. . . →xn :
+Tn →Ty.
+3.3.2. Subtyping. The type checking rules described in
+the previous section make use of a subtyping relation:
+Specifically, the TE-SUB rule from Figure 6 states that an
+expression of type τ ′ also has type τ as long as τ ′ is a
+subtype of τ, denoted as Γ ⊨τ ′ <: τ. In this subsection,
+we discuss the subtyping relation, presented in Figure 7,
+underlying CODA’s type system.
+The first two rules, TSUB-REFL and TSUB-TRANS,
+ensure that the subtyping relation is reflexive and transitive.
+The third rule, called TSUB-REFINE, is the crux of the
+entire type system and reduces refinement type checking to
+querying logical validity in some formal logic. In particular,
+a refinement type {ν : T1 | ϕ1} is considered a sub-type of
+{ν : T2 | ϕ2} if the following two conditions hold: First, the
+base type T1 must be a subtype of T2. Second, the logical
+qualifier ϕ2 must be logically entailed by ϕ1 under the type
+environment Γ. To perform the second check, the CODA
+type system generates a logical encoding of ϕ1, ϕ2 and Γ
+in Coq and produces a lemma that must be proven in order
+for type checking to succeed. We discuss the process of
+discharging proof obligations in Coq in the next subsection.
+The next rule called TSUB-FUN is used for deciding
+sub-typing between functions. As standard, this rule states
+that subtyping for functions is contravariant with respect to
+the argument types and covariant with respect to the return
+types. The next two rules for arrays and products are also
+standard and state that subtyping is covariant with respect
+to the nested element types.
+3.4. Discharging Proof Obligations in Coq
+Because logical qualifiers in the CODA type system
+make number-theoretic statements about finite field ele-
+ments, the lemmas produced by the CODA type checker
+cannot by discharged automatically in general. Hence, we
+adopt a semi-automated approach, based on Coq, for dis-
+charging the proof obligations generated by the CODA type
+checker. We choose to use Coq for this purpose because of
+the existence of libraries for finite field arithmetic as well
+as a rich dictionary of tactics for proof automation.
+Recall from the previous subsection that subtyping
+checks in the CODA type system may involve an application
+of TSUB-REFINE rule, which has the following premise:
+∀⃗x ∈dom(Γ). ∀ν. Encode(Γ) =⇒[[ϕ1]] =⇒[[ϕ2]]
+This logical validity query is translated into a Coq proposi-
+tion by translating the formulas ϕ1, ϕ2 as well as the typing
+environment into Coq objects. Hence, each application of
+the TSUB-REFINE rule during type checking corresponds to
+a Coq proposition that must be discharged, so type check-
+ing is only valid under the assumption that the resulting
+proof obligations have been discharged. As an example, the
+following is one of the proof obligations generated for the
+BigLessThan example from Section 2. This Coq proposition
+essentially states that the output signal, out, of the circuit
+actually indicates whether |xs| < |ys|, under the assumption
+that the iter invariant holds.
+∀(k : nat)(xs ys : list F)(out lt : F),
+2 ≤k ∧length(xs) = length(ys) = k
+∧binary(xs) ∧binary(ys)
+∧lt = |xs[: k]| <? |ys[: k]| ∧out = lt
+=⇒out = |xs| <? |ys|.
+Discharging a proof obligation requires providing a for-
+mal Coq proof of the corresponding proposition. As stated
+earlier, Coq has a number of proof tactics that can be
+used to automate proofs, so some of the simpler proof
+obligations can be discharged automatically or with very
+little manual effort, particularly with the help of the Fiat-
+Crypto library [17]. For instance, 10 proof obligations for
+the BigLessThan example can be discharged in a fully auto-
+mated way via Coq’s standard auto tactic, and an additional
+3 may be discharged trivially using fewer than four standard
+tactics.
+In addition to the standard tactics provided by Coq and
+the Fiat-Crypto library [17] (which we use for representing
+finite fields), we identified a number of other opportunities
+for automatically discharging common proof obligations
+generated by the CODA type checker. Table 1 summarizes
+some of the tactics that we found to be useful when proving
+CODA-generated Coq propositions. For example, because
+statements about integers operations must be implemented
+using field operations, which can overflow, we provide
+tactics that can automatically prove the field operations are
+overflow-safe. First, the F to Z tactic rewrites a field ex-
+pression into an equivalent integer expression, generating in-
+teger inequality side-conditions that ensure overflow safety.
+However, the generated side-conditions often involve non-
+linear arithmetic, such as multiplication and exponentiation,
+making automated solving undecidable. To mitigate this
+problem, we provide a domain-specific overflow tactic that
+performs backtracking search and attempts to reduce non-
+8
+
+Tactic
+Summary
+F to Z
+Rewrite a field expression into an integer expression,
+generating overflow-safety side-conditions
+overflow
+Solve overflow-safety obligations
+split sum
+Split a summation into disjoint sub-summations
+switch sum
+Exchanges two nested summations
+reduce sum
+Reduce trivial summations
+ind
+Perform case analysis on an binary field element
+TABLE 1. SELECTED CODA COQ TACTICS.
+linear inequalities into equivalent linear inequalities based
+the user-provided bounds on existing variables. Finally, the
+resulting linear inequalities are solved by existing decision
+procedures such as Coq’s lia tactic. As another example,
+because ZKP programs build functionalities using field
+arithmetics such as addition and multiplication, the proofs
+often need to reason about indexed summations. To this end,
+we provide the split sum tactic that splits a summation into
+multiple disjoint summations, switch sum that exchanges
+two nested summations, and reduce sum to reduce trivial
+summations into simpler expressions.
+3.5. Properties of Well-Typed Coda Programs
+In this section, we present the key correctness guarantees
+established by well-typed CODA programs and refer the
+reader to Appendix B for the proofs. The correctness of
+CODA’s type system is characterized by expression type
+preservation. The preservation theorem states that if e is a
+well-typed expression with type τ and e evaluates to some
+value v, then v also has the type τ.
+Type preservation requires one additional assumption –
+well-typed valuations. We describe well-typed valuations
+with the judgment ∆; Γ ⊨σ, meaning that “under context Γ,
+the values of all variables in σ have the same types as those
+in Γ.” The interested reader can find the formal definition of
+valuation typing in the Appendix B. This assumption ensures
+that the arguments provided to a circuit are well-typed, for
+if the arguments to the circuit are not well-typed then the
+resulting value may also not be well-typed.
+Theorem 1 (Expression Type Preservation). If ∆; Γ ⊢e : τ
+and σ ⊢e ⇓v and ∆; Γ ⊨σ, then ∆; Γ ⊢v : τ.
+As a corollary, Theorem 1 immediately implies the
+following: If (1) C is a well-typed CODA program and ⃗e
+are input values satisfying the assumptions specified in the
+input types of C, and (2) #C ⃗e evaluates to output values
+⃗v, then (3) the output values ⃗v are guaranteed to satisfy the
+output types of C, as stated in the following theorem:
+Theorem 2 (Circuit Evaluation Type Preservation). If
+∆; Γ ⊢#C ⃗e : τ and σ ⊢#C ⃗e ⇓v and Γ ⊨σ, then
+∆; Γ ⊢v : τ.
+4. The CODA Compiler
+In this section, we describe the CODA compiler for
+converting CODA programs to R1CS constraints. Because
+zero-knowledge proof systems (based on zkSNARKs [9])
+generate the prover and verifier from a Rank 1 Constraint
+system, the CODA compiler needs to generate R1CS in order
+to leverage existing frameworks for zkSNARK generation.
+More formally, a Rank-1 constraint system (V, Φ) consists
+of a set of variables V and a list Φ of second-degree
+polynomial constraints of the form A ∗B + C = 0, where
+A, B and C are field constants or variables in V . The goal
+of the CODA compiler is to translate CODA programs to a
+set of R1CS constraints of this form.
+We describe our compilation technique in Figure 8 using
+judgments of the following shape:
+σ ⊢e ⇝⟨Φ, u⟩
+indicating that, under (symbolic) valuation σ, expression e
+evaluates to a compilation value u, with a corresponding set
+Φ of R1CS constraints. A compilation value u is essentially
+a partially evaluated version of expression e, where the
+original expression is simplified as much as possible and
+brought into an irreducible form. Because many CODA
+expressions are not valid R1CS terms, the primary goal
+of partial evaluation is to facilitate the generation of valid
+R1CS constraints.
+Figure 8 shows a representative subset of the compilation
+rules underlying the CODA compiler. The first rule called
+C-NONDET simply introduces a fresh R1CS variable r
+representing a non-deterministically chosen field element.
+The next rule called C-ASSERT adds a new constraint
+u1 = u2 where u1 and u2 are the results of partially
+evaluating expressions e1 and e2 respectively. The next two
+rules C-RED and C-IRRED compile binary field expressions
+of the form e1 ⊗e2. In the reducible case, both e1 and e2
+are partially evaluated as constansts (u1, u2 ∈F), so we
+further reduce e1 ⊗e2 by evaluating u1 ⊗u2. Otherwise, in
+the irreducible case, the compilation result is the symbolic
+expression u1 ⊗u2. 2
+The final rule called C-CIRC in Figure 8 presents the
+compilation procedure for the entire circuit. Given a circuit
+C with parameters x1, . . . , xn and body e, the compilation
+procedure introduces fresh symbolic values ri for each pa-
+rameter xi and then compiles e into (Φ, u). The final R1CS
+encoding of the circuit is then obtained as Φ ∪rn+1 = u,
+where the fresh variable rn+1 corresponds to the circuit
+output.
+Due to lack of space, Figure 8 does not show the com-
+pilation rules for all CODA expressions, and the remaining
+compilation rules are basically the same as the operational
+semantics. Instead of formally describing the remaining
+compilation rules in detail, we remark on a few salient
+features of the remaining rules. First, because circuit inputs
+and the ⋆expression in CODA correspond to field elements,
+all boolean and integer expressions can be compiled down to
+constants. As a corollary, CODA can unroll all loops during
+compilation. Furthermore, because array lengths in CODA
+are fixed, the CODA compiler can statically infer the exact
+shape of arrays. Hence, array operations, such as indexing
+and mapping, can also be fully evaluated.
+2. Fresh intermediate variables are generated to reduce the degree of
+irreducible field expressions to ≤2.
+9
+
+u
+::=
+Compilation values:
+|
+c
+constants
+|
+(u1, . . . , un)
+product value
+|
+u1 :: u2
+array value
+|
+Closure(λx : τ. e, σ)
+closure
+|
+r
+R1CS variable
+|
+r ⊗u | u ⊗r
+Irreducible expressions
+σ
+::=
+Valuation:
+|
+∅
+empty valuation
+|
+σ[x 7→u]
+augmentation
+σ ⊢u ⇝⟨∅, u⟩C-VALUE
+r fresh
+σ ⊢⋆⇝⟨∅, r⟩C-NONDET
+σ ⊢e1 ⇝⟨Φ1, u1⟩
+σ ⊢e2 ⇝⟨Φ2, u2⟩
+σ ⊢assert e1 = e2 ⇝⟨Φ1 ∪Φ2 ∪{u1 = u2}, unit⟩C-ASSERT
+σ ⊢e1 ⇝⟨Φ1, u1⟩
+σ ⊢e2 ⇝⟨Φ2, u2⟩
+u1, u2 ∈F
+u1 ⊗u2 = u3
+σ ⊢e1 ⊗e2 ⇝⟨Φ1 ∪Φ2, u3⟩
+C-RED
+σ ⊢e1 ⇝⟨Φ1, u1⟩
+σ ⊢e2 ⇝⟨Φ2, u2⟩
+u1 ̸∈F or u2 ̸∈F
+σ ⊢e1 ⊗e2 ⇝⟨Φ1 ∪Φ2, u1 ⊗u2⟩
+C-IRRED
+ri fresh for all i ∈{1, . . . , n + 1}
+[x1 7→r1] · · · [xn 7→rn] ⊢e ⇝⟨Φ, u⟩
+Φ′ = Φ ∪{rn+1 = u}
+circuit C (x1 : F) · · · (xn : F) →F {e} ⇝C Φ′ C-CIRC
+Figure 8. Rules for compiling CODA to R1CS constraints
+5. Implementation
+In this section, we provide more details about the imple-
+mentation of CODA, which is largely implemented in OCaml
+and consists of around 4000 lines of source code.
+The CODA language We implemented CODA as a em-
+bedded domain-specific language (EDSL) in OCaml. That
+is, CODA programs are expressed as OCaml expressions
+built from a library of atomic building blocks that represent
+CODA constructs. The choice of implementing CODA as an
+EDSL means that the developer is allowed to use features
+from the host language (e.g., OCaml’s type system, module
+system, as well as the expansive standard and third-party
+libraries) to significantly bootstrap the development speed.
+Type Checking The type checker implements the type
+checking and subtyping rules shown in Figures 6 and 7.
+Before type checking, CODA programs are normalized to the
+administrative normal form (ANF), and types are normalized
+to disallow consecutive refinements (i.e. refinement types
+of the form {ν : {ν : T | ϕ1} | ϕ2} are normalized to
+{ν : T | ϕ1 ∧ϕ2}).
+Lemma generation Recall that the TSUB-REFINE subtyp-
+ing rule proves that one refinement type is the subtype of
+another by requiring that implication of their qualifiers is a
+valid Coq proposition. Thus, the CODA type checker collects
+all such implications generated during type checking, and
+translates them into equivalent Coq lemmas. The translation
+is mostly standard: a base type is embedded as the corre-
+sponding Coq type, an array type is embedded into Coq’s
+list type refined with its length, a product type is embedded
+as Coq’s product type, and a refinement type {ν : T | ϕ} is
+embedded as T’s embedding with a hypothesis that asserts
+the truth of the embedding of ϕ. We also define interpreta-
+tions of CODA operators that may appear in ϕ. Finally, we
+use Fiat-Crypto [17] for the formalization of finite fields.
+Extensibility of CODA Type System In case the user
+has difficulty encoding a desired property P using CODA’s
+refinement type (e.g., if P involves unbounded quantifi-
+cation), we allow the user to extend the type system by
+treating P as an opaque, uninterpreted predicate. The CODA
+type checker will run as normal, but it may generate proof
+obligations containing P. Thus, the user must also provide
+the interpretation of P in the form of a Coq definition.
+Code generation The CODA compiler implements rules
+shown in Figure 8 to partially evaluate CODA programs into
+constraints over field expressions. We highlight some details
+that are elided in the compilation rules. First, the compiler
+relaxes the restriction on the circuit’s input type by allowing
+non-field inputs, as long as their concrete valuation has been
+provided. During compilation, the compiler resolves any
+array length into a concrete value such that array operations
+can be fully evaluated. Finally, the collected constraints
+undergo a global transformation pass that reduces the degree
+of each constraint to at most 2, and eliminates any redundant
+constraints. Finally, the CODA compiler outputs an R1CS
+file in the zkInterface binary format for interoperating with
+different zk-SNARK backends.
+Verified library Thanks to the functional aspect of CODA,
+the core CODA constructs can be easily composed to write
+expressive, higher-order library functions that can be reused
+across applications. Those functions can be verified just
+like circuits by checking the implementation against the
+specified types and proving the resulting lemmas in Coq.
+We have implemented this idea by building a verified library
+that encapsulates common ZKP patterns such as branching,
+functional zip, element-wise array arithmetics and array
+aggregate operations. Applications that use those library
+functions not only benefit from shorter, easier to understand
+programs, but also experience less proof burden, as those
+library functions have been fully certified.
+6. Evaluation
+In this section, we describe the results of an evaluation
+that is designed to answer the following research questions.
+• RQ1: Can we use CODA to build formally verified
+implementations of commonly-used ZK circuits?
+• RQ2: Can CODA help discover correctness bugs?
+• RQ3: Can CODA proof automation tatics help reduce
+the manual verification effort?
+• RQ4: Can the CODA compiler generate efficient R1CS
+code and how does it compare against Circom?
+Benchmarks. To answer these questions, we col-
+lected 77 ZK circuits sampled from 9 widely-used li-
+braries and projects implemented in Circom. The li-
+braries include circomlib, the standard Circom library,
+10
+
+circom-bigint, a popular big-integer library for Cir-
+com, and the top-7 GitHub repositories under the “circom”
+topic ranked by the number of GitHub stars.
+For each library, we selected the circuits used in our
+evaluation based on the following criteria: 1) Documen-
+tation: The original Circom code should have sufficient
+documentation to allow us to formally specify its behavior.
+2) External dependencies: If the program has an external
+dependency, we require the external dependency to also
+satisfy the first criterion.
+Experiment Setup. To perform our experiments, we
+manually translated these benchmarks to CODA in a way
+that preserves their semantics. We expressed the functional
+correctness requirements for each circuit as refinement type
+annotations and added invariant annotations wherever re-
+quired in the CODA program. All experiments reported in
+this section are conducted on a MacBook Pro with Apple
+M1 Pro CPU and 16 GB of memory. CODA uses OCaml
+version 4.13.1 and Coq version 8.15.2. We use Circom 2.1.2
+to compare with our generated R1CS constraints.
+6.1. Main Results
+Table 6.1 summarizes the results of certifying our bench-
+marks using CODA. Here, the column called “Original LOC”
+shows to the lines of code of the original Circom circuit. In
+the “CODA Program” group, the columns “LOC”, “Spec”
+and “LOC/Spec” show the size of translated program in
+terms of lines of code, the lines of specification (including
+the refinement type and loop invariants, if any), and the ratio
+of program size to specification size. Next, the “Proof Obli-
+gations” group displays statistics about the proof obligations
+generated by the CODA type checker. In particular, columns
+“Avg”, “Total” and “Provable” shows the average number
+of proof obligations per circuit, the total number of obliga-
+tions, and the number of provable obligations respectively.
+The column called “Discharged” shows the percentage of
+correct lemmas that can be discharged (either automatically
+or interactively), and “Auto” shows the percentage of those
+that can be discharged fully automatically. Finally, the “Avg
+Proof Length” column shows the average number of lines
+for the Coq proof, and the “Avg TC Time” column shows the
+average running time of the type checker in milliseconds.
+Our key result is that, for 93% of the Circom programs
+that are originally correct, we were able to prove the correct-
+ness of our CODA translation. Overall, the specification-to-
+implementation ratio for CODA program is 0.6, suggesting
+that CODA does not impose an undue burden on program-
+mers for writing specifications. In terms of the burden of
+proving these specifications, the CODA type checker outputs
+an average of 5 proof obligations as Coq lemmas, of which
+76% discharged fully automatically. For the remaining ones,
+the average proof length (using our tactic library) is 10 lines
+of Coq code.
+Result for RQ1: CODA is able to certify 93% of the non-
+buggy benchmarks, achieving a program-to-specification
+ratio of 0.6 and requiring only 10 lines of manual proofs.
+6.2. Vulnerability Discovery
+Because CODA is sound, a buggy program will lead to
+erroneous lemmas that will not be provable in Coq. When
+performing this evaluation, we discovered 6 benchmarks
+that resulted in proof obligations we were unable to dis-
+charge. Upon further inspection, we discovered that these
+failed proofs were due to subtle (and previously unknown)
+correctness bugs in the original Circom circuits.
+Table 6.2 summarizes the vulnerabilities uncovered dur-
+ing our evaluation. In this table, the “Library” and “Pro-
+gram” columns show the library and program in which the
+vulnerability resides, respectively. The “Bug” column sum-
+marizes the root cause of the vulnerability. Note that all of
+the uncovered bugs are due to important logical constraints
+that are missing in the original program. Hence, these
+vulnerabilities can be exploited by a malicious prover to
+produce bogus zero-knowledge proofs for untrue statements.
+We have informed the developers of all of the affected
+libraries of the vulnerabilities, and all issues have been
+confirmed by the developers.
+Result for RQ2: CODA helped reveal 6 previously un-
+known vulnerabilities in widely-used ZK circuits.
+6.3. Case Study: Reduction in Verification Effort
+0
+50
+100
+150
+200
+250
+ModSubThree
+ModSumThree
+BigAdd
+BigLessThan
+BigAddModP
+BigSub
+BigSubModP
+Proof Length (Shallow)
+Proof Length (Coda)
+Figure 9. Comparison of verification effort of certifying the Circom-bigint
+library using CODA vs. using shallow embedding. The vertical axis shows
+the average number of constraints in log scale.
+In this section, we investigate CODA’s effectiveness in
+reducing the verification effort. Specifically, we compare
+the effort of certifying ZKP programs using CODA versus
+directly certifying the original Circom programs in Coq. In
+the latter approach, the source programs are syntactically
+translated into functions in Coq, a technique known as
+shallow embedding. For example, using shallow embedding,
+a Circom variable is encoded into a Coq variable, and
+the body of a circuit is encoded as a conjunction of Coq
+propositions.
+We use the benchmarks from the Circom-bigint library
+as a case study. Figure 6.3 compares the verification effort
+11
+
+Library
+Original
+CODA Program
+Proof Obligations
+Proof Length
+TC Time
+LOC
+LOC
+Spec
+Spec/LOC
+Avg
+Total
+Provable
+Discharged
+Auto
+(avg lines)
+(avg ms)
+Circomlib
+114
+37
+21
+0.57
+3
+42
+42
+100%
+76%
+6
+177
+Circom-bigint
+264
+74
+38
+0.51
+9
+123
+123
+81%
+69%
+33
+182
+Semaphore
+71
+23
+22
+0.96
+4
+22
+22
+100%
+91%
+6
+181
+Sismo
+121
+60
+35
+0.58
+8
+32
+32
+100%
+94%
+3
+184
+ZK-SBT
+88
+29
+18
+0.62
+6
+37
+37
+100%
+76%
+4
+181
+Darkforest-eth
+29
+10
+5
+0.50
+4
+13
+13
+100%
+77%
+5
+180
+ZK-SQL
+47
+12
+4
+0.33
+3
+10
+10
+70%
+80%
+4
+180
+Circomlib-ml
+27
+13
+4
+0.31
+3
+10
+10
+83%
+70%
+4
+181
+ed25519-circom
+50
+27
+16
+0.59
+3
+17
+9
+100%
+67%
+6
+182
+TABLE 2. MAIN RESULTS
+Library
+Program
+Bug
+Circom-bigint
+BigMod
+Missing range check
+Circomlib-ml
+IsPositive
+Zero considered positive
+ed25519-circom
+LessThanPower
+Missing logical constraints
+ed25519-circom
+LessThanBounded
+Missing logical constraints
+ed25519-circom
+fulladder
+Missing logical constraints
+ed25519-circom
+onlycarry
+Missing logical constraints
+TABLE 3. VULNERABILITIES DISCOVERED IN THE BENCHMARKS.
+required by each approach. The “Proof Length” columns
+show the number of lines of Coq proof that is required to
+certify the program using CODA and shallow embedding,
+respectively. On average, CODA enables 60% reduction in
+proof size.
+Result for RQ3: CODA reduced the verification effort
+by requiring 60% shorter proofs compared to the shallow
+embedding approach.
+6.4. Quality of Compiled R1CS
+Library
+1
+5
+10
+50
+100
+Bigint
+Circomlib
+ZK-SBT
+ZK-SQL
+circomlib-ml
+darkforest-eth
+hydra-s1-zkps
+avg Circom (-O1)
+avg Circom (-O2)
+avg Coda
+Figure 10. The quality of R1CS constraints generated by CODA compared
+to Circom.
+Finally, we investigate whether the CODA compiler is
+able to generate R1CS constraints whose size is comparable
+to the Circom compiler. Because the size of a constraint
+system crucially determines the cost producing the zero-
+knowledge proofs from the constraint system [1], a DSL that
+does not produce competitive R1CS constraints is unlikely
+to be adopted. To this end, we compare the number of
+constraints produced by the CODA compiler vs the Circom
+compiler. We exclude benchmarks that have transitive de-
+pendencies outside the benchmark set, as the compilation
+procedure requires all referenced circuits be defined. Addi-
+tionally, if a circuit contains a natural number parameter, we
+instantiate the circuit using the representative values for said
+parameter and take the average across all parameter values.
+We compare CODA’s generated constraints against Circom’s
+constraints produced by optimization levels -O1 and -O2.
+The results of this evaluation are summarized in Fig-
+ure 6.4. The key takeaway is that the CODA compiler is
+able to produce R1CS constraints that are of comparable
+quality to the Circom compiler. In particular, compared to
+the Circom compiler on level -O1, CODA generates equal or
+fewer constraints for 100% of the benchmarks. Compared to
+the Circom compiler on level -O2, for 82% benchmarks, the
+number of CODA’s generated constraints is within 10% of
+the number of Circom’s constraints, while for 26% bench-
+marks, CODA produced equal or fewer constraints than the
+Circom compiler.
+Result for RQ4: The CODA compiler can generate
+constraints whose quality is comparable to Circom.
+7. Related Work
+In this section, we survey prior work that is most closely
+related to our proposed approach.
+Refinement types. There has been significant interest in
+using refinement types for formal verification [35], [36],
+[43], [44], [39]. Some example applications include proving
+the absence of integer overflows [39] and verification of
+memory safety [36]. Most of the prior techniques in this
+space keep type checking decidable and use an off-the-shelf
+SMT solver to discharge the constraints generated by the
+type checker. However, zero knowledge circuit verification is
+much more challenging than prior applications of refinement
+types, and existing SMT solvers do not provide adequate
+support for reasoning about polynomial equations over finite
+fields. Thus, in contrast to prior work, CODA outputs Coq
+propositions during type checking and uses a combination
+of automated tactics and manual intervention (where neces-
+sary) to enable formal verification of ZK circuits.
+ZK programming languages and compilers. Due to the
+increasing demand for zero-knowledge proofs, there have
+12
+
+been several new domain-specific languages (DSLs) tar-
+geting this domain. Example DSLs for constructing zk-
+SNARKS [10] include Leo [12], Noir [5], Zokrates [15],
+Zinc [28], Snarky [30], Lurk [3], and CirC [31]. In con-
+trast to these prior efforts, the main focus of CODA is on
+verifiability of the circuit with respect to the specification.
+While most languages, include CODA, are intended for
+zkSNARKs, there are also other programming languages
+targeting zkSTARKs (Scalable Transparent ARgument of
+Knowledge) [8]. For instance, Cairo [20], is a Turing com-
+plete language that allows general computation, and has
+recently become quite popular for zkSTARKs.
+Formal methods & ZK. Writing correct zero-knowledge
+programs requires specialized domain expertise. Due to
+the importance of ZK circuits in blockchain applications,
+recent work has proposed techniques for finding bugs in this
+domain [42], [4], [16], [41]. For instance, Circomspect [14]
+is an open-source static analyzer designed to find bugs in
+Circom programs. Circomspect performs syntactic pattern
+matching on the Circom source code to detect potential
+issues. However, this approach suffers from both false posi-
+tives as well as false negatives and is intended as a bug finder
+rather than a verifier. Wen et al. [47] study common vulner-
+abilities in Circom and describe a static analysis framework
+for detecting these vulnerabilities. Their technique operates
+over an abstraction called the circuit dependence graph
+(CDG) that captures key properties of the circuit and allows
+expressing semantic vulnerability patterns as queries over
+the CDG abstraction. Another recent effort
+[33] focuses
+on finding underconstrained bugs (or proving the absence
+thereof) in Circom programs. This approach combines SMT
+solving with lightweight uniqueness inference to effectively
+reason about underconstrained circuits. In contrast, Coda is
+designed with an refinement type system to specify the func-
+tional correctness of circuits. Unlike previous approaches
+that focus on finding common vulnerabilities, the focus of
+CODA is on verifying full correctness of the circuit with
+respect to a formal specification. Certification is achieved
+using a combination of type checking and semi-automated
+Coq proofs. On a related note, [4] formally verifies the
+equivalence between constraint systems for probabilistic
+proofs, with the goal of reducing the number of constraints.
+Another orthogonal line of work [27] combines formal
+methods and the zero-knowledge domain in a different
+way. In particular, recent work has proposed ZK-UNSAT,
+a technique for proving that a propositional formula is
+unsatisfiable while revealing minimal information about the
+resolution refutation proof of unsatisfiability. As the focus
+of this work is generating zero-knowledge arguments of
+unsatisfiability, it is not directly related to CODA.
+Finally, there have been works on formally verifying the
+compilation from high-level DSLs to arithmetic constraints.
+The Leo [12] programming language seeks to provide a
+certifying compiler from a high-level language to R1CS
+constraints.
+[18] develops a certified compiler based on
+CompCert [26] that correctly compiles a subset of C to
+quadratic constraints. These works are complementary to
+CODA in that they can be adapted to formally certify the
+CODA compiler.
+Formal verification for cryptography. There is a body of
+work on applying formal verification techniques to crypto-
+graphic protocols. For instance, FiatCrypto [17] introduces
+a new approach for implementing cryptographic arithmetic
+in high-level code with machine-checked proofs of func-
+tional correctness through Coq. Corin et al. [13] leverage a
+variant of probabilistic Hoare logic to prove the security of
+ElGamal; Gagne et al. [19] use similar methods to prove the
+security of the front-end of many CBC-based MACs, PMAC
+and HMAC. Tiwari et.al [40] leverage component-based
+program synthesis to automatically generate padding-based
+encryption schemes, and block cipher modes of operations.
+EasyCrypt [6] is a toolset that allows users to specify and
+prove the correctness of cryptographic protocols.
+On the other hand, there is little work on reasoning about
+the correctness of zero-knowledge proofs. Leveraging the
+MPC-in-the-head paradigm (i.e., Multi-Parity Computation),
+Sidorenco et al.[38] generated machine-checked proofs of
+ZK protocols using EasyCrypt. Almeida et al. [2] developed
+a certifying compiler for Σ−protocols, a broad class of zero-
+knowledge protocols including zkSNARKs [10]. Specifi-
+cally, given a protocol written in its high-level language,
+the compiler generates an executable implementation that
+is provably correct using the Isabelle/HOL [29] theorem
+prover. More recent work has focused on building special-
+ized solvers for polynomial equations over finite fields [32],
+[22], [45], [33]. Similar to the custom Coq tactic library that
+reduces the proof burden in CODA, we believe the above-
+mentioned works are complementary and can be incorpo-
+rated into CODA to improve the degree of proof automation.
+8. Conclusion
+We presented CODA, a new statically-typed language for
+building zero-knowledge applications. CODA enables devel-
+opers to formally specify and statically check properties of
+ZK circuits through a rich refinement type system. The type
+checker underlying CODA generates a set of Coq lemmas
+that, if valid, collectively constitute a proof of correctness of
+the circuit. CODA facilitates interactive verification of these
+lemmas using a combination of domain-specific proof tactics
+and manual intervention where necessary. Finally, the CODA
+compiler automatically translates high-level CODA circuits
+to low-level R1CS constraints from which a zero-knowledge
+proof system can be generated using existing techniques.
+We used CODA to formally specify and verify 77 ex-
+isting circuits from widely-used Circom projects. We were
+able to verify the correct circuits and identified 6 previously
+unknown vulnerabilities in the original Circom circuits.
+9. Acknowledgement
+We thank the reviewers for their helpful comments.
+This work is supported in part by NSF #1908494, DARPA
+N66001-22-2-4037, the Google Faculty Research Awards,
+and the Ethereum Foundation Academic Grants.
+13
+
+References
+[1]
+Elvira Albert, Marta Bell´es-Mu˜noz, Miguel Isabel, Clara Rodr´ıguez-
+N´u˜nez, and Albert Rubio. Distilling constraints in zero-knowledge
+protocols.
+In Sharon Shoham and Yakir Vizel, editors, Computer
+Aided Verification - 34th International Conference, CAV 2022, Haifa,
+Israel, August 7-10, 2022, Proceedings, Part I, volume 13371 of
+Lecture Notes in Computer Science, pages 430–443. Springer, 2022.
+[2]
+Jos´e Almeida, Endre Bangerter, Manuel Barbosa, Stephan Krenn,
+Ahmad-Reza Sadeghi, and Thomas Schneider. A certifying compiler
+for zero-knowledge proofs of knowledge based on sigma-protocols.
+volume 6345, pages 151–167, 09 2010.
+[3]
+Nada Amin, John Burnham, Franc¸ois Garillot, Rosario Gennaro,
+Daniel Rogozin, Cameron Wong, et al. Lurk: Lambda, the ultimate
+recursive knowledge. Cryptology ePrint Archive, 2023.
+[4]
+Aztec.
+Disclosure of recent vulnerabilities.
+https://hackmd.io/
+@aztec-network/disclosure-of-recent-vulnerabilities, 2022.
+[5]
+Aztec. Introducing noir. https://noir-lang.org/, 2022.
+[6]
+Gilles Barthe, Franc¸ois Dupressoir, Benjamin Gr´egoire, C´esar Kunz,
+Benedikt Schmidt, and Pierre-Yves Strub. Easycrypt: A tutorial. In
+FOSAD, 2013.
+[7]
+Marta Bell´es-Mu˜noz, Jordi Baylina, Vanesa Daza, and Jos´e L. Mu˜noz-
+Tapia. New privacy practices for blockchain software. IEEE Software,
+39(3):43–49, 2022.
+[8]
+Eli Ben-Sasson, Iddo Bentov, Yinon Horesh, and Michael Riabzev.
+Scalable, transparent, and post-quantum secure computational in-
+tegrity. IACR Cryptol. ePrint Arch., page 46, 2018.
+[9]
+Eli Ben-Sasson, Alessandro Chiesa, Eran Tromer, and Madars Virza.
+Succinct non-interactive zero knowledge for a von neumann architec-
+ture. In Kevin Fu and Jaeyeon Jung, editors, Proceedings of the 23rd
+USENIX Security Symposium, San Diego, CA, USA, August 20-22,
+2014, pages 781–796. USENIX Association, 2014.
+[10] Eli Ben-Sasson, Alessandro Chiesa, Eran Tromer, and Madars Virza.
+Succinct Non-Interactive zero knowledge for a von neumann archi-
+tecture. In 23rd USENIX Security Symposium (USENIX Security 14),
+pages 781–796, San Diego, CA, August 2014. USENIX Association.
+[11] Daniel
+Benarroch,
+Kobi
+Gurkan,
+Ron
+Kahat,
+Aur´elien
+Nico-
+las, and Eran Tromer.
+zkinterface, a standard tool for zero-
+knowledge interoperability. https://docs.zkproof.org/pages/standards/
+accepted-workshop3/proposal-zkinterface.pdf, 2019.
+[12] Collin Chin.
+Leo: A programming language for formally ver-
+ified, zero-knowledge applications.
+https://docs.zkproof.org/pages/
+standards/accepted-workshop4/proposal-leo.pdf, 2021.
+[13] Ricardo Corin and Jerry den Hartog. A probabilistic hoare-style logic
+for game-based cryptographic proofs (extended version), 2005. To
+appear in ICALP 2006 Track C corin@cs.utwente.nl 13264 received
+23 Dec 2005, last revised 26 Apr 2006.
+[14] Fredrick Dahlgren. It pays to be circomspect. https://blog.trailofbits.
+com/2022/09/15/it-pays-to-be-circomspect/, 09 2022.
+[15] Jacob Eberhardt and Stefan Tai.
+Zokrates - scalable privacy-
+preserving off-chain computations. In 2018 IEEE International Con-
+ference on Internet of Things (iThings) and IEEE Green Computing
+and Communications (GreenCom) and IEEE Cyber, Physical and
+Social Computing (CPSCom) and IEEE Smart Data (SmartData),
+pages 1084–1091, 2018.
+[16] electriccoin. Zcash counterfeiting vulnerability successfully remedi-
+ated. https://tinyurl.com/3sv793fj, 2019.
+[17] Andres Erbsen, Jade Philipoom, Jason Gross, Robert Sloan, and
+Adam Chlipala. Simple high-level code for cryptographic arithmetic
+- with proofs, without compromises. In 2019 IEEE Symposium on
+Security and Privacy, SP 2019, San Francisco, CA, USA, May 19-23,
+2019, pages 1202–1219. IEEE, 2019.
+[18] C´edric Fournet, Chantal Keller, and Vincent Laporte.
+A certified
+compiler for verifiable computing. In IEEE 29th Computer Security
+Foundations Symposium, CSF 2016, Lisbon, Portugal, June 27 - July
+1, 2016, pages 268–280. IEEE Computer Society, 2016.
+[19] Martin Gagn´e, Pascal Lafourcade, and Yassine Lakhnech. Automated
+security proofs for almost-universal hash for mac verification. Cryp-
+tology ePrint Archive, Paper 2013/407, 2013. https://eprint.iacr.org/
+2013/407.
+[20] Lior Goldberg, Shahar Papini, and Michael Riabzev. Cairo - a turing-
+complete stark-friendly cpu architecture. IACR Cryptol. ePrint Arch.,
+2021:1063, 2021.
+[21] Shafi Goldwasser, Silvio Micali, and Charles Rackoff. The knowledge
+complexity of interactive proof-systems (extended abstract). In Robert
+Sedgewick, editor, Proceedings of the 17th Annual ACM Symposium
+on Theory of Computing, May 6-8, 1985, Providence, Rhode Island,
+USA, pages 291–304. ACM, 1985.
+[22] Thomas Hader. Non-linear smt-reasoning over finite fields, 2022.
+[23] Iden3. Snarkjs. https://github.com/iden3/snarkjs, 2018.
+[24] INRIA. The coq proof assistant. https://coq.inria.fr/, 2022.
+[25] Matter labs. The future-proof zkevm. https://zksync.io/, 2022.
+[26] Xavier Leroy. Formal verification of a realistic compiler. Commun.
+ACM, 52(7):107–115, 2009.
+[27] Ning Luo, Timos Antonopoulos, William R. Harris, Ruzica Piskac,
+Eran Tromer, and Xiao Wang. Proving UNSAT in zero knowledge.
+In Heng Yin, Angelos Stavrou, Cas Cremers, and Elaine Shi, editors,
+Proceedings of the 2022 ACM SIGSAC Conference on Computer
+and Communications Security, CCS 2022, Los Angeles, CA, USA,
+November 7-11, 2022, pages 2203–2217. ACM, 2022.
+[28] Matter-Labs. Zinc. https://github.com/matter-labs/zinc, 2022.
+[29] Tobias Nipkow, Markus Wenzel, and Lawrence Charles Paulson.
+Isabelle/hol: A proof assistant for higher-order logic. 2002.
+[30] o1 Labs. Snarky: Write efficient, beautiful, safe zk-snark code. https:
+//o1-labs.github.io/snarky/, 2022.
+[31] Alex Ozdemir, Fraser Brown, and Riad S. Wahby. Circ: Compiler
+infrastructure for proof systems, software verification, and more.
+Cryptology ePrint Archive, Paper 2020/1586, 2020.
+https://eprint.
+iacr.org/2020/1586.
+[32] Alex Ozdemir, Gereon Kremer, Cesare Tinelli, and Clark W. Barrett.
+Satisfiability modulo finite fields. In Constantin Enea and Akash Lal,
+editors, Computer Aided Verification - 35th International Conference,
+CAV 2023, Paris, France, July 17-22, 2023, Proceedings, Part II,
+volume 13965 of Lecture Notes in Computer Science, pages 163–
+186. Springer, 2023.
+[33] Shankara Pailoor, Yanju Chen, Franklyn Wang, Clara Rodr´ıguez,
+Jacob Van Gaffen, Jason Morton, Michael Chu, Brian Gu, Yu Feng,
+and Isil Dillig. Automated detection of underconstrained circuits for
+zero-knowledge proofs. Cryptology ePrint Archive, 2023.
+[34] Polygon. Bring ethereum to everyone. https://polygon.technology/
+polygon-zkevm, 2022.
+[35] Patrick M. Rondon, Ming Kawaguci, and Ranjit Jhala.
+Liquid
+types.
+In Proceedings of the 29th ACM SIGPLAN Conference on
+Programming Language Design and Implementation, PLDI ’08, page
+159–169, New York, NY, USA, 2008. Association for Computing
+Machinery.
+[36] Patrick Maxim Rondon, Ming Kawaguchi, and Ranjit Jhala. Low-
+level liquid types. In Proceedings of the 37th Annual ACM SIGPLAN-
+SIGACT Symposium on Principles of Programming Languages, POPL
+’10, page 131–144, New York, NY, USA, 2010. Association for
+Computing Machinery.
+[37] Scroll. The native zkevm scaling solution for ethereum. https://scroll.
+io/, 2022.
+14
+
+[38] Nikolaj Sidorenco, Sabine Oechsner, and Bas Spitters. Formal secu-
+rity analysis of mpc-in-the-head zero-knowledge protocols. In 2021
+IEEE 34th Computer Security Foundations Symposium (CSF), pages
+1–14, 2021.
+[39] Bryan Tan, Benjamin Mariano, Shuvendu K. Lahiri, Isil Dillig, and
+Yu Feng. Soltype: refinement types for arithmetic overflow in solidity.
+Proc. ACM Program. Lang., 6(POPL):1–29, 2022.
+[40] Ashish Tiwari, Adria Gascon, and Bruno Dutertre. Program synthesis
+using dual interpretation. In Automated Deduction - CADE-25 - 25th
+International Conference on Automated Deduction, Berlin, Germany,
+August 1-7, 2015, Proceedings, volume 9195 of LNCS, pages 482–
+497, 2015.
+[41] TornadoCash. Tornado.cash got hacked. by us. https://tornado-cash.
+medium.com/tornado-cash-got-hacked-by-us-b1e012a3c9a8,
+12
+2019.
+[42] trailofbits.
+The frozen heart vulnerability in bulletproofs.
+https://
+tinyurl.com/2z7nw5ku, 2022.
+[43] Niki Vazou, Eric L. Seidel, Ranjit Jhala, Dimitrios Vytiniotis, and
+Simon Peyton-Jones. Refinement types for haskell. In Proceedings
+of the 19th ACM SIGPLAN International Conference on Functional
+Programming, ICFP ’14, page 269–282, New York, NY, USA, 2014.
+Association for Computing Machinery.
+[44] Panagiotis Vekris, Benjamin Cosman, and Ranjit Jhala. Refinement
+types for typescript.
+In Proceedings of the 37th ACM SIGPLAN
+Conference on Programming Language Design and Implementation,
+PLDI ’16, page 310–325, New York, NY, USA, 2016. Association
+for Computing Machinery.
+[45] Lucas Clemente Vella and Leonardo Alt. On satisfiability of polyno-
+mial equations over large prime fields. In David D´eharbe and Antti
+E. J. Hyv¨arinen, editors, Proceedings of the 20th Internal Workshop
+on Satisfiability Modulo Theories co-located with the 11th Interna-
+tional Joint Conference on Automated Reasoning (IJCAR 2022) part
+of the 8th Federated Logic Conference (FLoC 2022), Haifa, Israel,
+August 11-12, 2022, volume 3185 of CEUR Workshop Proceedings,
+pages 114–127. CEUR-WS.org, 2022.
+[46] Veridise. Circom-pairing: A million-dollar zk bug caught early. https:
+//tinyurl.com/3u5973pf, 2023.
+[47] Hongbo Wen, Jon Stephens, Yanju Chen, Kostas Ferles, Shankara
+Pailoor, Kyle Charbonnet, Isil Dillig, and Yu Feng. Practical security
+analysis of zero-knowledge proof circuits. Cryptology ePrint Archive,
+2023.
+Appendix A.
+Operational Semantics
+The full operational semantics for CODA is shown in
+Figure 11.
+Appendix B.
+Metatheory
+In this section, we include some of the metatheory about
+CODA’s type system as well as a brief sketch of the proof
+of theorem 1.
+For the purposes of the proofs, we consider a core subset
+of the calculus that contains only field elements, integers,
+booleans, pairs (products of arity 2), functions, and iter
+expressions. Furthermore, we take “unit” to be a first-class
+expression unit and type Unit.
+B.1. Preliminary Definitions
+Definition 1. The valuation typing relation, written as
+∆; Γ ⊨σ, is defined as:
+∆; Γ ⊨σ ::=
+dom(Γ) = dom(σ)
+∧
+(∀x, v, τ.
+Γ(x) = {ν : T | ϕ} ∧σ(x) = v =⇒
+∆; Γ ⊢v : {ν : T | ν = x})
+∧
+(∀x, v, x′, τ1, τ2.
+Γ(x) = x′ : τ1 →τ2 ∧σ(x) = v =⇒
+∆; Γ ⊢v : x′ : τ1 →τ2)
+The meaning of valuation typing is “a variable x is in
+Γ if and only if it is also in σ; and the value v of every
+variable x in σ must have the same type as x under Γ.”
+Note that the two “cases” here correspond to the types in
+the TE-VAR and TE-VAR-FUN rules, respectively.
+Definition 2. The base type subtyping judgment, written as
+⊨T1 <: T2, is defined using the inference rules in fig. 12.
+B.2. Subtyping Lemmas
+We now state several useful properties about our sub-
+typing rules.
+Lemma 1 (Every Refinement Type is a Subtype of True).
+For all Γ, T, and ϕ,
+Γ ⊨{ν : T | ϕ} <: {ν : T | true}
+(1)
+Proof. By induction on the derivation of eq. (1).
+Lemma 2 (Inversion for Function Subtyping, Unknown
+Supertype). If Γ ⊨x : τ1 →τ2 <: τ, then there exist τ ′
+1, τ ′
+2
+such that τ
+= x : τ ′
+1
+→τ ′
+2 and Γ ⊨τ ′
+1 <: τ1 and
+Γ ⊨τ2 <: τ ′
+2.
+Proof. By
+induction
+on
+the
+derivation
+of
+Γ ⊨x : τ1 →τ2 <: τ.
+Lemma 3 (Inversion for Function Subtyping, Both Known).
+If
+Γ ⊨x : τ1 →τ2 <: y : τ ′
+1 →τ ′
+2,
+then
+x
+=
+y
+and
+Γ ⊨τ ′
+1 <: τ1 and Γ ⊨τ2 <: τ ′
+2.
+Proof. By
+induction
+on
+the
+derivation
+of
+Γ ⊨x : τ1 →τ2 <: y : τ ′
+1 →τ ′
+2.
+Lemma
+4
+(Inversion
+for
+Refinement
+Subtyping).
+If
+Γ ⊨{ν : T1 | p} <: τ, then there exists a T ′
+2, q such that
+all of the following hold:
+• τ = {ν : T2 | q}
+• Γ ⊨T1 <: T2
+• |=Coq ∀⃗x ∈dom(Γ). ∀ν. Encode(Γ)
+=⇒
+[[p]]
+=⇒
+[[q]]
+Proof. By
+induction
+on
+the
+derivation
+of
+Γ ⊨{ν : T1 | p} <: τ.
+Lemma 5 (Subtyping Weakening). If ∆; Γ ⊨τ1 <: τ2 and
+x /∈dom(Γ), then ∆; Γ, x : τx ⊨τ1 <: τ2.
+15
+
+v
+::=
+Values:
+|
+c
+constants
+|
+(v1, . . . , vn)
+product value
+|
+v1 :: v2
+array value
+|
+Closure(λx : τ. e, σ)
+closure
+σ
+::=
+Valuation:
+|
+∅
+empty valuation
+|
+σ[x 7→v]
+augmentation
+σ ⊢v ⇓v E-VALUE
+σ(x) = v
+σ ⊢x ⇓v E-VAR
+v ∈F
+σ ⊢⋆⇓v E-NONDET
+σ ⊢e1 ⇓f
+σ ⊢e2 ⇓f
+f ∈F
+σ ⊢assert e1 = e2 ⇓unit
+E-ASSERT
+σ ⊢e1 ⇓f1
+σ ⊢e2 ⇓f2
+f1 ⊗f2 = f
+σ ⊢e1 ⊗e2 ⇓f
+E-FBINOP
+σ ⊢e1 ⇓z1
+σ ⊢e2 ⇓z2
+z1 ⊕z2 = z
+σ ⊢e1 ⊕e2 ⇓z
+E-INTBINOP
+σ ⊢e1 ⇓b1
+σ ⊢e2 ⇓b2
+b1 ⊙b2 = b
+σ ⊢b1 ⊙b2 ⇓b
+E-BOOLBINOP
+σ ⊢e1 ⇓v1
+σ ⊢e2 ⇓v2
+v1, v2 ∈F or v1, v2 ∈Z or v1, v2 ∈B
+v1 = v2
+σ ⊢e1 = e2 ⇓true
+E-EQTRUE
+σ ⊢e1 ⇓v1
+σ ⊢e2 ⇓v2
+(v1, v2) ̸∈⊘
+σ ⊢e1 ⊘e2 ⇓false
+E-EQFALSE
+σ ⊢e1 ⇓z1
+σ ⊢e2 ⇓z2
+v1, v2 ∈Z
+⊘∈{<, ≤}
+(z1, z2) ∈⊘
+σ ⊢e1 ⊘e2 ⇓true
+E-INEQTRUE
+σ ⊢e1 ⇓v1
+σ ⊢e2 ⇓v2
+v1, v2 ∈Z
+⊘∈{<, ≤}
+(z1, z2) /∈⊘
+σ ⊢e1 ⊘e2 ⇓false
+E-INEQFALSE
+σ ⊢λx : . e ⇓Closure(λx : . e, σ) E-LAM
+σ ⊢e1 ⇓Closure(λx : . e, σ′)
+σ ⊢e2 ⇓v
+σ′[x 7→v] ⊢e ⇓v′
+σ ⊢e1 e2 ⇓v′
+E-APP
+σ ⊢e1 ⇓v1σ ⊢e2 ⇓v2
+σ ⊢e1 :: e2 ⇓v1 :: v2
+E-CONS
+σ ⊢e1 ⇓vh :: vt
+σ ⊢e2 ⇓0
+σ ⊢e1 [e2] ⇓vh
+E-INDCONSHEAD
+σ ⊢e1 ⇓vh :: vt
+σ ⊢e2 ⇓z
+0 < z
+σ ⊢vt [z −1] ⇓v
+σ ⊢e1 [e2] ⇓v
+E-INDCONSTAIL
+σ ⊢ei ⇓vi for all i ∈{1, . . . , n}
+σ ⊢(e1, . . . , ei) ⇓(v1, . . . , vi)
+E-PRODCONS
+σ ⊢e1 ⇓(v1, . . . , vn)
+σ[x1 7→v1] · · · [xn 7→vn] ⊢e2 ⇓v
+σ ⊢match e1 with (x1, . . . , xn) →e2 ⇓v
+E-PRODDESTR
+σ ⊢el ⇓vl
+for all l ∈{s, e, f, a}
+vs ∈Z
+ve ∈Z
+vs ≥ve
+σ ⊢iterλi.τ es ee ef ea ⇓va
+E-ITER0
+σ ⊢el ⇓vl
+for all l ∈{s, e, f, a}
+vs ∈Z
+ve ∈Z
+vs < ve
+σ ⊢iterλi.τ (vs +Z 1) ve vf (vf va) ⇓v
+σ ⊢iterλi.τ es ee ef ea ⇓v
+E-ITERS
+∆(C) = circuit R (x1 : T1) · · · (xn : Tn) →T {e}
+σ ⊢ei ⇓vi
+for all i ∈{1, . . . , n}
+σ[x1 7→v1] · · · [xn 7→vn] ⊢e ⇓v
+σ ⊢#C e1 · · · en ⇓v
+E-CREF
+Figure 11. Semantics of CODA program
+16
+
+⊨T <: T BSUB-REFL
+⊨T11 <: T21
+⊨T12 <: T22
+⊨(T11, T12) <: (T21, T22)
+BSUB-PAIR
+Figure 12. Base Type Subtyping Rules
+Proof. By induction on the derivation of ∆; Γ ⊨τ1 <: τ2.
+B.3. Expression Typing Lemmas
+Lemma 6 (Expression Typing Weakening). If ∆; Γ ⊢e : τ
+and x /∈dom(G), then ∆; Γ, x : τx ⊢e : τ
+Proof. By induction on the derivation of ∆; Γ ⊢e : τ.
+Lemma 7 (Inversion for Types). Suppose that Γ ⊢e : τ.
+Then there exists a type τ ′ such that:
+∆; Γ ⊢e : τ ′
+(2)
+Γ ⊨τ ′ <: τ
+(3)
+and:
+(a) If e = f for some f ∈Fp, then τ ′ = {ν : F | ν = f}.
+(b) If e = b for some b ∈{true, false}, then τ ′ = {ν :
+Bool | ν = b}.
+(c) If e = x, then exactly one of the following is true:
+• There exist T, ϕ such that τ ′ = τ ′ = {ν : T | ν = x}
+and Γ(x) = {ν : T | ϕ}.
+• There exist x′, τ1, τ2, τ ′
+1, τ ′
+2 such that τ
+= x′ :
+τ1
+→
+τ2 and Γ(x)
+=
+x′
+:
+τ ′
+1
+→
+τ ′
+2 and
+∆; Γ ⊢x : x′ : τ ′
+1 →τ ′
+2.
+(d) If e = ⋆, then τ ′ = {ν : F | true}.
+(e) If e = Closure(λx : τ ′
+1. e′, σ) for some e′, τ ′
+1, then
+there exist τ1, τ2, τ ′
+2, Γ′ such that τ = x : τ1 →τ2
+and τ ′ = x : τ ′
+1 →τ ′
+2 and ∆; Γ′, x : τ ′
+1 ⊢e : τ ′
+2 and
+FV(τ ′
+2) ⊆{ν, x}.
+(f) If e = λx : τ1. e′, then there exists e, τ2 such that
+∆; Γ ⊢(λx : τ1. e) : x : τ1 →τ2.
+(g) If e = e1 e2, then there exist x, τ ′
+1, τ ′
+2 such that
+τ ′ = τ ′
+2[e2 7→x] and ∆; Γ ⊢e1 : x : τ ′
+1 →τ ′
+2 and
+∆; Γ ⊢e1 e2 : τ ′.
+(h) If e = (e1, e2), then there exists T1, T2, ϕ, T ′
+1, T ′
+2, ϕ1, ϕ2
+such that:
+τ = {ν : (T1, T2) | ϕ}
+(4)
+τ ′ = {ν : (T ′
+1, T ′
+2) | ϕ1[ν 7→ν.1] ∧ϕ2[ν 7→ν.2]} (5)
+Γ ⊨τ ′ <: τ
+(6)
+∆; Γ ⊢(e1, e2) : τ ′
+(7)
+∆; Γ ⊢e1 : {ν : T ′
+1 | ϕ1}
+(8)
+∆; Γ ⊢e2 : {ν : T ′
+2 | ϕ2}
+(9)
+Proof. By induction on the derivation of Γ ⊢e : τ. As there
+are many similar cases, we show only some of the cases
+here.
+• Case TE-CONSTF: Then we have
+e = f
+(10)
+τ = {ν : F | ν = f}
+(11)
+Choosing τ ′ = τ discharges eq. (2) and clause (a), and
+then applying TSUB-REFL discharges eq. (3).
+• Cases TE-NONDET, TE-CONSTBOOL, TE-VAR, TE-
+ABS: Similar.
+• Case TE-SUB: Then
+Γ ⊨τ ′′ <: τ
+(12)
+∆; Γ ⊢e : τ ′′
+(13)
+The inductive hypothesis is:
+Γ ⊢e : τ ′′ =⇒
+(14)
+∃τ ′.
+∆; Γ ⊢e : τ ′∧
+(15)
+Γ ⊨τ ′ <: τ ′′∧
+(16)
+all clauses (a) - (h)
+(17)
+Clearly eq. (14) is satisfied. Thus eq. (2) and eq. (3)
+follow immediately (the latter through transitivity of
+eq. (16) and eq. (12)).
+We then proceed by case analysis on e to show the
+remaining clauses.
+– Case e = f: Only clause (a) applies, and eq. (17)
+implies that as required,
+τ ′ = {ν : F | ν = f}
+(18)
+– Case e = ⋆: Only clause (d) applies, and eq. (17)
+implies that as required,
+τ ′ = {ν : F | true}
+(19)
+– The remaining cases are similar.
+Lemma 8. If ∆; Γ ⊢e : τ, then for all x, τ ′, we have
+∆; Γ, x : τ ′ ⊢e : τ.
+Proof. By induction on the derivation of ∆; Γ ⊢e : τ.
+B.4. Correctness Properties
+Theorem 1 (Expression Type Preservation). If ∆; Γ ⊢e : τ
+and σ ⊢e ⇓v and ∆; Γ ⊨σ, then ∆; Γ ⊢v : τ.
+Proof. By induction on the derivation of σ ⊢e ⇓v, where
+we want to prove the property:
+∀Γ, τ.
+Γ ⊢e : τ =⇒Γ ⊢v : τ
+As there are many cases, we show only some of the
+cases here.
+• Case
+E-VALUE:
+Follows
+immediately
+from
+the
+premises.
+• Case E-NONDET: Then
+e = ⋆
+(20)
+v = f ∈Fp
+(21)
+From lemma 7,
+Γ ⊨{ν : F | true} <: τ
+(22)
+∆; Γ ⊢e : {ν : F | true}
+(23)
+17
+
+Applying TE-CONSTF and lemma 1 to v then yields
+the desired result.
+• Case E-VAR: Then
+e = x
+(24)
+v = σ(x)
+(25)
+By lemma 7, we know that τ is either a refinement
+type or a function.
+If τ
+is a refinement type, i.e. Γ(x)
+=
+{ν
+:
+T
+|
+ϕ}
+for
+some
+T, ϕ,
+then
+we
+have
+that
+Γ ⊨{ν : T | ν = x} <: τ. From definition 1, it follows
+that Γ ⊢v : {ν : T | ν = x}. The conclusion then fol-
+lows by applying the TE-SUB rule.
+Otherwise, the τ is a function type, i.e. Γ(x) = x′ :
+τ1 →τ2 for some x′, τ1, τ2. The conclusion follows
+similarly in this case.
+• Case E-ASSERT: Then
+e = (assert x1 = x2)
+(26)
+σ ⊢x1 ⇓f
+(27)
+σ ⊢x2 ⇓f
+(28)
+v = unit
+(29)
+In
+order
+to
+show
+that
+∆; Γ ⊢unit : {ν : Unit | x1 = x2},
+we
+can
+use
+the TE-SUB, TE-UNIT, and TSUB-REFINE rules.
+This requires us to show that x1 = x2, when embedded
+as a Coq proposition, is entailed by the embedding of
+Γ:
+|=Coq∀⃗x ∈dom(Γ). ∀ν.
+Encode(Γ) =⇒
+[[ν = unit]] =⇒[[x1 = x2]]
+(30)
+We now argue that the above proposition holds. First,
+by lemma 7, we have that ∆; Γ ⊢x1 : {ν : F | ν = x1}
+(similarly for x2). Using the inductive hypotheses for
+x1 and x2, it can then be shown, resp., that
+∆; Γ ⊢f : {ν : F | ν = x1}
+(31)
+∆; Γ ⊢f : {ν : F | ν = x2}
+(32)
+Applying lemma 7 to the above then yields
+Γ ⊨{ν : F | ν = f} <: {ν : F | ν = x1}
+(33)
+Γ ⊨{ν : F | ν = f} <: {ν : F | ν = x2}
+(34)
+By lemma 4, we must have
+|=Coq∀⃗x ∈dom(Γ). ∀ν.
+Encode(Γ) =⇒
+[[ν = f]] =⇒[[ν = x1]]
+(35)
+|=Coq∀⃗x ∈dom(Γ). ∀ν.
+Encode(Γ) =⇒
+[[ν = f]] =⇒[[ν = x2]]
+(36)
+If we instantiate ν in both propositions by setting
+ν
+= f, then together they will imply the single
+proposition:
+|=Coq∀⃗x ∈dom(Γ).
+Encode(Γ) =⇒
+[[f = f]] =⇒[[f = x1 ∧f = x2]]
+(37)
+Finally, the above proposition implies that:
+|=Coq∀⃗x ∈dom(Γ).
+Encode(Γ) =⇒
+[[true]] =⇒[[x1 = x2]]
+(38)
+This implies eq. (30), which completes the proof of this
+case.
+• Case E-PAIR: Then we have
+e = (e1, e2)
+(39)
+v = (v1, v2)
+(40)
+First, from lemma 7, we have
+τ = {ν : (T1, T2) | ϕ}
+(41)
+τ ′ = {ν : (T ′
+1, T ′
+2) | ϕ1[ν 7→ν.1] ∧ϕ2[ν 7→ν.2]}
+(42)
+Γ ⊨τ ′ <: τ
+(43)
+∆; Γ ⊢(e1, e2) : τ ′
+(44)
+∆; Γ ⊢e1 : {ν : T ′
+1 | ϕ1}
+(45)
+∆; Γ ⊢e2 : {ν : T ′
+2 | ϕ2}
+(46)
+We then apply the inductive hypotheses with e1 and e2
+to obtain:
+∆; Γ ⊢v1 : {ν : T ′
+1 | ϕ1}
+(47)
+∆; Γ ⊢v2 : {ν : T ′
+2 | ϕ2}
+(48)
+Finally, we apply TE-SUB and TE-PAIR to derive the
+conclusion.
+• Cases E-FBINOP, E-BBINOP, E-INTBINOP: Similar.
+• Case E-APP: Then
+e = e1 e2
+(49)
+σ ⊢e1 ⇓Closure(λx : τ ′
+1. e′, σ)
+(50)
+σ ⊢e1 ⇓v2
+(51)
+σ[x 7→v2] ⊢e′ ⇓v
+(52)
+By lemma 7 on the type of e, there must exist
+x′, τ1, τ2, τ ′
+2 such that
+∆; Γ ⊢e1 : x′ : τ1 →τ2
+(53)
+Γ ⊨x′ : τ ′
+1 →τ ′
+2 <: τ
+(54)
+Γ ⊨τ2[x′ 7→e2] <: τ
+(55)
+Applying the inductive hypothesis to e1 then yields
+∆; Γ ⊢Closure(λx : τ ′. e′, σ) : x′ : τ ′
+1 →τ ′
+2
+(56)
+Now, by applying lemma 7 to the closure, it follows
+18
+
+that there exist Γ′ and τ ′′
+2 such that
+∆; Γ ⊢Closure(λx : τ. e′, σ) : x′ : τ ′
+1 →τ ′′
+2
+(57)
+Γ ⊨x′ : τ ′
+1 →τ ′′
+2 <: x′ : τ ′′
+1 →τ ′′
+2
+(58)
+∆; Γ′, x : τ ′
+1 ⊢e′ : τ ′′
+(59)
+The inductive hypothesis can then be applied to e′ to
+obtain:
+∆; Γ′, x : τ ′
+1 ⊢v : τ ′′
+(60)
+Note that τ ′′ may only contain x′ and ν as free vari-
+ables; consequently, τ ′′[x′ 7→e2] contains only free
+variables in dom(Γ). Furthermore, because v is already
+well-typed under Γ′ and has no free variables besides
+ν, it can be typed under any other typing context. It
+follows that ∆; Γ ⊢v : τ ′′[x′ 7→e2]. The desired result
+follows immediately by applying TE-SUB and eq. (55).
+• Case E-LAM: Follows from lemma 7, TE-SUB, and
+TE-CLO.
+• Cases E-CREF, E-ITER0, E-ITERS: Similar to E-APP.
+Appendix C.
+Meta-Review
+C.1. Summary
+The paper proposes a novel domain specific language
+called CODA for developing circuits used in zero-knowledge
+proofs. To enable developing correctness proofs of these
+circuits, CODA is based on functional programming with
+static refinement types. Users write functional code with
+correctness statements embedded in refinement types and
+provide loop invariants. The CODA compiler performs type
+checking, which may generate lemmas based on the refine-
+ment types in the program. Users then manually discharge
+those lemmas in an interactive theorem prover.
+C.2. Scientific Contributions
+• Addresses a Long-Known Issue
+• Provides a Valuable Step Forward in an Established
+Field
+C.3. Reasons for Acceptance
+1) The paper provides a valuable step forward in an es-
+tablished field. Zero-knowledge circuits are a relatively
+simple model of computation, which at the same time
+have a very high cost of errors. This makes it a perfect
+candidate to apply the end-to-end formal framework
+proposed in the paper to certify the correctness of these
+circuits.
+2) The proposed system strikes a good balance between
+manual formal verification and automated formal ver-
+ification. The idea of using semi-automated theorem
+proving to overcome the limitations of existing tools
+is interesting and novel. Furthermore, the fact that the
+provided tactics can automate away some of the proof
+burden is exciting, which lowers the barrier to formal
+verification of safety-critical code.
+3) The paper comes with formalized syntax and semantics
+of CODA, as well as a soundness proof of its type
+checking.
+4) Using their system, the authors found a number of vul-
+nerabilities in projects that developed zero-knowledge
+circuits.
+C.4. Noteworthy Concerns
+Some reviewer was concerned about the amount of
+manual effort involved in writing loop invariants and dis-
+charging lemmas. However, the reviewers concluded that the
+paper makes a significant step toward a mostly automated
+framework of certifying the correctness of zero-knowledge
+circuits.
+19
+

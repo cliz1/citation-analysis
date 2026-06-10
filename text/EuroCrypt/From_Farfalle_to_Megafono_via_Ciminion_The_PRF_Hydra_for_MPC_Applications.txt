@@ -1,0 +1,2056 @@
+From Farfalle to MEGAFONO via Ciminion:
+The PRF HYDRA for MPC Applications
+Lorenzo Grassi1, Morten Øygarden2, Markus Schofnegger3,
+and Roman Walch4,5,6(B)
+1 Radboud University Nijmegen, Nijmegen, The Netherlands
+lgrassi@science.ru.nl
+2 Simula UiB, Bergen, Norway
+morten.oygarden@simula.no
+3 Horizen Labs, Austin, USA
+mschofnegger@horizenlabs.io
+4 Graz University of Technology, Graz, Austria
+roman.walch@iaik.tugraz.at
+5 Know-Center GmbH, Graz, Austria
+6 TACEO GmbH, Graz, Austria
+Abstract. The area of multi-party computation (MPC) has recently
+increased in popularity and number of use cases. At the current state
+of the art, Ciminion, a Farfalle-like cryptographic function, achieves the
+best performance in MPC applications involving symmetric primitives.
+However, it has a critical weakness. Its security highly relies on the
+independence of its subkeys, which is achieved by using an expensive
+key schedule. Many MPC use cases involving symmetric pseudo-random
+functions (PRFs) rely on secretly shared symmetric keys, and hence the
+expensive key schedule must also be computed in MPC. As a result,
+Ciminion’s performance is signiﬁcantly reduced in these use cases.
+In this paper we solve this problem. Following the approach intro-
+duced by Ciminion’s designers, we present a novel primitive in symmetric
+cryptography called Megafono. Megafono is a keyed extendable PRF,
+expanding a ﬁxed-length input to an arbitrary-length output. Similar to
+Farfalle, an initial keyed permutation is applied to the input, followed by
+an expansion layer, involving the parallel application of keyed ciphers.
+The main novelty regards the expansion of the intermediate/internal
+state for “free”, by appending the sum of the internal states of the ﬁrst
+permutation to its output. The combination of this and other modiﬁca-
+tions, together with the impossibility for the attacker to have access to
+the input state of the expansion layer, make Megafono very eﬃcient in
+the target application.
+As a concrete example, we present the PRF Hydra, an instance of
+Megafono based on the Hades strategy and on generalized versions
+of the Lai–Massey scheme. Based on an extensive security analysis, we
+implement Hydra in an MPC framework. The results show that it out-
+performs all MPC-friendly schemes currently published in the literature.
+Keywords: Megafono · Hydra · Farfalle · Ciminion · MPC
+Applications
+c
+⃝International Association for Cryptologic Research 2023
+C. Hazay and M. Stam (Eds.): EUROCRYPT 2023, LNCS 14007, pp. 255–286, 2023.
+https://doi.org/10.1007/978-3-031-30634-1_9
+
+256
+L. Grassi et al.
+1
+Introduction
+Secure multi-party computation (MPC) allows several parties to jointly and
+securely compute a function on their combined private inputs. The correct output
+is computed and given to all parties (or a subset) while hiding the private inputs
+from other parties. In this work we focus on secret-sharing based MPC schemes,
+such as the popular SPDZ protocol [23,24] or protocols based on Shamir’s secret
+sharing [47]. In these protocols private data is shared among all parties, such that
+each party receives a share which by itself does not contain any information about
+the initial data. When combined, however, the parties are able to reproduce the
+shared value. Further, the parties can use these shares to compute complex
+functions on the data which in turn produce shares of the output.
+MPC has been applied to many use cases, including privacy-preserving
+machine learning [46], private set intersection [40], truthful auctions [13], and
+revocation in credential systems [38]. In the literature describing these use cases,
+data is often directly entered from and delivered to the respective parties. How-
+ever, in practice this data often has to be transferred securely from/to third par-
+ties before it can be used in the MPC protocol. Moreover, in some applications,
+intermediate results of an MPC computation may need to be stored securely in
+a database. As described in [35], one can use MPC-friendly pseudo-random func-
+tions (PRFs), i.e., PRFs designed to be eﬃcient in MPC, to eﬃciently realize
+this secure data storage and data transfer by directly encrypting the data using
+a secret-shared symmetric key.
+Besides being used to securely transmit data in given MPC computations,
+these MPC-friendly PRFs can also be used as a building block to speed up
+many MPC applications, such as secure database join via an MPC evaluation of
+a PRF [44], distributed data storage [35], virtual hardware security modules1,
+MPC-in-the-head based zero-knowledge proofs [39] and signatures [16], oblivious
+TLS [1], and many more. In all these use cases, the symmetric encryption key is
+shared among all participating parties. Consequently, if one has to apply a key
+schedule for a given PRF, one has to compute this key schedule at least once in
+MPC for every fresh symmetric key.
+To be MPC-friendly, a PRF should minimize the number of multiplications
+in the native ﬁeld of the MPC protocol. At the current state of the art, Cimin-
+ion [26] is one of the most competitive schemes for PRF applications. Proposed
+at Eurocrypt’21, it is based on the Farfalle mode of operation [10]. However,
+as we are going to discuss in detail, Ciminion has a serious drawback: Its secu-
+rity heavily relies on the assumption that the subkeys are independent. For this
+requirement, the subkeys are generated via a sponge hash function [11] instanti-
+ated via an expensive permutation. As a result, in all (common) cases where the
+key is shared among the parties, the key schedule cannot be computed locally
+and needs to be evaluated in MPC. This leads to a signiﬁcant increase in the
+multiplicative complexity of Ciminion. In this paper, we approach this problem
+in two steps. First, we propose Megafono, a new mode of operation inspired by
+1 https://www.ﬁntechfutures.com/ﬁles/2020/09/vHSM-Whitepaper-v3.pdf.
+
+From Farfalle to Megafono via Ciminion
+257
+Fig. 1. Farfalle and Ciminion (notation adapted to the one used in this paper).
+Farfalle and Ciminion.2 It is designed to be competitive in all MPC applications.
+Secondly, we show how to instantiate it in an eﬃcient way. The obtained PRF
+Hydra is currently the most competitive MPC-friendly PRF in the literature.
+1.1
+Related Works: Ciminion and the MPC Protocols
+Traditional PRFs (e.g., AES, Keccak) are not eﬃcient in MPC settings. First,
+MPC applications usually work over a prime ﬁeld Fp for a large p (e.g., p ≈
+2128), while traditional cryptographic schemes are usually bit-/byte-oriented.
+Hence, a conversion between F2n and Fp must take place, which can impact the
+performance. Secondly, traditional schemes are designed to minimize their plain
+implementation cost, and therefore no particular focus is laid on minimizing
+speciﬁcally the number of nonlinear operations (e.g., AND gates).
+For these reasons, several MPC-friendly schemes over Ft
+q for q = ps and
+t ≥1 have been proposed in the literature, including LowMC [4], MiMC [3],
+GMiMC [2], HadesMiMC [32], and Rescue [5]. All those schemes are block
+ciphers – hence, invertible – and they are often used in counter (CTR) mode.
+However, invertibility is not required in MPC applications, and a lower multi-
+plicative complexity may be achieved by working with non-invertible functions,
+as recently shown by in [26]. In the following, we brieﬂy discuss the Farfalle
+construction and the MPC-friendly primitive Ciminion based on it.
+Farfalle. Farfalle [10] is an eﬃciently parallelizable permutation-based construc-
+tion of arbitrary input and output length, taking as input a key. As shown in
+Fig. 1a and recalled in Sect. 3, the Farfalle construction consists of a compression
+layer followed by an expansion layer. The compression layer produces a single
+2 “Megafono” is the Italian word for “megaphone”, a cone-shaped horn used to amplify
+a sound and direct it towards a given direction. Our strategy resembles this goal.
+
+258
+L. Grassi et al.
+accumulator value from the input data. A permutation is potentially applied
+to the obtained state. Then, the expansion layer transforms it into a tuple of
+(truncated) output blocks. Both the compression and expansion layers involve
+the secret key, and they are instantiated via a set of permutations (namely,
+P(c), P, P(e)) and rolling functions (R(c)
+i , R(e)
+i ).
+Ciminion. As shown with Ciminion in [26], a modiﬁed version of Farfalle based
+on a Feistel scheme can be competitive for MPC protocols, an application which
+Farfalle’s designers did not consider. Following Fig. 1b and Sect. 3,
+(1) compared to Farfalle, the compression phase is missing, a ﬁnal truncation is
+applied, and the key addition is performed before P(e) is applied, and
+(2) in contrast to MPC-friendly block ciphers, Ciminion is a non-invertible PRF.
+For encryption it is used as a stream cipher, where the input is deﬁned as the
+concatenation of the secret key and a nonce.
+The main reason why Ciminion is currently the most competitive scheme in
+MPC protocols is related to one crucial feature of Farfalle, namely the possi-
+bility to instantiate its internal permutations with a smaller number of rounds
+compared to other design strategies. This is possible since the attacker does not
+have access to the internal states of the Farfalle construction. Hence, while the
+permutation P(c) is designed in order to behave like a pseudo-random permu-
+tation (PRP), the number of rounds of the permutation P(e) can be minimized
+and kept signiﬁcantly lower for both security and good performance.
+Besides minimizing the number of nonlinear operations, Ciminion’s designers
+paid particular attention to the number of linear operations. Indeed, even though
+the main cost in MPC applications depends on the number of multiplications,
+other factors (e.g., the number of linear operations) aﬀect eﬃciency as well.
+1.2
+The MEGAFONO Design Strategy
+The main drawback of Ciminion is the expensive key schedule to generate sub-
+keys that can be considered independent. This implies that Ciminion only excels
+in MPC applications where the key schedule can be precomputed for a given
+shared key, or in the (non-common) scenarios where the key is not shared among
+the parties. However, in the latter case, the party knowing the key can also com-
+pute Ciminion’s keystream directly in plain (i.e., without MPC) if the nonce and
+IV are public in a given use case (which is also true for any stream cipher).
+Clearly, the easiest solution is the removal of the nonlinear key schedule.
+However, by e.g. deﬁning the subkey as an aﬃne function of the master key, the
+security analysis of Ciminion does not hold anymore. As we discuss in detail in
+Sect. 4, this is a direct consequence of the Farfalle construction itself. Even if the
+attacker does not have any information about the internal states of Farfalle, they
+can exploit the fact that its outputs are generated from the same unknown input
+(namely, the output of P(c) and/or P). Given these outputs and by exploiting
+the relations of the corresponding unknown inputs (which are related to the
+
+From Farfalle to Megafono via Ciminion
+259
+deﬁnition of the rolling function), the attacker can potentially ﬁnd the key and
+break the scheme. For example, this strategy is exploited in the attacks on the
+Farfalle schemes Kravatte and Xooﬀf [15,19]. In Ciminion, this problem is
+solved by including additions with independent secret subkeys in the application
+of the rolling function. In this way, the mentioned relation is unknown due to the
+presence of the key, and P(e) can be instantiated via an eﬃcient permutation.
+We make the following three crucial changes in the Farfalle design strategy.
+1. First, we replace the permutation P(e) with a keyed permutation Ck.
+2. Secondly, we expand the input of this keyed permutation. The second change
+aims to frustrate algebraic attacks, whose cost is related to both the degree
+and the number of variables of the nonlinear equation system representing
+the attacked scheme. In order to create new independent variables for “free”
+(i.e., without increasing the overall multiplicative complexity), we reuse the
+computations needed to evaluate P. That is, we deﬁne the new variable as
+the sum of all the internal state of P, and we conjecture that it is suﬃciently
+independent of its output (details are provided in the following).
+3. Finally, we replace the truncation in Ciminion with a feed-forward operation,
+for avoiding to discard any randomness without any impact on the security.
+Our result is a new design strategy which we call Megafono.
+1.3
+The PRF HYDRA
+Given the mode of operation, we instantiate it with two distinct permutations,
+one for the initial phase and one for the expansion phase. As in Ciminion, assum-
+ing the ﬁrst keyed permutation behaves like a PRP and since the attacker does
+not know the internal states of Megafono, we choose a second permutation
+that is cheaper to evaluate in the MPC setting. In particular, while the ﬁrst per-
+mutation is evaluated only once, the number of calls to the second permutation
+(and so the overall cost) is proportional to the output size.
+For minimizing the multiplicative complexity, we instantiate the round func-
+tions of the keyed permutations Ck in the expansion part with quadratic func-
+tions. However, since no quadratic function is invertible over Fp, we use them in
+a mode of operation that guarantees invertibility. We opted for the generalized
+Lai–Massey constructions similar to the ones recently proposed in [33]. Moreover,
+we show that the approach of using of high-degree power maps with low-degree
+inverses proposed in Rescue does not have any beneﬁts in this scenario.
+We instantiate the ﬁrst permutation P via the Hades strategy [32], which
+mixes rounds with full S-box layers and rounds with partial S-box layers. Similar
+to Neptune [33], we use two diﬀerent round functions, one for the internal part
+and one for the external one. We decided to instantiate the internal rounds with
+a Lai–Massey scheme, and the external ones with invertible power maps.
+
+260
+L. Grassi et al.
+The obtained PRF scheme called Hydra is presented in Sect. 5 and Sect. 6,
+and its security analysis is proposed in Sect. 7.
+Fig. 2. Number of MPC multiplications of several designs over Ft
+p, with p ≈2128 and
+t ≥2 (security level of 128 bits).
+1.4
+MPC Performance and Comparison
+The performance of any MPC calculation scales with the number of nonlinear
+operations. In Fig. 2 we compare the number of multiplications required to evalu-
+ate diﬀerent PRFs for various plaintext sizes t using secret shared keys. One can
+observe that Hydra requires the smallest number of multiplications, with the
+diﬀerence growing further for larger sizes. The only PRF that is competitive to
+Hydra is Ciminion, but only if the key schedule does not have to be computed,
+which happens if shared round keys can be reused from a previous computa-
+tion. However, this implies that the key schedule was already computed once in
+MPC, requiring a signiﬁcant amount of multiplications. Hydra, on the other
+hand, does not require the computation of an expensive key schedule and also
+requires fewer multiplications than Ciminion without a key schedule for larger
+state sizes.
+In Sect. 8, we implement and compare the diﬀerent PRFs in the MP-
+SPDZ [41] library and conﬁrm the results expected from Fig. 2. Indeed,
+(1) taking key schedules into account, Hydra is ﬁve times faster than Ciminion
+for t = 8, which grows to a factor of 21 for t = 128,
+(2) without key schedules, Ciminion is only slightly faster than Hydra for
+smaller t, until it gets surpassed by Hydra for t > 16, showing that Hydra
+is also competitive, even if the round keys are already present.
+
+From Farfalle to Megafono via Ciminion
+261
+Compared to all other benchmarked PRFs, Hydra is signiﬁcantly faster for any
+state size t. Furthermore, Hydra requires the least amount of communication
+between the parties due to its small number of multiplications, giving it an
+advantage in low-bandwidth networks. As a result, we suggest to replace each of
+the benchmarked PRFs with Hydra in all their use cases, especially if a large
+number of words need to be encrypted.
+1.5
+Notation
+Throughout the paper, we work over a ﬁnite ﬁeld Fq, where q = ps for an odd
+prime number p and an integer s ≥1 (when needed, we will also assume a ﬁxed
+vector space isomorphism Fps ∼= Fs
+p). We use Fn
+q , for n ≥1, to denote the n-
+dimensional vector space over Fq, and we use the notation F⋆
+q to denote Fq strings
+of arbitrary length. The · || · operator denotes the concatenation of two elements.
+An element x ∈Ft
+q is represented as x = (x0, x1, . . . , xt−1), where xi denotes its
+i-th entry. Given a matrix M ∈Ft×s
+q
+, we denote its entry in row r and column c
+either as Mr,c or M[r, c]. We use the Fraktur font notation to denote a subspace
+of Fr
+q, while we sometimes use the calligraphic notation to emphasize functions.
+Given integers a ≥b ≥1, we deﬁne the truncation function Ta,b : Fa
+q →Fb
+q as
+Ta,b(x0, . . . , xa−1) = (x0, . . . , xb−1). Finally, for MPC, we describe that the value
+x ∈Fp is secret shared among all parties by [x].
+2
+Symmetric Primitives for MPC Applications
+Here we elaborate on why expensive key schedules are not desirable in many
+MPC use cases, and we discuss the cost metric in MPC protocols in more details.
+2.1
+MPC Use Cases and Key Schedules
+To highlight that expensive key schedules are not suitable for many scenarios, we
+describe the use cases discussed in [26] and [35] in greater detail. Concretely, we
+discuss the data transfer into and out of the MPC protocol, as well as using sym-
+metric PRFs to securely store intermediate results during an MPC evaluation.
+In the latter case, the setting is the following: The parties want to suspend the
+MPC evaluation and continue at a later point. As discussed in [35], the trivial
+solution for this problem is that each party encrypts its share of the data with
+a symmetric key and stores the encrypted share, e.g., at a cloud provider. The
+total storage overhead of this approach is a factor n for n MPC parties, since
+each party stores its encrypted shares of the data. Additionally, each party needs
+to memorize its symmetric key. The solution to reduce the storage overhead is
+to use a secret shared symmetric key (i.e., each party knows only a share of the
+key and the real symmetric key remains hidden), which can directly be sampled
+as part of the MPC protocol, and encrypt the data using MPC. The resulting
+ciphertexts cannot be decrypted by any party since no one knows the symmetric
+key, but can be used inside the MPC protocols at a later point to again create the
+
+262
+L. Grassi et al.
+shares of the data. This approach avoids the storage overhead of the data, and
+each party only has to memorize its share of the symmetric key which has the
+same size as the symmetric key itself. However, if the used PRF involves a key
+schedule, one also has to compute it in MPC for this use case. Other solutions
+either involve precomputing the round keys, or directly sampling random round
+keys in MPC instead of sampling a random symmetric key. These approaches
+require no storage overhead for the encrypted data, but each party needs to
+memorize its shares of the round keys. In Ciminion, the size of the round keys
+is equivalent to the size of the encrypted data (when using the same nonce for
+encrypting the full dataset), hence the whole protocol would be more eﬃcient
+if each party would just memorize its shares of the dataset instead. Providing
+fewer round keys and using multiple nonces instead requires the recomputation
+of Ciminion’s initial permutation in MPC, decreasing its performance.
+Similar considerations also apply if the MPC parties are diﬀerent from the
+actual data providers or if the output of the computation needs to be securely
+transferred to an external party. The solutions to both problems involve storing
+the dataset encrypted at some public place (e.g., in a cloud) alongside a public-
+key encryption of the shares of the symmetric key, such that only the intended
+recipient can get the shares. If the parties want to avoid expensive key sched-
+ules in MPC, they either have to provide shares of the round keys (which have
+the same size as the encrypted data in Ciminion), or provide fewer round keys
+alongside multiple nonces, decreasing the performance in MPC.
+Remark 1. In this paper, we focus on comparing MPC-friendly PRFs which are
+optimized for similar use cases as the ones discussed in this section, i.e., use cases
+which require fast MPC en-/decryption of large amounts of data. Hence, we do
+not focus on PRFs not deﬁned over Fp which are optimized for, e.g., Picnic-style
+signatures, such as LowMC [4], Rain [27], or weakPRF [25].
+2.2
+Cost Metric for MPC Applications
+Modern MPC protocols such as SPDZ [23,24] are usually split into a data-
+independent oﬄine phase and a data-dependent online phase. In the oﬄine
+phase, a bundle of shared correlated randomness is generated, most notably
+Beaver triples [9] of the form ([a], [b], [a · b]). This bundle is then used in the
+online phase to perform the actual computation on the private data.
+Roughly speaking, the performance scales with the number of nonlinear oper-
+ations necessary to evaluate the symmetric primitives in the MPC protocol
+(sometimes we use the term “multiplication” to refer to the nonlinear opera-
+tion). This is motivated by the fact that each multiplication requires one Beaver
+triple, which is computed in the oﬄine phase, as well as one round of communica-
+tion during the online phase (see [34, Appendix D]. In contrast, linear operations
+do not require any oﬄine computations and can directly be applied to the shares
+without communication. Consequently, the number of multiplications is a decent
+ﬁrst estimation of the cost metric in MPC, and MPC-friendly PRFs usually try
+to minimize this number. Whereas each multiplication requires communication
+
+From Farfalle to Megafono via Ciminion
+263
+between the parties, the depth directly deﬁnes the required number of communi-
+cation rounds, since parallel multiplications can be processed in the same round.
+Thus, the depth should be low in high-latency networks. To summarize,
+– the cost of the oﬄine phase of the MPC protocols directly scales with the
+number of required Beaver triples (i.e., multiplications), and
+– the cost of the online phase scales with both the number of multiplications
+and the multiplicative depth.
+As a concrete example, in many MPC-friendly PRFs, such as HadesMiMC,
+MiMC, GMiMC, and Rescue, the nonlinear layer is instantiated with a power
+map R(x) = xd for d ≥2 over Fq. Then, the cost per evaluation is
+#triples = costd := hw(d) + ⌊log2(d)⌋−1 ,
+depthonline = costd .
+(1)
+Several algorithms to reduce the number of multiplications and communication
+rounds were developed in the literature. Here we discuss those relevant for our
+goals. They require random pairs [r], [r2], and [r], [r−1], which can be generated
+from Beaver triples in the oﬄine phase (see [34, Appendix D]).
+Decreasing the Number of Online Communication Rounds. In the pre-
+ferred case of d = 3, the cost is two Beaver triples and a depth of two. However,
+in [35] the authors propose a method to reduce the multiplicative depth by del-
+egating the cubing operation to a random value in the oﬄine phase. Hence, all
+cubings can be performed in parallel reducing the depth. This algorithm (see [34,
+Appendix D]) requires two triples, but only one online communication round.
+Special Case: R(x) = x1/d. Optimizations can also be applied for the case
+R(x) = xd with very large d. In [5], the authors propose two diﬀerent algorithms
+to evaluate R (see [34, Appendix D]), in which the cost of evaluating R(x) = xd
+can be reduced to the cost of evaluating R(x) = x1/d (plus an additional multi-
+plication in the online phase) which requires signiﬁcantly fewer multiplications
+if 1/d is smaller than d. This is, for example, relevant when evaluating Rescue
+with its high-degree power maps in MPC. The algorithm works by delegating
+the 1/d power map evaluation to the oﬄine phase, and evaluating the costly d
+power map on a random value in plain. Furthermore, since the main MPC work
+(i.e., 1/d) is evaluated in the input-independent oﬄine phase, all communica-
+tion rounds can be parallelized, signiﬁcantly reducing the multiplicative depth.
+Using these algorithms and costd from Eq. 1, the cost of evaluating xd in MPC
+is modiﬁed to the following, with a signiﬁcantly smaller multiplicative depth and
+a smaller number of multiplications for large d:
+#triples = 2 + min
+
+costd, cost1/d
+
+,
+depthonline = 2.
+3
+Starting Points of MEGAFONO: Farfalle and Ciminion
+Here we recall Farfalle and Ciminion, which are starting points for Megafono.
+
+264
+L. Grassi et al.
+Farfalle and 1/2×Farfalle. Farfalle is a keyed PRF proposed in [10] with inputs
+and outputs of arbitrary length. As shown in Fig. 1a, it has a compression layer
+and an expansion layer, each involving the parallel application of a permutation.
+For our goal, we focus only on the expansion phase, and introduce the term
+1/2×Farfalle for a modiﬁed version of Farfalle that lacks the initial compression
+phase and only accepts input messages of a ﬁxed size n.
+Let K ∈Fκ
+q be the secret key for κ ≥1. 1/2×Farfalle uses a key schedule
+K : Fκ
+q →(Fn
+q )⋆for the subkeys used in the expansion phase, two unkeyed
+permutations P, P(e) : Fn
+q →Fn
+q , and a rolling function R : Fn
+q →Fn
+q .3 We
+deﬁne Ri as Ri(y) = ρi + R ◦Ri−1(y) for each i ≥1 and ρi ∈Fn
+q , where we
+assume R0 to be the identity function, i.e., R0(y) = y. Given an input x ∈Fq,
+1/2×Farfalle : Fn
+q →(Fn
+q )⋆operates as 1/2×Farfalle(x) = y0 || y1 || y2 || · · · || yj ||
+· · · , where ∀i ≥0 : yi := ki+1 + P(e) (Ri (P(x + k0))) .
+From 1/2×Farfalle to Ciminion. Ciminion [26] is based on a modiﬁed version
+of 1/2×Farfalle over Fn
+q for a certain n ≥2. As shown in Fig. 1b, the main
+diﬀerence with respect to 1/2×Farfalle is the deﬁnition of the function k + P(e).
+In Farfalle/1/2×Farfalle, the key addition is the last operation. In Ciminion, k +
+P(e)(x) is replaced by F(e)(x+k) for a non-invertible function F(e) instantiated
+via a truncated permutation, i.e., F(e)(x + k) := Tn,n′ ◦P(e)(x + k) for a certain
+1 ≤n′ < n. Moving the key inside the scheme prevents its cancellation when
+using the diﬀerence of two outputs.
+In Ciminion, the key schedule K : Fκ
+q →(Fn
+q )⋆uses a sponge function [11]
+instantiated via the permutation P. We refer to [26, Section 2] for more details.
+4
+The MEGAFONO Strategy for HYDRA
+Generating the subkeys of Ciminion via a sponge function and a strong permu-
+tation is expensive in terms of multiplications. This makes it ineﬃcient in cases
+where the secret keys are shared among the parties, as discussed in Sect. 2.1.
+Another weakness of Ciminion is the ﬁnal truncation. While it prevents an
+attacker from computing the inverse of the ﬁnal permutations P(e), it is waste-
+ful as it lowers the output of each iteration. To ﬁx these issues, here we pro-
+pose the Megafono strategy, based on the design strategy of Ciminion (and
+1/2×Farfalle), but with some crucial modiﬁcations.
+Deﬁnition of Megafono. Let n ≥1 be an integer and let Fq be a ﬁeld, where
+q = ps for a prime integer p ≥2 and a positive integer s ≥1. Let K ∈Fκ
+q be the
+secret key for n ≥κ ≥1. The ingredients of Megafono are
+(1) a key schedule K : Fκ
+q →(Fn
+q )⋆for generating the subkeys, that is, K(K) =
+(k0, k1, . . . , ki, . . .) where ki ∈Fn
+q for each i ≥0,
+3 We mention that in [10], authors use the terms “masks” and “(compressing) rolling
+function” instead of “subkeys” and “key schedule”. In Farfalle, the same subkey is
+used in the expansion phase, that is, k1 = k2 = · · · = ki. Here, we consider the most
+generic case in which the subkeys are not assumed to be equal.
+
+From Farfalle to Megafono via Ciminion
+265
+(2) an iterated unkeyed permutation P : Fn
+q →Fn
+q deﬁned as
+P(x) = Pr−1 ◦. . . ◦P1 ◦P0(x)
+(2)
+for round permutations P0, P1, . . . , Pr−1 over Fn
+q ,
+(3) a (sum) function S : Fn
+q →Fn
+q deﬁned as
+S(x) :=
+r−1
+
+i=0
+Pi ◦. . . ◦P1 ◦P0(x),
+(3)
+(4) a function Fk : F2n
+q
+→F2n
+q
+deﬁned as
+Fk(x) := Ck(x) + x,
+where Ck : F2n
+q
+→F2n
+q
+is a block cipher for a secret key k ∈F2n
+q , and
+(5) a rolling function R : F2n
+q
+→F2n
+q . For y, z ∈Fn, we further deﬁne
+Ri(y, z) := ϕi + R ◦Ri−1(y, z)
+for i ≥1, where ϕi ∈F2n
+q
+and R0(y, z) = (y, z).
+MegafonoK : Fn
+q →(Fn
+q )⋆is a PRF that takes as input an element of Fn
+q and
+returns an output of a desired length, deﬁned as
+MegafonoK(x) := Fk2(y, z) || Fk3(R1(y, z)) || · · · || Fki+2(Ri(y, z)) || · · ·
+for i ∈N, where y, z ∈Fn
+q are deﬁned as
+y := k1 + P(x + k0)
+and
+z := S(x + k0) .
+Remark 2. The main goal of Megafono is a secure variant of Ciminion without
+a heavy key schedule and without relying on independent subkeys (k0, k1, . . . ).
+For this reason, we only consider the case k = n and K(K) = (K, . . . , K, . . . ) in
+the following. Nevertheless, there may be applications in which a key schedule
+is acceptable, and hence we propose Megafono in its more general form.
+Remark 3. The function Fk is meant to play the role of P(e) (in the notation we
+have used to describe Farfalle and Ciminion). We use this notation to emphasize
+that the function is keyed and that we no longer require it to be a permutation.
+4.1
+Rationale of MEGAFONO
+Following its structure, Megafono shares several characteristics with Ciminion
+and 1/2×Farfalle. Indeed, many attacks on Farfalle (and Ciminion, 1/2×Farfalle)
+discussed in [10, Sect. 5] also apply to Megafono. Here we focus on the diﬀer-
+ences, by explaining and motivating the criteria for designing Megafono.
+
+266
+L. Grassi et al.
+Expansion Phase. We emphasize the following point which is crucial for under-
+standing the design rationale of Megafono. As in 1/2×Farfalle and Ciminion,
+the attacker has access to outputs wi = Fk (Ri(y, z)) for i ≥0 that depend on
+a single common unknown input (y, z) (in addition to the key). By exploiting
+the relation among several inputs of Fk and the knowledge of the corresponding
+outputs, the attacker can break the entire scheme. Examples of such attacks can
+be found in [15,19]. In this scenario, one attack consists of solving the system of
+equations {wi −Fk (Ri(y, z)) = 0}i≥0 with Gr¨obner bases. We provide details
+in Sect. 7.4 and point out that the cost depends on several factors, including
+(i) the number of variables, (ii) the number of equations, (iii) the degree of the
+equations, and (iv) the considered representative of the system of equations.
+Even–Mansour Construction. In Ciminion, the keyed permutation P is cho-
+sen in order to resemble a PRP. Indeed, since P is computed only once, it has
+little impact on the overall cost. Further, if P resembles a PRP, it is unlikely
+that an attacker can create texts with a special structure at the input of P(e).
+This allows for a simpliﬁed security analysis of the expansion phase, as it rules
+out attacks that require control of the inputs of P(e).
+By performing a key addition before the expansion phase, the ﬁrst part of
+the scheme becomes an Even–Mansour construction [29] of the form x →K +
+P(x + K). As proven in [20,28], an Even–Mansour scheme is indistinguishable
+from a random permutation up to qn/2 queries for K ∈Fn
+q , assuming both the
+facts that (i) the unkeyed permutation P behaves as a pseudo-random public
+permutation, and that (ii) the attacker knows both the inputs and outputs of
+the construction. Since n/2 · log2(q) is higher than our security level, this allows
+us to make a security claim on a subcomponent of the entire scheme, and so to
+further simplify the overall security analysis.
+Keyed Permutation in the Expansion Phase. In Farfalle, the ﬁnal key
+addition is crucial against attacks inverting the ﬁnal permutation P(e). However,
+an attacker can cancel the inﬂuence of the key by using the diﬀerences of two
+outputs if the key schedule is linear. For example, assume that the key schedule
+for the expansion phase is the identity map (as in Farfalle), and let x be the input
+of the expansion phase. Let yj = K + P(e)(Rj(x)) and yh = K + P(e)(Rh(x)) be
+two outputs of the expansion phase. Any diﬀerence of the form
+yj −yh = P(e)(Rj(x)) −P(e)(Rh(x))
+(4)
+results in a system of equations that is independent of the key or, equivalently,
+that depends only on the intermediate unknown state. This is an advantage
+when trying to solve the associated polynomial system with Gr¨obner bases.
+The key in Ciminion has been moved from the end of P(e) to the beginning,
+with the goal of preventing its cancellation by considering diﬀerences of the
+outputs. Inverting P(e) is instead prevented by introducing a ﬁnal truncation,
+which has the side eﬀect of reducing the output size and thus the throughput.
+
+From Farfalle to Megafono via Ciminion
+267
+Recently, in [8] the authors showed that moving the key inside of P(e) is
+actually not suﬃcient by itself for preventing the construction of a system of
+equations – similar to (Eq. 4) – which is independent of the secret key. For this
+reason, instead of working with a permutation-based non-invertible function, we
+propose to instantiate the last permutation with a block cipher Ck, deﬁned as an
+iterated permutation with a key addition in each round. In this way, we achieve
+the advantages of both 1/2×Farfalle and Ciminion. First, the output size of Ck is
+equal to the input size and it is not possible to invert Ck without guessing the key
+(as in 1/2×Farfalle). Secondly, a carefully chosen Ck will prevent the possibility
+to set up a system of equations for the expansion part that is independent of the
+key by considering diﬀerences of outputs (as in Ciminion).
+Feed-Forward in Expansion Phase and Nonlinear Rolling Function.
+The proposed changes in Megafono may allow new potential problems. Let
+vj = Ck (Rj(y, z)) and vl = Ck (Rl(y, z)) be two outputs of the expansion phase
+for a shared input (y, z) and let R′
+j−l denote the function satisfying R′
+j−l◦Rl(·) =
+Rj(·) for j > l. Since Ck(·) is invertible for each ﬁxed k, we have that
+∀j > l :
+Ck ◦R′
+j−l ◦C−1
+k (vl) = vj =⇒R′
+j−l ◦C−1
+k (vl) = C−1
+k (vj) .
+That is, it is possible to set up a system of equations that depend on the keys
+only (equivalently, that do not depend on the internal unknown state (y, z)). We
+therefore apply the feed-forward technique on the expansion phase, i.e., we work
+with (y, z) →Fk(y, z) := Ck(y, z) + (y, z), which prevents this problem.
+Assume moreover that the functions Ri, i ≥1 are linear. Given two outputs
+wj = Fk (Rj(y, z)) and wl = Fk (Rl(y, z)),
+R′
+j−l(wl) −wj = R′
+j−l (Fk (Rl(y, z))) −Fk (Rj(y, z))
+= R′
+j−l (Rl(y, z) + Ck (Rl(y, z))) −Rj(y, z) −Ck (Rj(y, z))
+= R′
+j−l (Rl(y, z)) + R′
+j−l (Ck (Rl(y, z))) −Rj(y, z) −Ck (Rj(y, z))
+= R′
+j−l (Ck (Rl(y, z))) −Ck (Rj(y, z))
+for each j, l with j > l. Similar equations can be derived for aﬃne Ri. Even if we
+are not aware of any attack that exploits such an equality, we suggest to work
+with a nonlinear rolling function. We point out that using a nonlinear function
+is also suggested by Farfalle’s designers in order to frustrate meet-in-the-middle
+attacks in the expansion phase (see [10, Sect. 5] for more details).
+Creating New Variables to Replace a Heavy Key Schedule. Due to the
+structure of 1/2×Farfalle and Ciminion, and under the assumption that P behaves
+like a PRP, an attacker cannot control the inputs and outputs of the expansion
+phase. However, (meet-in-the-middle) attacks that require only the knowledge
+of the outputs of such an expansion phase are possible, because multiple outputs
+are created via a single common (unknown) input. The cost of such an attack
+depends on the number of involved variables and on the degree of the equations.
+We start by examining how Farfalle and Ciminion prevent such an attack.
+
+268
+L. Grassi et al.
+Farfalle has been proposed for achieving the best performances in software
+and/or hardware implementations. For this reason, the ﬁeld considered in appli-
+cations is typically Fn
+2, where n is large (at least equal to the security level k).
+This implies that a large number of variables is needed to model the scheme
+as a polynomial system, which prevents the attack previously described, even
+when working with a low-degree permutation P(e). Depending on the details of
+the permutation, the number of variables could be minimized by working over
+an equivalent ﬁeld Fm
+2l where n = m · l, without crucially aﬀecting the overall
+degree of the equations that describe the scheme. For instance, 16 variables, as
+opposed to 128, are suﬃcient for describing AES, since all its internal opera-
+tions (namely, the S-box, ShiftRows, and MixColumns) are naturally deﬁned
+over F16
+28. This is not the case for SHA-3/Keccak, for which only the nonlinear
+layer (deﬁned as the concatenation of χ functions) admits a natural description
+over F5·l
+25 . In general, this scenario can easily be prevented when working with
+weak-arranged SPN schemes [17] and/or unaligned SPN schemes [14], for which
+this equivalent representation that minimizes the number of variables comes at
+the price of huge/prohibitive degrees of the corresponding functions.
+Ciminion has, on the other hand, been proposed for minimizing the mul-
+tiplicative complexity in the natural representation of the scheme over Fn
+q for
+large/huge q and small n, namely, the opposite of Farfalle. Hence, in order to
+work with low-degree permutations P(e), it is necessary to “artiﬁcially” increase
+the number of variables to prevent attacks. By using a heavy key schedule, one
+can guarantee that the algebraic relation between the keys k0, k1, k2, . . . is non-
+trivial, i.e., described by dense algebraic functions of high degree. Such a complex
+relation could not be exploited in an algebraic attack, and the attacker is then
+forced to treat the subkeys as independent variables. To summarize,
+– in Farfalle, the (MitM) attack on the expansion phase is prevented by working
+over a ﬁeld Fn
+p for a small prime p and a large integer n, and
+– in Ciminon, it is prevented by “artiﬁcially” increasing the number of variables,
+working with a heavy key schedule.
+None of the two approaches is suitable for our goal, since we mainly target appli-
+cations over a ﬁeld Fn
+p for a huge prime p in which a heavy key schedule cannot
+be computed eﬃciently. For this reason, we propose to increase the number of
+variables “for free” by reusing the computation needed to evaluate P. Since P is
+instantiated as an iterated permutation in practical use cases, we can fabricate
+a new Fn
+q element by considering the sum of all internal states of P. This corre-
+sponds to the deﬁnition of the function S in Eq. 3. In this way, we can double
+the size of the internal state (and so, the number of variables) for free.
+In more detail, for a given input x ∈Fn
+q , let y ∈Fn
+q be the output K+P(x+K),
+and let z ∈Fn
+q be the output S(x + K). Then y and z are not independent, since
+z = S(P−1(y−K)).4 However, for proper choices of P and S, the relation between
+the two variables is too complex to be exploited in practice, exactly as in the
+4 Note that it is not possible to deﬁne y as a function of z, since there is no way to
+uniquely recover x given z.
+
+From Farfalle to Megafono via Ciminion
+269
+case of the keys k0, k1, k2, . . . in Ciminion. As a result, the attacker is forced to
+consider both y and z as two independent variables, which is exactly our goal.
+Similar Techniques in the Literature. For completeness, we mention that the
+idea of reusing internal states of an iterated function is not new in the literature.
+E.g., let E(r)
+k
+be an iterated cipher of r ≥1 rounds. In [45], the authors set up
+a PRF F as the sum of the output of the iterated cipher after r rounds and the
+output after s rounds for s ̸= r, that is, F(x) = E(r)
+k (x) + E(s)
+k (x). Later on, a
+similar approach has been exploited in the Fork design strategy [6], which is an
+expanding invertible function deﬁned as x →E(r0)
+ˆk
+(E(s)
+k (x))∥E(r1)
+˜k
+(E(s)
+k (x)).
+4.2
+Modes of Use of MEGAFONO
+As in the case of Farfalle and Ciminion, Megafono can be used for key deriva-
+tion and key-stream generation. It allows amortizing the computation of the key
+among diﬀerent computations with the same initial master key K. Besides that,
+other possible use cases of Megafono are a wide block cipher, in which Mega-
+fono is used to instantiate the round function of a contracting Feistel scheme,
+and a (session-supporting) authenticated encryption scheme. Since these appli-
+cations were also proposed for Farfalle, we do not describe them here, but refer
+to [10, Sect. 4] for further details.
+We conclude by pointing out the following. Megafono is designed to be
+competitive for applications that require a natural description over Fn
+q , where q is
+a large prime of order at least 264. However, this does not mean that Megafono
+cannot be eﬃciently used in other applications, e.g., for designing schemes that
+aim to be competitive in software or hardware. From this point of view, the
+main diﬀerence with respect to Farfalle and Ciminion is the fact that Megafono
+requires two permutations with diﬀerent domains, namely, Fn
+q and F2n
+q . However,
+this is not a problem when e.g. considering the family of the SHA-3/Keccak
+permutations [12], deﬁned over Fn
+2 for n = 25 · 2l for l ∈{0, 1, . . . , 6}. In this
+case it is possible to instantiate P and Ck with two unkeyed/keyed permutations
+deﬁned over domains whose size diﬀers by a factor of two. The resulting PRF
+based on Megafono would be similar to the PRF Kravatte based on Farfalle
+proposed in [10, Sect. 7]. (Proposing concrete round numbers for this version is
+beyond the scope of this paper. Rather, we leave the open problem to evaluate
+and compare the performances of the two PRFs for future work.)
+5
+Speciﬁcation of HYDRA
+5.1
+The PRF HYDRA
+Let p > 263 (i.e., ⌈log2(p)⌉≥64) and let t ≥4 be the size of the output. The
+security level is denoted by κ, where 280 ≤2κ ≤min{p2, 2256}, and K ∈F4
+p is
+
+270
+L. Grassi et al.
+Fig. 3. The Hydra PRF (where r := RI −1 for aesthetic reasons).
+the master key. We assume that the data available to an attacker is limited to
+240 ≤2κ/2 ≤min{p, 2128}. For a plaintext P ∈Ft
+p, the ciphertext is deﬁned by
+C = Hydra([N || IV]) + P,
+where Hydra : F4
+p →Ft
+p is the Hydra PRF, IV ∈F3
+p is a ﬁxed initial value and
+N ∈Fp is a nonce (e.g., a counter).
+HYDRA. An overview of Hydra5 is given in Fig. 3, where
+(1) y := K + B([N || IV] + K) ∈F4
+p for a certain permutation B : F4
+p →F4
+p deﬁned
+in the following,
+(2) z ∈F4
+p deﬁned as z =: SK([N∥IV]) for the non-invertible function SK : F4
+p →F4
+p
+which corresponds to the sum of the internal states of K + B([N∥IV] + K),
+(3) HK : F8
+p →F8
+p is a keyed permutation deﬁned in Sect. 5.4, and
+(4) the functions Ri :
+
+F4
+p
+2 →F8
+p are deﬁned as
+∀i ≥1 :
+Ri(y, z) := ϕi + R ◦Ri−1(y, z) ,
+(5)
+where R0(y, z) = (y, z), and where R :
+
+F4
+p
+2 →F8
+p is the rolling function
+deﬁned in Sect. 5.3, and ϕi ∈F8
+p are random constants.
+We give an algorithmic description of Hydra in [34, Appendix E].
+5 The (Lernaean) Hydra is a mythological serpentine water monster with many heads.
+In our case, we can see B as the body of the Hydra, and the multiple parallel
+permutations HK as its multiple heads.
+
+From Farfalle to Megafono via Ciminion
+271
+5.2
+The Body of the HYDRA: The Permutation B
+The permutation B : F4
+p →F4
+p is deﬁned as
+B(x) = E5 ◦· · · ◦E2
+
+	
+
+4 times
+◦IRI−1 ◦· · · ◦I0
+
+	
+
+RI times
+◦E1 ◦E0
+ 	 
+2 times
+(ME × x),
+(6)
+where the external and internal rounds Ei, Ij : F4
+p →F4
+p are deﬁned as
+Ei(·) = ϕ(E,i) + ME × SE(·),
+Ij(·) = ϕ(I,j) + MI × SI(·)
+for i ∈{0, 1, . . . , 5} and each j ∈{0, 1, . . . , RI −1}, where ϕ(E,i), ϕ(I,j) ∈F4
+p are
+randomly chosen round constants (we refer to [34, Appendix E] for details on
+how we generate the pseudo-random constants).
+The Round Function E. Let d ≥3 be the smallest odd integer such that
+gcd(d, p −1) = 1. The nonlinear layer SE : F4
+p →F4
+p is deﬁned as
+SE(x0, x1, x2, x3) = (xd
+0, xd
+1, xd
+2, xd
+3) .
+We require ME ∈F4×4
+p
+to be an MDS matrix and recommend an AES-like matrix
+such as circ(2, 3, 1, 1) or circ(3, 2, 1, 1).
+The Round Function I. The nonlinear layer SI : F4
+p →F4
+p is deﬁned as
+SI(x0, x1, x2, x3) = (y0, y1, y2, y3) where
+yl = xl +
+
+3
+
+j=0
+(−1)j · xj
+2
++
+
+3
+
+j=0
+(−1)⌊j/2⌋· xj
+2
+for 0 ≤l ≤3 .
+(7)
+Note that the two vectors λ(0) := (1, −1, 1, −1), λ(1) := (1, 1, −1, −1) ∈F4
+p, that
+deﬁne the coeﬃcients in the sums of (7), are linearly independent and their
+entries sum to zero. This latter condition is needed to guarantee invertibility
+by Proposition 1. MI ∈F4×4
+p
+is an invertible matrix that satisﬁes the following
+conditions (which are justiﬁed in [34, Appendix G.2]):
+(a) for each i ∈{0, 1}: 3
+j=0 λ(i)
+j
+·
+3
+l=0 MI[j, l]
+
+̸= 0,
+(b) for each i ∈{0, 1} and each j ∈{0, 1, . . . , 3} :
+3
+l=0 λ(i)
+l
+· MI[l, j] ̸= 0, and
+(c) its minimal polynomial is of maximum degree and irreducible (for preventing
+inﬁnitely long subspace trails – see [34, Appendix H] for details).
+In particular, we suggest using an invertible matrix of the form
+MI =
+⎛
+⎜
+⎜
+⎜
+⎝
+μ(I)
+0,0
+1
+1
+1
+μ(I)
+1,0 μ(I)
+1,1
+1
+1
+μ(I)
+2,0
+1
+μ(I)
+2,2
+1
+μ(I)
+3,0
+1
+1
+μ(I)
+3,3
+⎞
+⎟
+⎟
+⎟
+⎠,
+(8)
+for which the conditions (a), (b), and (c) are satisﬁed (we suggest to use the tool
+given in [34, Appendix H.1] in order to check that the condition (c) is satisﬁed).
+
+272
+L. Grassi et al.
+5.3
+The Rolling Function
+The rolling function R :
+
+F4
+p
+2 →F8
+p is deﬁned as R(y, z) = MR × SR(y, z),
+where a round constant is included in the deﬁnition of Ri (Eq. (5)) and the
+nonlinear layer SR is deﬁned as
+SR(y0, y1, y2, y3, z0, z1, z2, z3) = (y0 + v, . . . , y3 + v, z0 + w, . . . , z3 + w),
+with v, w ∈Fp deﬁned as
+v =
+
+3
+
+i=0
+(−1)i · yi
+
+·
+
+3
+
+i=0
+(−1)⌊i
+2⌋· zi
+
+, w =
+
+3
+
+i=0
+(−1)i · zi
+
+·
+
+3
+
+i=0
+(−1)⌊i
+2⌋· yi
+
+,
+(9)
+and the linear layer MR ∈F8×8
+p
+is deﬁned as
+MR = diag(MI, MI) =
+ MI 04×4
+04×4 MI
+
+,
+where MI ∈F4×4
+p
+is the matrix just deﬁned for the body’s internal rounds.
+5.4
+The Heads of the HYDRA: The Permutation HK
+The keyed permutation HK : F8
+p →F8
+p is deﬁned as
+HK(y, z) = K′ + JRH−1 ◦(K′ + JRH−2) ◦. . . ◦(K′ + J1) ◦(K′ + J0)
+
+	
+
+RH times
+(y, z),
+where K′ = K || (ME × K) ∈F8
+p, and Jj : F8
+p →F8
+p is deﬁned as
+Ji(·) = ϕi + MJ × SJ (·),
+where ϕi ∈F8
+p are random round constants for each i ∈{0, 1, . . . , RH −1}. The
+nonlinear layer SJ (x0, x1, . . . , x7) = (y0, . . . , y7) is deﬁned by
+yl = xl +
+ 7
+
+h=0
+(−1)⌊h
+4 ⌋· xh
+2
+for 0 ≤l ≤7 .
+As in (7), we note that the coeﬃcients in the sum, (1, 1, 1, 1, −1, −1, −1, −1),
+sums to zero. MJ ∈F8×8
+p
+is an invertible matrix that fulﬁlls similar conditions to
+(a), (b), and (c) described in Sect. 5.2, i.e., (a) 7
+h=0(−1)h·
+7
+l=0 MJ [h, l]
+
+̸= 0,
+(b) 7
+l=0(−1)l ·MJ [l, h] ̸= 0, for h ∈{0, . . . , 7}, and (c) the minimal polynomial
+of MJ is of maximum degree and irreducible (as detailed in [34, Appendix H]).
+We recommend that MJ has a similar form to the matrix in Eq. 8 for eight rows
+and columns.
+
+From Farfalle to Megafono via Ciminion
+273
+5.5
+Number of Rounds
+In order to provide κ bits of security and assuming a data limit of 2κ/2, the
+number of rounds for the functions B and HK must be at least
+RI =
+
+1.125 ·
+
+max
+κ
+4 −log2(d) + 6, 	
+RI
+
+
+,
+RH = ⌈1.25 · max {24, 2 + R∗
+H}⌉,
+where
+
+RI
+and R∗
+H are the minimum positive integers that satisfy [34,
+Appendix G.2] and Eq. 12, respectively. Note that we have added a security
+margin of 12.5% for B and 25% for HK. In [34, Appendix A], we provide a script
+that returns the number of rounds RI and RH for given p and κ. For instance,
+with κ = 128, we get RI = 42 and RH = 39. A concrete instantiation of Hydra’s
+matrices for p = 2127 + 45 is given in in [34, Appendix C].
+About Related-Key Attacks. We do not claim security against related-key
+attacks, since the keys are randomly sampled in each computation, without any
+input or inﬂuence of a potential attacker. Thus, an attacker cannot know or
+choose any occurring relations between diﬀerent keys. Indeed, since we focus on
+MPC protocols in a malicious setting with either honest or dishonest majority
+(e.g., SPDZ [23,24]), any diﬀerence added to one shared key would be immedi-
+ately detected by the other parties in the protocol. We also emphasize that the
+same assumption has been made in previous related works [26,32].
+6
+Design Rationale of B, Ri and HK
+6.1
+The Body B
+The HADES Design Strategy. For B, we aim to retain the advantages of
+Hades [32], in particular the security arguments against statistical attacks and
+the eﬃciency of the partial middle rounds. The Hades strategy is a way to design
+SPN schemes over Ft
+q in which rounds with full S-box layers are mixed with
+rounds with partial S-box layers. The external rounds with full S-box layers (t S-
+boxes in each nonlinear layer) at the beginning and at the end of the construction
+provide security against statistical attacks. The rounds with partial S-box layers
+(t′ < t S-boxes and t−t′ identity functions) in the middle of the construction are
+more eﬃcient in settings such as MPC and help to prevent algebraic attacks. In
+all rounds, the linear layer is deﬁned via the multiplication of an MDS matrix.
+This strategy has recently been pushed to its limit in Neptune [33], a mod-
+iﬁed version of the sponge hash function Poseidon [31]. In such a case, instead
+of using the same matrix and the same S-box both for the external and the
+internal rounds, Neptune’s designers propose to use two diﬀerent S-boxes and
+two diﬀerent matrices for the external and internal rounds.
+The External Rounds of B. As in Hades, Poseidon, and Neptune, we use
+the external rounds to provide security against statistical attacks. In the case of
+Hades and Poseidon, this is achieved by instantiating the external full rounds
+
+274
+L. Grassi et al.
+with power maps x →xd for each of the t words. We recall that this nonlinear
+layer requires t · (hw(d) + ⌊log2(d)⌋−1) multiplications (see e.g. [33] for details).
+We adopt this approach for B, using 2 external rounds at the beginning and
+2 + 2 = 4 external rounds at the end, where 2 rounds are included as a security
+margin against statistical attacks (see [34, Appendix G.1] for more details). With
+respect to Hades and Poseidon, we do not impose that the number of external
+rounds at the beginning is equal to the number of external rounds at the end
+(even if we try to have a balance between them). Instead, we choose the number
+of external rounds to be even at each side in order to maximize the minimum
+number of active S-boxes from the wide-trail design strategy [22] (the minimum
+number of active S-boxes over two consecutive rounds is related to the branch
+number of the matrix that deﬁnes the linear layer).
+The Internal Rounds of B. To minimize our primary cost metric (the number
+of multiplications over Fp), we opt for using maps with degree 2l ≥2 which cost
+l ≥1 multiplications in the internal rounds. Indeed, let us compare the cost in
+terms of Fp multiplications in order to reach a certain degree Δ when using a
+round instantiated with the quadratic map x →x2, with one instantiated via
+an invertible power map x →xd with d ≥3, for odd d. Comparing the overall
+number of Fp multiplications, the ﬁrst option is the most competitive, since
+⌈log2(Δ)⌉= ⌈logd(Δ) · log2(d)⌉
+
+	
+
+using x→x2
+≤⌈logd(Δ)⌉· (⌊log2(d)⌋+ hw(d) −1)
+
+	
+
+using x→xd
+,
+where ⌈logd(Δ) · log2(d)⌉≤⌈logd(Δ)⌉· ⌈log2(d)⌉and ⌊log2(d)⌋+ hw(d) −1 ≥
+⌊log2(d)⌋+1 = ⌈log2(d)⌉. For example, consider d = 3, Δ = 2128. With quadratic
+maps we need 128 Fp multiplications to reach degree Δ. In the second case, 162
+Fp multiplications are needed, requiring 27% more multiplications in total.
+Nonlinear Layer. However, x →x2 is not invertible, which may aﬀect the secu-
+rity. Therefore, we use the quadratic map in a mode that preserves the invert-
+ibility, as in a Feistel or Lai–Massey construction [43]. The latter over F2
+q is
+deﬁned as (x, y) →(x + F(x −y), y + F(x −y)), where F : Fq →Fq. Gen-
+eralizations over Fn
+p have recently been proposed [33], including one deﬁned as
+(x0, x1, . . . , xn−1) →(y0, y1, . . . , yn−1), where yi = xi + F
+n−1
+j=0 (−1)j · xj
+
+for
+i ∈{0, 1, . . . , n −1} and even n ≥3. This can be further generalized as follows.
+Proposition 1. Let q = ps, where p ≥3 is a prime and s is a positive integer,
+and let n ≥2. Given 1 ≤l ≤n −1, let λ(i)
+0 , λ(i)
+1 , . . . , λ(i)
+n−1 ∈Fq be such that
+n−1
+j=0 λ(i)
+j
+= 0 for i ∈{0, 1, . . . , l−1}. Let F : Fl
+q →Fq. The Lai-Massey function
+F : Fn
+q →Fn
+q deﬁned as F(x0, . . . , xn−1) = (y0, . . . , yn−1) is invertible when
+yh = xh +F
+⎛
+⎝
+n−1
+
+j=0
+λ(0)
+j
+· xj,
+n−1
+
+j=0
+λ(1)
+j
+· xj, . . . ,
+n−1
+
+j=0
+λ(l−1)
+j
+· xj
+⎞
+⎠, for 0 ≤h ≤n−1 .
+
+From Farfalle to Megafono via Ciminion
+275
+We provide the proof in [34, Appendix F.1]. No conditions are imposed on F.
+Even if not strictly necessary, we choose {λ(0)
+j }n−1
+j=0 , . . . , {λ(l−1)
+j
+}n−1
+j=0 such that
+they are linearly independent. Since we require n−1
+j=0 λ(i)
+j
+= 0 for i ∈{0, . . . , l −
+1}, there can be at most l = n −1 linearly independent {λ(i)
+j }-vectors.
+To reduce the number of rounds and matrix multiplications, we chose a gener-
+alized Lai–Massey construction instantiated with a nonlinear function of degree
+4 that can be computed with 2 multiplications only.
+Linear Layer. The Lai–Massey construction allows for invariant subspaces [48].
+Hence, it is crucial to choose the matrix MI in order to break them. For this
+goal, in [34, Appendix H], we show how to adapt the analysis/tool proposed
+in [36,37] for breaking arbitrarily long subspace trails for P-SPN schemes to the
+case of the generalized Lai–Massey constructions. In particular, based on [36,
+Proposition 13], we show that this result can be always achieved by choosing a
+matrix for which the minimal polynomial is of maximum degree and irreducible.
+Moreover, the interpolation polynomial must be dense. Therefore, we require
+(a) for i ∈{0, 1, . . . , l −1} :
+n−1
+j=0 λ(i)
+j
+·
+n−1
+k=0 MI[j, k]
+
+̸= 0,
+(b) for i ∈{0, 1, . . . , l −1} and j ∈{0, 1, . . . , n −1} :
+n−1
+k=0 λ(i)
+k · MI[k, j] ̸= 0.
+We give further details on these two conditions in [34, Appendix G.2].
+6.2
+The Heads HK
+As in Farfalle and Ciminion, the attacker knows the outputs of the expansion
+phase of Megafono, but cannot choose them (to e.g. set up a chosen-ciphertext
+attack). By designing B in order to resemble a PRP, the attacker cannot know
+or choose the inputs of HK (i.e., the output of B). Further, it is not possible to
+choose inputs of B which result in speciﬁc statistical/algebraic properties at the
+inputs of HK. This severely limits the range of attacks that may work at the
+expansion phase of Megafono, and so of Hydra.
+As a result, we ﬁnd that the possible attacks are largely algebraic in nature,
+such as using Gr¨obner bases. The idea of this attack is to construct a system
+of equations that links the inputs and the outputs of HK in order to ﬁnd the
+intermediate variables and the key. In our case, this corresponds to 12 variables:
+eight to represent the input and four variables related to the key. With this
+number of variables over such a large ﬁeld (relative to the security level), we
+will see in Sect. 7.4 that it will not be necessary for HK to reach its maximal
+degree. Since HK is an iterated permutation, it is also possible to introduce new
+variables at the outputs of each round Ji in order to reduce the overall cost
+of the Gr¨obner basis attack. In such a case, the cost of the attack depends on
+min{deg(J −1), deg(J )}. Indeed, since we can work at round level, each round
+function y = J (x) can be rewritten as J −1(y) = x, and the cost of the attack
+depends on the minimum degree among these equivalent representations.
+
+276
+L. Grassi et al.
+Therefore, we instantiate the round function of HK with a low-degree func-
+tion, in particular a generalized Lai–Massey construction of degree 2 (where the
+matrix that deﬁnes the linear layer satisﬁes analogous condition to the ones given
+for MI). An alternative approach (used e.g. in Rescue) applies both high-degree
+and low-degree nonlinear power maps (recalled in Sect. 2.2). It is eﬃcient in the
+MPC setting, and would prompt HK to quickly reach its maximal degree. How-
+ever, since reaching the maximal degree will not be a primary concern of ours
+(due to the high number of variables), we opt for the former choice of round
+functions, which allows Hydra to be fast in the plain setting as well.
+6.3
+The Rolling Functions Ri
+Finally, we consider a nonlinear rolling function, as already done in Xooﬀf [21]
+and Ciminion. This has multiple advantages, such as frustrating the meet-in-
+the-middle attacks on the expansion phase described in [15,19] and previously
+recalled in Sect. 4.1, and destroying possible relation between consecutive outputs
+due to the feed-forward operation (see Sect. 4.1 for details).
+We work with a rolling function that is diﬀerent from what is used in the
+heads, in order to break symmetry. The following (generalized) result ensures
+the invertibility of the chosen rolling function.
+Proposition 2. Let n = 2 · n′ ≥4, with n′ ≥2, and {λi, λ′
+i, ϕi, ϕ′
+i}0≤i≤n′−1 be
+a set of constants in Fp \ {0} satisfying n′−1
+i=0 λi = n′−1
+i=0 λ′
+i = n′−1
+i=0 ϕ′
+i = 0.
+Let furthermore G, H : Fp →Fp be any Fp functions. Then the function F over
+Fn
+p deﬁned as F(x0, . . . , xn−1) = (y0, . . . , yn−1) is invertible for
+yi :=
+⎧
+⎨
+⎩
+xi +
+n−1
+j=n′ ϕj−n′ · xj
+
+· G
+n′−1
+j=0 λj · xj
+
+if i ∈{0, . . . , n′ −1},
+xi +
+n′−1
+j=0 ϕ′
+j · xj
+
+· H
+n−1
+j=n′ λ′
+j−n′ · xj
+
+if i ∈{n′, . . . , n −1}.
+The proof is given in [34, Appendix F.2]. We impose that (λ0, . . . , λn′−1),
+(ϕ′
+0, . . . , ϕ′
+n′−1) ∈Fn′
+p
+and (ϕ0, . . . , ϕn′−1), (λ′
+0, . . . , λ′
+n′−1) ∈Fn′
+p
+are pairwise
+linearly independent, in order to guarantee that the variables v and w in Eq. 9
+are independent (i.e., there is no ω ∈Fp such that v = ω · w) with high proba-
+bility.
+As before, the matrix MR is chosen in order to break inﬁnitely long invariant
+subspace trails. Since the constants that deﬁned the (generalized) Lai-Massey
+functions (namely, (1, −1, 1, −1) and (1, 1, −1, −1) ∈F4
+p) are the same for the
+rolling function and for the body’s internal rounds, we deﬁned MR via MI.
+7
+Security Analysis
+Inspired by Ciminion, we choose the number of rounds such that x →K+B(x+K)
+behaves like a PRP (where an attacker is free to choose its inputs and outputs)
+and no attack works on the expansion phase of Hydra. In the following, we
+motivate this choice and justify the number of rounds given in Sect. 5.5.
+
+From Farfalle to Megafono via Ciminion
+277
+7.1
+Overview
+Attacks on the Body. Attacks taking into account the relations between the
+inputs and the outputs of Hydra are in general harder than the attacks taking
+into account the relations between the inputs and the outputs of B. Hence, if an
+attacker is not able to break x →K + B(x + K) if they have full control over the
+inputs and outputs, they cannot break Hydra by exploiting the relation of its
+inputs and outputs. Based on this fact, the chosen number of rounds guarantees
+that x →K + B(x + K) resembles a PRP against attacks with a computational
+complexity of at most 2κ and with a data complexity of at most 2κ/2.
+We point out that this approach results in a very conservative choice for
+the number of rounds of B. Indeed, in a realistic attack scenario the outputs of
+x →K + B(x + K) are hidden by HK, and the overall design will still be secure if
+B is instantiated with a smaller number of rounds. However, B is computed only
+once, and the overall cost grows linearly with the number of computed heads HK.
+Hence, we ﬁnd that the beneﬁts of allowing us to simplify the security analysis
+of the heads outweighs this modest increase in computational cost.
+Attacks on the Heads. In order to be competitive in MPC, we design HK such
+that Hydra is secure under the assumption that K+B(x+K) behaves like a PRP.
+In particular, the attacker only knows the outputs of the HK calls, and cannot
+choose any inputs with particular statistical or algebraic properties. Hence, the
+only possibility is to exploit the relations among the outputs of consecutive HK
+calls, which originate from the same (unknown) input y, z ∈F4
+p. This can be
+used when constructing systems of polynomial equations from HK. Indeed, we
+will later see that the most competitive attacks are Gr¨obner basis ones.
+7.2
+Security Analysis of B
+Since B is heavily based on the Hades construction, its security analysis is also
+similar. In particular, the external rounds of a Hades design provide security
+against statistical attacks. Since this part of B is the same as in HadesMiMC,
+the security analysis proposed in [32, Sect. 4.1 – 5.1] also applies here. The inter-
+nal rounds of B are instantiated with a Lai–Massey scheme, while the internal
+rounds of HadesMiMC are instantiated with a partial SPN scheme. However,
+the security argument proposed for HadesMiMC in [32, Sect. 4.2 – 5.2] regarding
+algebraic attacks can be easily adapted to the case of B.
+We refer to [34, Appendix G] for more details. We point out that x →K +
+B(x+K) is an Even–Mansour construction in which B is independent of the key,
+while a key addition takes place among every round in HadesMiMC. This fact
+is taken care of in the analysis proposed in [34, Appendix G], keeping in mind
+that the Even–Mansour construction cannot guarantee more than 2·log2(p) ≥κ
+bits of security [20,28] (this value is reached when B resembles a PRP).
+Finally, in [34, Appendix H] we show how to choose the matrix that deﬁnes
+the linear layer of the internal rounds of B in order to break the invariant sub-
+
+278
+L. Grassi et al.
+space trails of the Lai–Massey scheme, by modifying the strategy proposed in [36]
+for the case of partial SPN schemes.
+7.3
+Statistical and Invariant Subspace Attacks on HK
+It is infeasible for the attacker to choose inputs {xj}j for B such that the cor-
+responding outputs {yj}j satisfy certain statistical/algebraic properties, which
+makes it hard to mount statistical attacks on the heads HK. However, it is still
+desirable that HK has good statistical properties.
+To this end, the matrix MJ ∈F8×8
+p
+is chosen such that no (invariant) sub-
+space trail and probability-1 truncated diﬀerential can cover more than 7 rounds
+(see [34, Appendix H]). Hence, the probability of each diﬀerential characteristic
+over RH rounds is at most p−⌊RH/8⌋, since the maximum diﬀerential probability
+of SJ is p−1 (see [34, Appendix I.1]) and at least one SJ function is active every
+8 rounds. By choosing RH ≥24, the probability of each diﬀerential characteristic
+is at most p−3 ≤2−1.5κ, which we conjecture to be suﬃcient for preventing dif-
+ferential and, more generally, other statistical attacks in the considered scenario.
+7.4
+Algebraic and Gr¨obner Basis Attacks on HK
+It is not possible to mount an interpolation attack, since the input y, z is unknown
+and the polynomials associated with the various heads diﬀer for each i. Thus,
+the remainder of this section will be devoted to Gr¨obner basis attacks.
+Note that the variables y and z are clearly not independent, as they both
+depend on x. Moreover, z can be written as a function of y (the converse does not
+hold, since the function that outputs z is, in general, not invertible). However,
+these functions would be dense and reach maximum degree, which implies that
+the cost of an attack making use of them would be prohibitively expensive.
+Hence, we will treat y and z as independent variables in the following.
+Preliminaries: Gr¨obner Basis Attacks. The most eﬃcient methods for solv-
+ing multivariate systems over large ﬁnite ﬁelds involve computing a Gr¨obner basis
+associated with the system. We refer to [18] for details on the underlying theory.
+Computing a Gr¨obner basis (in the grevlex order) is, in general, only one
+of the steps involved in solving a system of polynomials. In our setting, an
+attacker is able to set up an overdetermined polynomial system where a unique
+solution can be expected. In this case it is often possible to read the solution
+directly from the grevlex Gr¨obner basis, which is why we will solely focus on the
+step of computing said basis. There are no general complexity estimates for the
+running time of state-of-the-art Gr¨obner basis algorithms such as F4 [30]. There
+is, however, an important class of polynomial systems, known as semi-regular
+(see [7] for a deﬁnition), that is well understood. For a semi-regular system the
+degree of the polynomials encountered in F4 is expected to reach the degree
+of regularity Dreg, which in this case can be deﬁned as the index of the ﬁrst
+
+From Farfalle to Megafono via Ciminion
+279
+non-positive coeﬃcient in the series
+H(z) =
+ne
+i=1(1 −zdi)
+(1 −z)nv
+,
+(10)
+for ne polynomials in nv variables, where di is the degree of the i-th equation.
+The estimated complexity of computing a grevlex Gr¨obner basis is then
+O
+Dreg + nv
+nv
+ω
+,
+(11)
+where 2 ≤ω ≤3 is the linear algebra constant representing the cost of matrix
+multiplication and Dreg the associated degree of regularity [7].
+Gr¨obner Basis Attacks on HK. There are many possible ways to represent
+a cryptographic construction as a system of multivariate polynomials, and this
+choice impacts the performance of the Gr¨obner basis algorithm. Note that the
+degree of HK(Ri(y, z)) increases with i, and it is therefore not possible to col-
+lect enough polynomials for solving by direct linearization at a relatively small
+degree, as discussed in [34, Appendix G.2]. Instead, we ﬁnd that the most eﬃ-
+cient attack includes only HK(y, z) and HK(R1(y, z)) in a representation that
+introduces new variables and equations for each round. While this increases the
+number of variables, it keeps the degree low, and allows exploitation of the small
+number of multiplications in each round. We outline our ﬁndings in the following,
+and we refer to [34, Appendix I.2] for more details on the underlying arguments.
+The most promising intermediate modeling can be reduced to a system of
+2RH + 2 quadratic equations in 2RH −2 variables, where RH is the number of
+rounds in HK. Further analysis shows that the tested systems are semi-regular,
+and in particular that the degrees encountered in the F4 algorithm are well-
+estimated by the series H(z) in Eq. 10. Solving times are also comparable to that
+of solving randomly generated semi-regular systems with the same parameters.
+Still, the systems from HK are sparser than what can be expected from randomly
+generated systems. To ensure that this cannot be exploited, we add 2 extra
+rounds on top of this baseline. Hence, for a security level κ we follow Eq. 11 and
+deﬁne R∗
+H = R∗
+H(κ) to be the minimum positive integer such that
+2R∗
+H −2 + Dreg
+2R∗
+H −2
+2
+≥2κ ,
+(12)
+where Dreg is computed from Eq. 10 using ne = 2R∗
+H + 2 and nv = 2R∗
+H −2. We
+claim that R∗
+H(κ) + 2 is suﬃcient to provide κ-bit security against this attack.
+Concrete Example for κ = 128. In this case we get R∗
+H(128) = 29, which in
+turn yields ne = 60 quadratic equations in nv = 56 variables. By expanding the
+resulting series in Eq. 10, we get Dreg = 23 for this system, and the security
+estimate
+56+23
+56
+2 ≈2130.8 follows. Thus, we claim that R∗
+H(128) + 2 = 31 is
+suﬃcient to provide 128-bit security against Gr¨obner basis attacks.
+
+280
+L. Grassi et al.
+Table 1. Online and oﬄine phase performance in MPC for several constructions with
+state sizes t using a secret shared key. Prec is the number of precomputed elements
+(multiplication triples, squares, inverses). Depth describes the number of online com-
+munication rounds. The runtime is averaged over 200 runs.
+Oﬄine
+Online
+Combined
+t
+Cipher
+Rounds
+Prec.
+Time
+Data
+Depth Time
+Data
+Time
+Data
+ms
+MB
+ms
+kB
+ms
+MB
+8 Hydra
+6, 42, 39
+171
+39.99
+3.86
+131
+6.81
+5.37
+46.80
+3.87
+Ciminion
+90, 14
+867
+227.47
+19.55
+735
+21.81
+28.02
+249.29
+19.58
+HadesMiMC 6, 71
+238
+52.66
+5.37
+79
+17.58
+5.99
+70.24
+5.38
+Rescue
+10
+960
+254.80
+21.65
+33
+12.65
+23.32
+267.45
+21.68
+32 Hydra
+6, 42, 39
+294
+72.67
+6.63
+134
+13.36
+9.69
+86.03
+6.64
+Ciminion
+90, 14
+3207
+910.11
+72.30
+2895
+84.37
+103.29
+994.47
+72.41
+HadesMiMC 6, 71
+526
+137.49
+11.87
+79
+225.86
+13.29
+363.35
+11.88
+Rescue
+10
+3840
+1253.76
+86.60
+33
+109.80
+92.82
+1363.56
+86.70
+64 Hydra
+6, 42, 39
+458
+119.07
+10.33
+138
+20.57
+15.45
+139.64
+10.35
+Ciminion
+90, 14
+6327
+2262.55
+142.64
+5775
+178.66
+203.64
+2441.21
+142.84
+HadesMiMC 6, 71
+910
+251.44
+20.53
+79
+899.55
+23.02
+1150.99
+20.55
+Rescue
+10
+7680
+2851.56
+173.20
+33
+402.34
+185.50
+3253.90
+173.39
+128 Hydra
+6, 42, 39
+786
+206.08
+17.72
+146
+37.49
+26.97
+243.58
+17.75
+Ciminion
+90, 14
+12567
+4854.43
+283.32
+11535
+328.79
+404.34
+5183.22
+283.72
+HadesMiMC 6, 71
+1678
+463.59
+37.85
+79
+4371.02
+42.47
+4834.61
+37.89
+Rescue
+10
+15360
+5934.39
+346.40
+33 1549.16
+370.84
+7483.55
+346.77
+8
+HYDRA in MPC Applications
+In this section, we evaluate the performance of Hydra compared to other PRFs
+in MPC use cases which assume a secret shared key. We implemented Hydra
+and its competitors using the MP-SPDZ library [41]6 (version 0.2.8, ﬁles can
+be found in [34, Appendix A]) and benchmark it using SPDZ [23,24] with the
+MASCOT [42] oﬄine phase protocol. Concretely, we benchmark a two-party
+setting in a simulated LAN network (1 Gbit/s and ≪1 ms average round-trip
+time) using a Xeon E5-2669v4 CPU (2.6 GHz), where each party is assigned
+only 1 core. SPDZ, and therefore all the PRFs, is instantiated using a 128-bit
+prime p, with gcd(3, p −1) = 1, thus ensuring that x →x3 is a permutation, as
+required by HadesMiMC, Rescue, MiMC, GMiMC, and Hydra. All PRFs are
+instantiated with κ = 128. Hydra requires 4 · RE · (hw(d) + ⌊log2(d)⌋−1) + 2 ·
+RI + (RH + 2) ·
+ t
+8
+
+−2 multiplications, hence 130 + 41 ·
+ t
+8
+
+in this setting.
+We implemented all x3 evaluations using the technique from [35], which
+requires one precomputed Beaver triple, one precomputed shared random square,
+and one online communication round. Furthermore, we implemented x1/3 (as
+used in Rescue) using the technique described in [5]. MP-SPDZ allows to precom-
+pute squares and inverses from Beaver triples in an additional communication
+round in the oﬄine phase (see Sect. 2).
+6 https://github.com/data61/MP-SPDZ/.
+
+From Farfalle to Megafono via Ciminion
+281
+In Table 1, we compare the performance of Hydra to some competitors when
+encrypting t plaintext words,7 for a comparison with more PRFs we refer to [34,
+Appendix J]. We give concrete runtimes, as well as the amount of data transmit-
+ted by each party during the evaluation of the oﬄine and online phases. Further,
+we give the combined number of triples, squares, and inverses which need to be
+created during the oﬄine phase, as well as the total number of communication
+rounds (i.e., the depth of the PRF) in the online phase. In the oﬄine phase only
+the required number of triples, squares, and inverses is precomputed.
+Table 1 shows that the oﬄine phase dominates both the overall runtime and
+the total communication between the parties. Hydra always requires less pre-
+computation than Ciminion, HadesMiMC, and Rescue, hence, it has a signiﬁ-
+cantly more eﬃcient oﬄine phase with the advantage growing with t. Looking at
+the online phase, Hydra is faster and requires less communication than its com-
+petitors, which is due to the smaller number of multiplications and the better
+plain performance. While Ciminion is slow due to the expensive key schedule,
+HadesMiMC requires many expensive MDS matrix multiplications (see [34,
+Appendix K]) and Rescue requires expensive x1/d evaluations.
+Table 2. Online and oﬄine phase performance in MPC for several constructions with
+state sizes t using a secret shared key. Prec is the number of precomputed elements
+(multiplication triples, squares, inverses). Depth describes the number of online com-
+munication rounds. The runtime is averaged over 200 runs.
+Oﬄine
+Online
+Combined
+t
+Cipher
+Rounds
+Prec. Time
+Data
+Depth Time
+Data
+Time
+Data
+ms
+MB
+ms
+kB
+ms
+MB
+8 Hydra
+6, 42, 39
+171
+39.99
+3.86
+131
+6.81
+5.37
+46.80
+3.87
+Ciminion (No KS)a 90, 14
+148
+35.64
+3.34 107
+3.98
+5.02
+39.62
+3.35
+Rescue (No KS)a
+10
+480
+129.47
+10.83
+33
+6.95
+11.80
+136.42
+10.84
+32 Hydra
+6, 42, 39
+294
+72.67
+6.63 134
+13.36
+9.69
+86.03
+6.64
+Ciminion (No KS)a 90, 14
+328
+80.79
+7.40
+119
+5.42
+11.16
+86.21
+7.41
+Rescue (No KS)a
+10
+1920
+538.19
+43.30
+33
+47.35
+46.74
+585.54
+43.35
+64 Hydra
+6, 42, 39
+458
+119.07
+10.33 138
+20.57
+15.45
+139.64
+10.35
+Ciminion (No KS)a 90, 14
+568
+154.38
+12.81
+135
+8.05
+19.35
+162.42
+12.83
+Rescue (No KS)a
+10
+3840
+1226.39
+86.60
+33
+144.14
+93.34
+1370.53
+86.70
+128 Hydra
+6, 42, 39
+786
+206.08
+17.72 146
+37.49
+26.97
+243.58
+17.75
+Ciminion (No KS)a 90, 14
+1048
+274.90
+23.63
+167
+10.70
+35.74
+285.60
+23.67
+Rescue (No KS)a
+10
+7680
+2943.21
+173.20
+33
+737.84
+186.52
+3681.05
+173.39
+a Assumes round keys are present, i.e., no key schedule computation in MPC.
+For the sake of completeness, in Table 2 we also compare the performance
+of Hydra to Ciminion and Rescue in the case in which the round keys are
+already present. Comparing Hydra to Ciminion without a key schedule, one
+7 The use cases discussed in this paper basically boil down to encrypting many plain-
+text words using a secret-shared key. Hence, this benchmark is also representative
+for the use cases from Sect. 2.1.
+
+282
+L. Grassi et al.
+can observe that Ciminion’s online phase is always faster. However, Hydra’s
+number of multiplications scales signiﬁcantly better than Ciminion’s, hence, for
+larger state sizes (t ≥32) Hydra has a faster oﬄine phase performance, as well
+as less communication in the online phase.
+To summarize, our experiments show that Hydra is the most eﬃcient PRF in
+both phases of the MPC protocols. Only if we discard the key schedules, Ciminion
+is competitive for small state sizes t < 32. Thus, using Hydra leads to a signiﬁ-
+cant performance improvement in MPC use cases, especially in high-throughput
+conditions. In applications, where the oﬄine phase plays a minor role, e.g., when
+triples are continuously precomputed and rarely consumed, Hydra still leads
+to an performance advantage due to requiring less communication between the
+parties, however, the advantage will be smaller.
+The Eﬀect of the Network. The performance of MPC applications depends
+on the network speed. A lower bandwidth leads to a larger eﬀect of the com-
+munication between the parties on the overall performance. Moreover, a longer
+round-trip time leads to larger contributions of the number of communication
+rounds. In the oﬄine phase only shared correlated randomness is created, thus
+the network performance aﬀects all PRFs in the same way. Consequently, if a
+PRF has a faster oﬄine phase in the LAN setting, it is also faster in a slower net-
+work environment. The situation is diﬀerent in the online phase: In fast networks,
+the online phase performance is mostly determined by the plain runtime. In a
+slower network, more time is spent waiting for the network to deliver packages.
+Hydra has a small number of multiplications, hence a preferable oﬄine phase
+in all networks. Further, it requires little communication in the online phase,
+making it suitable for low-bandwidth networks. However, it has a larger depth
+compared to HadesMiMC and Rescue, leading to worse runtimes in high-delay
+networks where runtime is dominated by round trip time × depth. Ciminion’s
+key schedule has a large depth and requires lots of communication between the
+parties (compare Data column in Table 1 and Table 2). Thus, Ciminion is only
+competitive in slow networks if the key schedule does not need to be computed.
+Overall, Hydra has a good balance between a small number of multiplications,
+little communication, decent plain performance, and a reasonable depth, making
+it the preferred PRF for MPC applications in most network environments.
+Acknowledgments. Lorenzo Grassi is supported by the European Research Council
+under the ERC advanced grant agreement under grant ERC-2017-ADG Nr. 788980
+ESCADA. Morten Øygarden has been funded by The Research Council of Norway
+through the project “qsIoT: Quantum safe cryptography for the Internet of Things”.
+Roman Walch is supported by the ”DDAI” COMET Module within the COMET –
+Competence Centers for Excellent Technologies Programme, funded by the Austrian
+Federal Ministry for Transport, Innovation and Technology (bmvit), the Austrian Fed-
+eral Ministry for Digital and Economic Aﬀairs (bmdw), the Austrian Research Pro-
+motion Agency (FFG), the province of Styria (SFG) and partners from industry and
+academia. The COMET Programme is managed by FFG.
+
+From Farfalle to Megafono via Ciminion
+283
+References
+1. Abram, D., Damg˚ard, I., Scholl, P., Trieﬂinger, S.: Oblivious TLS via multi-party
+computation. In: Paterson, K.G. (ed.) CT-RSA 2021. LNCS, vol. 12704, pp. 51–74.
+Springer, Cham (2021). https://doi.org/10.1007/978-3-030-75539-3 3
+2. Albrecht, M.R., et al.: Feistel structures for MPC, and more. In: Sako, K., Schnei-
+der, S., Ryan, P.Y.A. (eds.) ESORICS 2019. LNCS, vol. 11736, pp. 151–171.
+Springer, Cham (2019). https://doi.org/10.1007/978-3-030-29962-0 8
+3. Albrecht, M., Grassi, L., Rechberger, C., Roy, A., Tiessen, T.: MiMC: eﬃcient
+encryption and cryptographic hashing with minimal multiplicative complexity. In:
+Cheon, J.H., Takagi, T. (eds.) ASIACRYPT 2016. LNCS, vol. 10031, pp. 191–219.
+Springer, Heidelberg (2016). https://doi.org/10.1007/978-3-662-53887-6 7
+4. Albrecht, M.R., Rechberger, C., Schneider, T., Tiessen, T., Zohner, M.: Ciphers
+for MPC and FHE. In: Oswald, E., Fischlin, M. (eds.) EUROCRYPT 2015. LNCS,
+vol. 9056, pp. 430–454. Springer, Heidelberg (2015). https://doi.org/10.1007/978-
+3-662-46800-5 17
+5. Aly, A., Ashur, T., Ben-Sasson, E., Dhooghe, S., Szepieniec, A.: Design of
+symmetric-key primitives for advanced cryptographic protocols. IACR Trans.
+Symm. Cryptol. 2020(3), 1–45 (2020). https://doi.org/10.13154/tosc.v2020.i3.1-
+45
+6. Andreeva, E., Lallemand, V., Purnal, A., Reyhanitabar, R., Roy, A., Viz´ar, D.:
+Forkcipher: a new primitive for authenticated encryption of very short messages.
+In: Galbraith, S.D., Moriai, S. (eds.) ASIACRYPT 2019. LNCS, vol. 11922, pp.
+153–182. Springer, Cham (2019). https://doi.org/10.1007/978-3-030-34621-8 6
+7. Bardet, M., Faug´ere, J.C., Salvy, B., Yang, B.Y.: Asymptotic behaviour of the
+degree of regularity of semi-regular polynomial systems. In: Proceedings of MEGA,
+vol. 5 (2005)
+8. Bariant, A., Bouvier, C., Leurent, G., Perrin, L.: Algebraic attacks against some
+arithmetization-oriented primitives. IACR Trans. Symmetric Cryptol. 2022(3),
+73–101 (2022). https://doi.org/10.46586/tosc.v2022.i3.73-101
+9. Beaver, D.: Eﬃcient multiparty protocols using circuit randomization. In: Feigen-
+baum, J. (ed.) CRYPTO 1991. LNCS, vol. 576, pp. 420–432. Springer, Heidelberg
+(1992). https://doi.org/10.1007/3-540-46766-1 34
+10. Bertoni, G., Daemen, J., Hoﬀert, S., Peeters, M., Assche, G.V., Keer, R.V.: Farfalle:
+parallel permutation-based cryptography. IACR Trans. Symm. Cryptol. 2017(4),
+1–38 (2017). https://doi.org/10.13154/tosc.v2017.i4.1-38
+11. Bertoni, G., Daemen, J., Peeters, M., Van Assche, G.: On the indiﬀerentiability
+of the sponge construction. In: Smart, N. (ed.) EUROCRYPT 2008. LNCS, vol.
+4965, pp. 181–197. Springer, Heidelberg (2008). https://doi.org/10.1007/978-3-
+540-78967-3 11
+12. Bertoni, G., Daemen, J., Peeters, M., Van Assche, G.: The KECCAK reference
+(2011). https://keccak.team/ﬁles/Keccak-reference-3.0.pdf
+13. Bogetoft, P., Damg˚ard, I., Jakobsen, T., Nielsen, K., Pagter, J., Toft, T.: A prac-
+tical implementation of secure auctions based on multiparty integer computation.
+In: Di Crescenzo, G., Rubin, A. (eds.) FC 2006. LNCS, vol. 4107, pp. 142–147.
+Springer, Heidelberg (2006). https://doi.org/10.1007/11889663 10
+14. Bordes, N., Daemen, J., Kuijsters, D., Van Assche, G.: Thinking outside the super-
+box. In: Malkin, T., Peikert, C. (eds.) CRYPTO 2021. LNCS, vol. 12827, pp. 337–
+367. Springer, Cham (2021). https://doi.org/10.1007/978-3-030-84252-9 12
+
+284
+L. Grassi et al.
+15. Chaigneau, C., et al.: Key-recovery attacks on full Kravatte. IACR Trans. Symm.
+Cryptol. 2018(1), 5–28 (2018). https://doi.org/10.13154/tosc.v2018.i1.5-28
+16. Chase, M., et al.: Post-quantum zero-knowledge and signatures from symmetric-
+key primitives. In: Thuraisingham, B.M., Evans, D., Malkin, T., Xu, D. (eds.)
+ACM CCS 2017, pp. 1825–1842. ACM Press (Oct/Nov 2017). https://doi.org/10.
+1145/3133956.3133997
+17. Cid, C., Grassi, L., Gunsing, A., L¨uftenegger, R., Rechberger, C., Schofnegger,
+M.: Inﬂuence of the linear layer on the algebraic degree in sp-networks. IACR
+Trans. Symmetric Cryptol. 2022(1), 110–137 (2022). https://doi.org/10.46586/
+tosc.v2022.i1.110-137
+18. Cox, D., Little, J., O’Shea, D.: Ideals, varieties, and algorithms: an introduction
+to computational algebraic geometry and commutative algebra. Springer Science
+& Business Media (2013)
+19. Cui, T., Grassi, L.: Algebraic key-recovery attacks on reduced-round Xooﬀf. In:
+Dunkelman, O., Jacobson, Jr., M.J., O’Flynn, C. (eds.) SAC 2020. LNCS, vol.
+12804, pp. 171–197. Springer, Cham (2021). https://doi.org/10.1007/978-3-030-
+81652-0 7
+20. Daemen, J.: Limitations of the even-mansour construction. In: Imai, H., Rivest,
+R.L., Matsumoto, T. (eds.) ASIACRYPT 1991. LNCS, vol. 739, pp. 495–498.
+Springer, Heidelberg (1993). https://doi.org/10.1007/3-540-57332-1 46
+21. Daemen, J., Hoﬀert, S., Assche, G.V., Keer, R.V.: The design of Xoodoo and
+Xooﬀf. IACR Trans. Symm. Cryptol. 2018(4), 1–38 (2018). https://doi.org/10.
+13154/tosc.v2018.i4.1-38
+22. Daemen, J., Rijmen, V.: The wide trail design strategy. In: Honary, B. (ed.) Cryp-
+tography and Coding 2001. LNCS, vol. 2260, pp. 222–238. Springer, Heidelberg
+(2001). https://doi.org/10.1007/3-540-45325-3 20
+23. Damg˚ard, I., Keller, M., Larraia, E., Pastro, V., Scholl, P., Smart, N.P.: Practical
+covertly secure MPC for dishonest majority – or: breaking the SPDZ limits. In:
+Crampton, J., Jajodia, S., Mayes, K. (eds.) ESORICS 2013. LNCS, vol. 8134, pp.
+1–18. Springer, Heidelberg (2013). https://doi.org/10.1007/978-3-642-40203-6 1
+24. Damg˚ard, I., Pastro, V., Smart, N., Zakarias, S.: Multiparty computation from
+somewhat homomorphic encryption. In: Safavi-Naini, R., Canetti, R. (eds.)
+CRYPTO 2012. LNCS, vol. 7417, pp. 643–662. Springer, Heidelberg (2012).
+https://doi.org/10.1007/978-3-642-32009-5 38
+25. Dinur, I., et al.: MPC-friendly symmetric cryptography from alternating moduli:
+candidates, protocols, and applications. In: Malkin, T., Peikert, C. (eds.) CRYPTO
+2021. LNCS, vol. 12828, pp. 517–547. Springer, Cham (2021). https://doi.org/10.
+1007/978-3-030-84259-8 18
+26. Dobraunig, C., Grassi, L., Guinet, A., Kuijsters, D.: Ciminion: symmetric encryp-
+tion based on toﬀoli-gates over large ﬁnite ﬁelds. In: Canteaut, A., Standaert, F.-X.
+(eds.) EUROCRYPT 2021. LNCS, vol. 12697, pp. 3–34. Springer, Cham (2021).
+https://doi.org/10.1007/978-3-030-77886-6 1
+27. Dobraunig, C., Kales, D., Rechberger, C., Schofnegger, M., Zaverucha, G.: Shorter
+signatures based on tailor-made minimalist symmetric-key cryptom pp. 843–857
+(Nov 2022). https://doi.org/10.1145/3548606.3559353
+28. Dunkelman, O., Keller, N., Shamir, A.: Minimalism in cryptography: the even-
+mansour scheme revisited. In: Pointcheval, D., Johansson, T. (eds.) EUROCRYPT
+2012. LNCS, vol. 7237, pp. 336–354. Springer, Heidelberg (2012). https://doi.org/
+10.1007/978-3-642-29011-4 21
+
+From Farfalle to Megafono via Ciminion
+285
+29. Even, S., Mansour, Y.: A construction of a cipher from a single pseudorandom
+permutation. In: Imai, H., Rivest, R.L., Matsumoto, T. (eds.) ASIACRYPT 1991.
+LNCS, vol. 739, pp. 210–224. Springer, Heidelberg (1993). https://doi.org/10.1007/
+3-540-57332-1 17
+30. Faug´ere, J.C.: A new eﬃcient algorithm for computing Gr¨obner bases (F4). J. Pure
+Appl. Algebra 139(1–3), 61–88 (1999)
+31. Grassi, L., Khovratovich, D., Rechberger, C., Roy, A., Schofnegger, M.: Poseidon:
+A new hash function for zero-knowledge proof systems. In: Bailey, M., Greenstadt,
+R. (eds.) USENIX Security 2021, pp. 519–535. USENIX Association (Aug 2021)
+32. Grassi, L., L¨uftenegger, R., Rechberger, C., Rotaru, D., Schofnegger, M.: On a
+generalization of substitution-permutation networks: the HADES design strategy.
+In: Canteaut, A., Ishai, Y. (eds.) EUROCRYPT 2020. LNCS, vol. 12106, pp. 674–
+704. Springer, Cham (2020). https://doi.org/10.1007/978-3-030-45724-2 23
+33. Grassi, L., Onofri, S., Pedicini, M., Sozzi, L.: Invertible quadratic non-linear layers
+for mpc-/fhe-/zk-friendly schemes over fnp application to poseidon. IACR Trans.
+Symmetric Cryptol. 2022(3), 20–72 (2022). https://doi.org/10.46586/tosc.v2022.
+i3.20-72
+34. Grassi, L., Øygarden, M., Schofnegger, M., Walch, R.: From farfalle to megafono
+via ciminion: The PRF hydra for MPC applications (2022). https://eprint.iacr.
+org/2022/342
+35. Grassi, L., Rechberger, C., Rotaru, D., Scholl, P., Smart, N.P.: MPC-friendly sym-
+metric key primitives. In: Weippl, E.R., Katzenbeisser, S., Kruegel, C., Myers, A.C.,
+Halevi, S. (eds.) ACM CCS 2016, pp. 430–443. ACM Press (Oct 2016). https://
+doi.org/10.1145/2976749.2978332
+36. Grassi, L., Rechberger, C., Schofnegger, M.: Proving resistance against inﬁnitely
+long subspace trails: How too choose the linear layer. IACR Trans. Symm. Cryptol.
+2021(2), 314–352 (2021). https://doi.org/10.46586/tosc.v2021.i2.314-352
+37. Guo, C., Standaert, F.X., Wang, W., Wang, X., Yu, Y.: Provable security sp net-
+works with partial non-linear layers. IACR Trans. Symm. Cryptol. 2021(2), 353–
+388 (2021). https://doi.org/10.46586/tosc.v2021.i2.353-388
+38. Helminger, L., Kales, D., Ramacher, S., Walch, R.: Multi-party revocation in
+Sovrin: performance through distributed trust. In: Paterson, K.G. (ed.) CT-RSA
+2021. LNCS, vol. 12704, pp. 527–551. Springer, Cham (2021). https://doi.org/10.
+1007/978-3-030-75539-3 22
+39. Ishai, Y., Kushilevitz, E., Ostrovsky, R., Sahai, A.: Zero-knowledge from secure
+multiparty computation. In: Johnson, D.S., Feige, U. (eds.) 39th ACM STOC, pp.
+21–30. ACM Press (Jun 2007). https://doi.org/10.1145/1250790.1250794
+40. Kales, D., Rechberger, C., Schneider, T., Senker, M., Weinert, C.: Mobile private
+contact discovery at scale. In: Heninger, N., Traynor, P. (eds.) USENIX Security
+2019, pp. 1447–1464. USENIX Association (Aug 2019)
+41. Keller, M.: MP-SPDZ: A versatile framework for multi-party computation. In:
+Ligatti, J., Ou, X., Katz, J., Vigna, G. (eds.) ACM CCS 2020, pp. 1575–1590.
+ACM Press (Nov 2020). https://doi.org/10.1145/3372297.3417872
+42. Keller, M., Orsini, E., Scholl, P.: MASCOT: Faster malicious arithmetic secure
+computation with oblivious transfer. In: Weippl, E.R., Katzenbeisser, S., Kruegel,
+C., Myers, A.C., Halevi, S. (eds.) ACM CCS 2016, pp. 830–842. ACM Press (Oct
+2016). https://doi.org/10.1145/2976749.2978357
+43. Lai, X., Massey, J.L.: A proposal for a new block encryption standard. In: Damg˚ard,
+I.B. (ed.) EUROCRYPT 1990. LNCS, vol. 473, pp. 389–404. Springer, Heidelberg
+(1991). https://doi.org/10.1007/3-540-46877-3 35
+
+286
+L. Grassi et al.
+44. Laur, S., Talviste, R., Willemson, J.: From oblivious AES to eﬃcient and secure
+database join in the multiparty setting. In: Jacobson, M., Locasto, M., Mohassel,
+P., Safavi-Naini, R. (eds.) ACNS 2013. LNCS, vol. 7954, pp. 84–101. Springer,
+Heidelberg (2013). https://doi.org/10.1007/978-3-642-38980-1 6
+45. Mennink, B., Neves, S.: Optimal PRFs from blockcipher designs. IACR Trans.
+Symm. Cryptol. 2017(3), 228–252 (2017). https://doi.org/10.13154/tosc.v2017.i3.
+228-252
+46. Mohassel, P., Zhang, Y.: SecureML: A system for scalable privacy-preserving
+machine learning. In: 2017 IEEE Symposium on Security and Privacy, pp. 19–
+38. IEEE Computer Society Press (May 2017). https://doi.org/10.1109/SP.2017.
+12
+47. Shamir, A.: How to share a secret. Commun. ACM 22(11), 612–613 (1979). https://
+doi.org/10.1145/359168.359176
+48. Vaudenay, S.: On the lai-massey scheme. In: Lam, K.-Y., Okamoto, E., Xing, C.
+(eds.) ASIACRYPT 1999. LNCS, vol. 1716, pp. 8–19. Springer, Heidelberg (1999).
+https://doi.org/10.1007/978-3-540-48000-6 2
+

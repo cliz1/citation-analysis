@@ -1,0 +1,2375 @@
+Plaintext-Ciphertext Matrix Multiplication and
+FHE Bootstrapping: Fast and Fused
+Youngjin Bae1[0000−0001−6870−4504], Jung Hee Cheon1,2[0000−0002−7085−2220],
+Guillaume Hanrot3[0000−0001−9319−0365], Jai Hyun Park2[0000−0002−5401−8949],
+and Damien Stehl´e3[0000−0003−3435−2453]
+1 CryptoLab Inc., Seoul, Republic of Korea
+2 Seoul National University, Seoul, Republic of Korea
+3 CryptoLab Inc., Lyon, France
+Abstract. Homomorphically multiplying a plaintext matrix with a ci-
+phertext matrix (PC-MM) is a central task for the private evaluation of
+transformers, commonly used for large language models. We provide sev-
+eral RLWE-based algorithms for PC-MM that consist of multiplications
+of plaintext matrices (PP-MM) and comparatively cheap pre-processing
+and post-processing steps: for small and large dimensions compared to
+the RLWE ring degree, and with and without precomputation. For the
+algorithms with precomputation, we show how to perform a PC-MM
+with a single floating-point PP-MM of the same dimensions. This is par-
+ticularly meaningful for practical purposes as a floating-point PP-MM
+can be implemented using high-performance BLAS libraries.
+The algorithms rely on the multi-secret variant of RLWE, which allows
+to represent multiple ciphertexts more compactly. We give algorithms
+to convert from usual shared-secret RLWE ciphertexts to multi-secret
+ciphertexts and back. Further, we show that this format is compati-
+ble with homomorphic addition, plaintext-ciphertext multiplication, and
+key-switching. This in turn allows us to accelerate the slots-to-coeffs and
+coeffs-to-slots steps of CKKS bootstrapping when several ciphertexts are
+bootstrapped at once. Combining batch-bootstrapping with efficient PC-
+MM results in MaMBo(Matrix Multiplication Bootstrapping), a boot-
+strapping algorithm that can perform a PC-MM for a limited overhead.
+1
+Introduction
+Plaintext-ciphertext homomorphic matrix multiplication (PC-MM) takes as in-
+puts a matrix U = (ui,j)0≤i<d1,0≤j<d2 (in clear) and ciphertext(s) corresponding
+to a matrix M = (mi,j)0≤i<d2,0≤j<d3 and returns ciphertext(s) corresponding to
+the matrix U · M. In this work, we will focus on matrices over R with approx-
+imate computations, even though most of our techniques carry over to other
+rings, such as Zp for an arbitrary integer p. PC-MM arises in the context of
+privacy-preserving machine learning, notably in the inference phase of trans-
+formers for large language models (LLM), such as GPT [32], BERT [13] and
+
+2
+Y. Bae et al.
+LLaMA [34]. PC-MM has been applied for the private evaluation of such large
+language models along with secure multiparty computation [22, 29, 14] or fully
+homomorphic encryption [35]. In [18], PC-MM is used for federated principal
+component analysis between different data providers, and, in [26], applications
+to smart contracts, health and finance are described.
+For many of the applications above, PC-MM should handle variable matrix
+dimensions. In LLM inference, large-dimensional matrix multiplications appear
+at diverse steps. Let us temporarily delve into how LLMs work, to explain the use
+of large matrix dimensions. LLMs operate on user input, segmented into tokens,
+i.e., elementary language units. The processing ability of the LLM is directly
+related to its context size, i.e., the maximum number of tokens ntok that can be
+processed at a time. The choice of ntok is directly reflected in the computational
+cost via the dimensions of the matrix multiplications to be performed. Following
+the transformer model, LLMs usually have two internal dimensions: the main
+dimension dim and another dimension dff used in the so-called Feed-Forward
+phase. Typically, dff is 2 to 4 times larger than dim. Overall, LLMs perform
+three different types of matrix multiplications:
+• in the so-called attention phase, weight matrices U ∈Rdim×dim is multiplied
+by several user data matrices M ∈Rdim×ntok;
+• in the feed-forward phase, larger weight matrices U ∈Rdff×dim are multiplied
+by processed user data M ∈Rdim×ntok before the activation step;
+• later in the feed-forward phase, the processed data is reduced back to di-
+mension dim, by multiplying another large weight matrix Rdim×dff with the
+current user data matrix ∈Rdff×ntok.
+For privacy-preserving LLM inference, the weight matrices above are in clear,
+whereas the user data matrices are encrypted. In mainstream LLMs, the ntok
+dimension ranges from 128 to 16 384 (in GPT-3.5) or more, and the dim dimen-
+sion ranges from 4 096 (LLaMA-7B) to 18 432 (PaLM 540B). These dimensions
+are much larger than those considered by most works considering PC-MM.
+State of the art PC-MM algorithms rely on fully homomorphic encryption
+schemes (FHE) based on the ring learning with errors problem [33, 27] (RLWE),
+such as BGV [6], BFV [5, 16] and CKKS [10].4 Most have asymptotic run-times
+that are linear in the product of the dimensions (or less for large dimensions,
+using recursive blocking techniques). However, their concrete performance is hin-
+dered by their use of possibly large RLWE moduli and, more importantly, the
+fact that they move data across RLWE coefficients or slots (i.e., coefficients of
+a Fourier transform), within RLWE ciphertexts. A notable example is the al-
+gorithm from [24], designed for ciphertext-ciphertext matrix multiplication but
+which can be adapted to PC-MM. It is used for example in [18], which reports a
+multiplication of a 256 × 256 plaintext matrix with a 256 × 8 ciphertext matrix
+in 3.8s on an Intel Xeon 2.5GHz with 24 threads on 12 cores. The algorithm
+4 In this paper, we mostly focus on CKKS scheme. However, most of our techniques
+can be adapted to BGV [6] and BFV [5, 16].
+
+3
+from [26] does not move data within RLWE ciphertexts, but requires matrix di-
+mensions above the RLWE ring degree. In practice, to enable computations with
+a reasonable precision and 128-bit security, the degree should be at least 212 for
+a stand-alone PC-MM, and 213 if we want to enable key-switching for compati-
+bility with FHE. This algorithm reduces one PC-MM to two PP-MM’s modulo
+a moderately-sized integer. Even though no server-side experiment is reported
+in [26], this hints to the fact that PC-MM implementations can be based on fast
+linear algebra software and hence be very efficient.
+Contributions. We describe several PC-MM algorithms that reduce to one or
+two PP-MM’s, for dimensions below and above the RLWE ring degree, in a
+black-box manner and with limited overhead. We experimentally observe that
+the concrete performance can then directly benefit from highly-optimized linear
+algebra libraries such as OpenBLAS [28]. We also show how to integrate our
+PC-MM algorithms into FHE bootstrapping, which can itself be accelerated by
+techniques that we introduce.
+Our algorithms extend the one from [26], providing greater dimension flex-
+ibility and greater efficiency. We give two algorithms, for square matrices di-
+mensions d smaller and larger than the RLWE ring degree N (note that [26]
+works only for d ≥N). In both cases, they consist in reducing PC-MM to two
+PP-MM’s, where the PP-MM dimensions are d × d × N and d × d × d. We also
+describe two algorithms (for small and large d) which only use a single d × d × d
+modular PP-MM, if one allows for precomputation. Finally, we show that the
+latter modular PP-MM can be replaced by floating-point PP-MM, hence obtain-
+ing reductions from PC-MM to a single floating-point PP-MM with the same
+dimension, with precomputation. These results are summarized in Table 1.
+d
+Ctxt format
+Reduces to
+Reference
+≤N
+MLWE
+Mod-PP-MMd,d,d + Mod-PP-MMd,d,N
+Alg. 2, p. 21
+≤N sh.-a MLWE
+Precomp. + Mod-PP-MMd,d,d
+Alg. 4, p. 38
+≤N sh.-a MLWE
+Precomp. + FP-PP-MMd,d,d
+Alg. 4, p. 38 + Sec. 5
+≥N
+RLWE
+2× Mod-PP-MMd,d,d
+[26]
+≥N sh.-a RLWE Mod-PP-MMd,d,d + Mod-PP-MMd,d,N
+Alg. 1, p. 18
+≥N sh.-a RLWE
+Precomp. + Mod-PP-MMd,d,d
+Alg. 3, p. 37
+≥N sh.-a RLWE
+Precomp. + FP-PP-MMd,d,d
+Alg. 3, p. 37 + Sec. 5
+Table 1. List of PC-MM algorithms for square matrices of dimension d ≥N 1/2.
+sh.-a refers to the shared-a format (see Section 3). Mod-PP-MMd,d,d′ (resp. FP-
+PP-MMd,d,d′) stands for PP-MM of dimensions (d × d) × (d × d′) over ZQ (resp. over
+R using floating-point arithmetic).
+Going deeper, the main new technical tool is the use of compact format
+for multiple RLWE ciphertexts. Recall that a RLWE ciphertext consists of a
+pair (a, b) of polynomials such that a·sk+b ≈m, where sk is the secret key and m
+is the underlying message. We say that several RLWE ciphertexts are in shared-
+
+4
+Y. Bae et al.
+a format if their first components “a” are identical. This format has been used
+many times for security proofs in lattice-based cryptography, in the context of
+the lossy-mode proof technique (see, among many others, [31, 20, 7]). We use this
+format for computation purposes. We provide conversion algorithms from shared-
+secret RLWE ciphertexts to shared-a ciphertexts, and vice versa. Additionally,
+we show that many of the CKKS operations are compatible with this shared-a
+format, including addition, multiplication between a plaintext and a ciphertext,
+and key-switching (which implies rotations and conjugation). Importantly, these
+can be leveraged to batch-bootstrap several ciphertexts for a lower cost than
+running several bootstrappings independently. This is particularly relevant in the
+context of PC-MM, as matrices that are not very small require several RLWE
+ciphertexts.
+Finally, we explain how to jointly perform PC-MM and FHE bootstrapping,
+obtaining MaMBo (Matrix Multiplication Boostrapping), which may be viewed
+as a form of programmable bootstrapping [12] that can perform a PC-MM at
+almost no cost.
+We implemented several of our algorithms using the HEaaN library [23]. We
+provide experimental data that focuses on: (1) the cost of PC-MM with RLWE-
+based schemes and no precomputation and (2) the cost of batch bootstrapping.
+We then estimate the overall cost of MaMBo. Compared to the state of art
+CKKS bootstrapping procedure without PC-MM, MaMBo (including a PC-MM)
+is more than 40% faster when used to bootstrap ciphertexts corresponding to
+matrices of dimensions 29 and more.
+1.1
+Technical overview
+For the sake of simplicity, in this overview, we assume that matrices are square.
+Let d denote their dimension. Let q ≥2, N be a power of 2, RN = Z[X]/(XN +1)
+and Rq,N = Zq[X]/(XN + 1). When there is no ambiguity regarding the value
+of N, we shall simply write R and Rq.
+The LZ algorithm. Our starting point is the algorithm from [26]. Assume first
+that d = N. The matrix M is provided by d RLWE ciphertexts (ai, bi), that
+encrypt the rows. We have, over Rq:
+∀i : ai · sk + bi ≈
+X
+j
+mi,jXj ,
+where sk ∈R is the secret key. We can rewrite the above in matrix form, as
+follows:
+A · Toep(sk) + B ≈M mod q ,
+(1)
+where the i-th row of A (resp. B) consists of the coefficients of ai (resp. bi), for
+all 0 ≤i < d. We let Toep(sk) denote the matrix whose i-th row consist of the
+coefficients of Xi·s ∈R, for all 0 ≤i < d. Note that the matrix Toep(sk) is struc-
+tured, whereas A and B do not have a particular structure. Now, multiplying
+by the plaintext matrix U ∈Rd×d on both sides of (1) gives:
+(U · A) · Toep(sk) + (U · B) ≈U · M mod q .
+(2)
+
+5
+Note that the error term hidden in the ≈symbol has also been multiplied by U,
+which should be taken into account when setting parameters. Now, note that
+Equation (2) is of the same form as (1). Defining a′
+i (resp. b′
+i) as the element
+of Rq whose coefficients correspond to the i-th row of U · A (resp. U · B) for
+all 0 ≤i < d, we obtain that the (ai, bi)’s are an encryption of U · M. Overall,
+the PC-MM U · M reduces to the PP-MM’s U · A and U · B (modulo q).
+When d = kN for some integer k ≥1, the approach generalizes as follows.
+Each row is encrypted using several RLWE ciphertexts (in total, there are d2/N
+of them). This leads to an equation of the form:
+A · (I ⊗Toep(sk)) + B ≈M mod q .
+By multiplying on the left by U, one again obtains a PC-MM algorithm that
+consists of two PP-MM’s modulo q.
+Shared-a RLWE ciphertexts and large dimensions. To decrease the cost of
+large-dimensional PC-MM, we use multi-secret RLWE ciphertexts sharing their
+a-parts. The matrix M is provided by d2/N multi-secret RLWE ciphertexts
+(ai, bi,j)0≤i<d,0≤j<k. Note that the number of ai’s is only d. We have, over Rq:
+∀i, j : ai · skj + bi,j ≈
+X
+t
+mi,Nj+tXt ,
+where the skj’s in R are the secret keys. In matrix form, this gives:
+A · [Toep(s0)| · · · |Toep(sk−1)] + B ≈M mod q ,
+(3)
+where A (resp. B) consists of the coefficients of ai (resp. bi,j) and is of size d×N
+(resp. d × d). As in RLWE case, we multiply U on both sides of the equation:
+(U · A) · [Toep(sk0)| · · · |Toep(skk−1)] + (U · B) ≈(U · M) mod q ,
+Since it has the same form as the original matrix equation, we can view it
+as d2/N multi-secret RLWE ciphertexts (a′
+i, b′
+i,j) with respect to secret keys
+sk0, · · · , skk−1. This gives us a reduction from PC-MM (with multi-secret RLWE)
+of U and M to the PP-MM’s of U with A and U with B. Importantly, the
+number of columns of A is smaller than that of M, by a factor k, giving a
+significant saving compared to [26] for large d.
+MLWE ciphertexts and small dimensions. For smaller matrices, with dk =
+N for some integer k, RLWE ciphertexts contain several rows of the input ci-
+phertext matrix. Operating directly on these ciphertexts for the PC-MM seems
+difficult, as it is likely to involve expensive key-switching operations. To handle
+this setup, we rely on MLWE ciphertexts. The matrix M is provided by d MLWE
+ciphertexts (ai, bi)0≤i<d, i.e., we have, over Zq[X]/(Xd + 1):
+∀i, j : ⟨ai, sk⟩+ bi ≈
+X
+t
+mi,jXj ,
+
+6
+Y. Bae et al.
+where sk = (sk0, · · · , skk−1) ∈(Zq[X]/(Xd + 1))k is the secret key. We can
+rewrite the above in matrix form as follows:
+A ·
+
+
+Toep(sk0)
+...
+Toep(skk−1)
+
++ B ≈M mod q ,
+where A (resp. B) consists of the coefficients of ai (resp. bi) and is of size d × N
+(resp. d×d). Again, multiplying both sides of the equation by U gives a PC-MM
+algorithm. The result corresponds to d MLWE ciphertexts (a′
+i, b′
+i).
+Shared-a ciphertexts and precomputation. Allowing precomputation, we
+can even reduce PC-MM to a single PP-MM modulo q during the online phase.
+For ease of discussion, assume that d = N. We can rewrite the multi-secret
+ciphertexts (a, bi), which encrypt the rows of a matrix M under secret keys ski,
+in matrix form, as follows:
+S · Toep(a) + B ≈M mod q ,
+(4)
+where the i-th row of S (resp. B and Toep(a)) consists of the coefficients of ski
+(resp. bi and xi · a ∈Rq), for all 0 ≤i < d. Note that this is a different form of
+matrix equation from Equation (3). By multiplying U to both sides, we get:
+(U · S) · Toep(a) + (U · B) ≈(U · M) mod q .
+(5)
+This has the same form as Equation (4), and hence we can view it as multi-
+secret RLWE ciphertexts under secret key sk′
+i, where sk′
+i consists of the i-th row
+of S′ = U · S. If the computation continues with a specific secret key, e.g., sk,
+we can switch the keys from sk′
+i to sk after PC-MM, using CKKS key-switching.
+The switching keys can be precomputed, and the key-switching cost eO(dN) is
+relatively small compared to the one of the PP-MM.
+For matrices of size d > N or d < N, we describe analogous approaches
+in Section 4.3. For d > N, we use multi-secret RLWE, and for d < N, we use
+multi-secret MLWE. In all cases, in terms of online cost, we reduce one PC-MM
+to one PP-MM.
+PC-MM with a single floating-point PP-MM. So far, all PP-MM’s are ma-
+trix products over Zq for some integer q. Modular PP-MM is typically slower than
+floating-point PP-MM, as it does not directly benefit from the high-performance
+of numerical BLAS libraries. However, for approximate homomorphic encryp-
+tion, the least significant bits of the b-parts of the RLWE ciphertexts contain
+numerical and RLWE errors that are not relevant. Thus, to multiply U and B,
+we use floating-point PP-MM on the most significant bits of B, instead of com-
+puting PP-MM modulo q. We provide an error analysis in Section 5.
+We can apply this optimization to all suggested PC-MM algorithms. It is
+most effective for large-dimensional matrices (as the cost of computing UB is
+then higher than that of computing UA) and for the algorithms using pre-
+computation. In particular, for PC-MM with precomputation, this optimization
+provides a reduction to a single floating-point PP-MM.
+
+7
+Batch bootstrapping. CKKS bootstrapping [9] takes as input a ciphertext
+with a small modulus, and transforms it in a ciphertext with a much higher
+modulus that decrypts to the same message (up to numerical error). This enables
+to perform further homomorphic operations on the ciphertext. Assume we aim
+at simultaneously bootstrapping several ciphertexts. This is a typical scenario
+after a PC-MM, as the output matrix may not fit into a single RLWE ciphertext,
+but can occur in other large-scale computations.
+The shared-a format proves very useful for batch-bootstrapping. First, we
+provide conversion algorithms from shared-secret RLWE ciphertexts to shared-
+a RLWE ciphertexts, so that the format can be used within CKKS. Second,
+we observe that this format enjoys a number of homomorphic operations. For
+example, consider two ciphertexts (a, b1) and (a, b2) such that a · sk1 + b1 = m1
+and a · sk2 + b2 = m2. Then, we have
+a · (sk1 + sk2) + (b1 + b2) = (m1 + m2) .
+The resulting ciphertext (a, b1+b2) still has the same a-part and decrypts to m1+
+m2. Similarly, the format is compatible with multiplication by a plaintext:
+a · sk + b = m ⇒a · (u · sk) + (u · b) = (u · m),
+for any u ∈R. Note that multiplication between two ciphertexts does not enjoy
+such a property. Other operations that are compatible with the format include
+rescaling (decreasing the current modulus) and key-switching (hence allowing
+for so-called rotations and conjugation).
+Now, recall that CKKS bootstrapping consists of several components: S2C,
+ModRaise, C2Sand EvalMod. As ModRaise is purely semantic, it is compatible
+with the shared-a format. More importantly, S2C and C2S rely only on addi-
+tions, multiplications by plaintexts, rotations and conjugations. They are hence
+compatible with the shared-a format. As a result, all computations involving the
+a-parts of the ciphertexts in S2C and C2S can be amortized across a batch of
+ciphertexts.
+MaMBo: fused PC-MM and batch bootstrapping. Finally, we explain how
+to combine PC-MM with batch bootstrapping. PC-MM is often quite expensive,
+and it is often preferable to place it at the smallest possible modulus. In MaMBo,
+we propose to first convert the shared-secret input ciphertexts into shared-a
+ciphertexts. Then we run batch-S2C such that the output level still enables
+a matrix multiplication. One can then execute one of the PC-MM algorithms
+described above, on an input which has already been converted to coefficient-
+encoding. After ModRaise, we run batch-C2S and finally convert from shared-a
+ciphertexts to shared-secret ciphertexts before EvalMod. This approach can be
+further improved by taking advantage of subrings to decrease the ring dimension.
+When d ≥N, our algorithms also work on slot-encoded input; for the sake of
+completeness, in that case, we also discuss other ways to combine PC-MM and
+bootstrapping.
+
+8
+Y. Bae et al.
+2
+Preliminaries
+As our paper is notation-heavy, we provide a table of the main notations and
+functions in Appendix E.
+Vectors (resp. matrices) are denoted in bold lower-case (resp. upper-case)
+letters. Unless explicitly stated otherwise, vectors are column vectors. We let ⟨·, ·⟩
+denote the formal dot product of two vectors: for any ring R and dimension k,
+for x = (xi)i, y = (yi)i ∈Rk, we write ⟨x, y⟩= P
+i xiyi. For a matrix A, the
+notation ai,[k,ℓ) refers to the entries ai,j for k ≤j < ℓ. For N a power of two
+and q ≥2, we define RN = Z[X]/(XN + 1) and Rq,N = Zq[X]/(XN + 1). We
+skip the index N when it is clear from the context.
+For a real number x, we let ⌊x⌉denote the integer part of x + 1/2. The
+notation log refers to the base-2 logarithm. We let ω refer to the complexity
+exponent of square matrix multiplication and assume that ω > 2. As in Python,
+in our pseudo-codes, for loops for some variable i from a to b means that i takes
+values i = a, a + 1, . . . , b −1.
+2.1
+RLWE and MLWE ciphertext formats
+For N a power of 2, and Q ≥2 an integer, a RLWEQ,N ciphertext for a plain-
+text m ∈RQ,N under a secret key sk ∈RN is a pair (a, b) ∈R2
+Q,N such that
+a · sk + b = m. In this work, we consider plaintexts m that are:
+• small, i.e., have coefficients with small absolute values compared to Q;
+• approximate, i.e., m could as well be m + e for a small e.
+Such ciphertexts can be generated in a symmetric manner, if the encryptor
+knows sk, or in an asymmetric manner if the encryptor knows encryptions of 0.
+The ciphertexts are indistiguishable from uniform for any adversary that does
+not know sk, under the RLWE hardness assumption [33, 27].
+The MLWE ciphertext format [6, 25] is the following generalization. Let k ≥1.
+An MLWE(k)
+Q,N ciphertext for a plaintext m ∈RQ,N under a secret key sk ∈Rk
+N
+is a pair (a, b) ∈Rk
+Q,N × RQ,N such that ⟨a, sk⟩+ b = m. Here k, N and Q are
+respectively referred to as (module) rank, (ring) degree and modulus. Note that
+MLWE(1)
+Q,N and RLWEQ,N coincide.
+2.2
+The CKKS scheme
+CKKS [10] is an RLWE-based FHE scheme that performs approximate compu-
+tations on complex numbers. The CKKS plaintexts are elements of RN, which
+can encode complex vectors as described below.
+Encoding. Let ζj = exp(2iπ5j/2N) for 0 ≤j < N/2 be an ordered set of
+pairwise non-conjugate primitive 2N-th roots of unity. The map P 7→(P(ζj))j is
+an isomorphism between R and CN/2, which by analogy to the discrete Fourier
+
+9
+transform, shall be denoted by DFT. Similarly, we will let iDFT denote its
+inverse. Given an integer ∆, the CKKS slot encoding process is defined as:
+m = Ecdslot(z) = ⌊∆· iDFT(z)⌉∈R .
+Conversely, given a plaintext m, we say that its j-th slot contains zj if m(ζj) = zj.
+Given as input m ∈R, the decoding process then returns
+z = Dcdslot(m) = 1
+∆DFT(m) ∈CN/2 .
+We have Dcd(Ecdslot(z)) ≈z, the error being of the order of
+√
+N/∆.
+We also define coefficient encoding for real messages. If z ∈Rn, we define
+Ecdcoeff(z) =
+N−1
+X
+i=0
+⌊∆· zi⌉Xi ∈R.
+It is typically only used for internal operations, mostly in the bootstrapping
+process, but will play an important role in this paper.
+Basic functionalities. CKKS provides the following elementary operations on
+keys and ciphertexts:
+• KeyGen. Given a security parameter λ, KeyGen(1λ) returns public key pk =
+(a, b) ∈R2
+Q for some Q, and a secret key sk ∈R;
+• Enc. For a plaintext m (which is obtained by an encoding function as ex-
+plained above), Enc(pk, m) returns a RLWE-format ciphertext (a, b) such
+that a · sk + b = m + e, where e has small magnitude coefficients.
+• Dec. Given a ciphertext (a, b), Dec(sk, (a, b)) returns a · sk + b.
+• SWKGen. Given two integers P, Q and two keys sk, sk′ ∈RN, SWKGen re-
+turns a switching key swkQ,P,sk→sk′ from key sk to key sk′ for ciphertexts
+modulo Q and with auxiliary integer P. It is of the form:
+swkQ,P,s→s′ = (aswk, bswk) = (a, −a · sk′ + e + P · sk) ∈R2
+P Q ,
+where e ∈RN has small-magnitude coefficients.5
+• KeySwitch. Given as input a mod-Q ciphertext ct for a message m under sk,
+KeySwitch(swkQ,P,sk→sk′, ct) returns a mod-Q ciphertext ct′ for m under sk′.
+Homomorphic operations. We now describe a subset of the homomorphic
+operations provided by CKKS.
+• Add. Given two ciphertexts ct and ct′ for the same modulus Q, Add computes
+and returns ct′′ = Add(ct, ct′) ≈ct+ct′. If Dec(sk, ct) ≈m and Dec(sk, ct′) =
+m′, then we have Dec(sk, ct′′) ≈m + m′.
+5 Switching keys can also be defined with more ring elements when using a so-called
+gadget rank larger than 1. Our techniques also carry over to that setup, but we
+restrict ourselves to switching keys as above for the sake of simplicity.
+
+10
+Y. Bae et al.
+• Rot. Given ct such that Dec(sk, ct) ≈Ecdslot(x0, . . . , xN/2−1) and an index i,
+Rot returns ct′ such that Dec(sk, ct′) ≈Ecdslot(xi, . . . , xN/2−1, x0, . . . , xi−1).
+This requires the rotation key rki, which is a switching key from sk(X5i)
+to sk.
+• Conj. On input ct such that Dec(sk, ct) ≈Ecdslot(x0, . . . , xN/2 −1), Conj
+returns ct′ such that Dec(sk, ct′) ≈Ecdslot(x0, . . . , xN/2−1), where, for x ∈C,
+where x stands for the complex conjugate of x. This requires the conjugation
+key ck, which is a switching key from sk(X−1) to sk.
+Before defining homomorphic multiplication, we first discuss levels and rescal-
+ing. As Ecd(x) ≈∆· iDFT(x), the multiplication of two encodings leads to a
+result that is scaled by a factor ∆2:
+Ecd(x) · Ecd(x′) ≈(∆· iDFT(x)) · (∆· iDFT(x′)) ≈∆2 · iDFT(x ⊙x′) ,
+where ⊙refers to the componentwise product. In order to restore a ∆-scaled
+encoding, one can divide this result by ∆. At the ciphertext level, this is approx-
+imately achieved by means of the following function:
+• Rescale. Given q > q′ and a ciphertext ct modulo q, Rescale computes and
+returns ⌊(q′/q) · ct⌉∈R2
+q′. If ct decrypts to m, then so does ct′ (up to some
+error).
+Note that the ciphertext modulus has changed from q to q′: this is accounted
+for by the notion of level. Let q0 be a prime, and q1, . . . , qℓbe primes ≈∆.
+We define Qj = q0q1 . . . qj. A ciphertext at level ℓis an element of R2
+Qℓ; after a
+multiplicative operation, rescaling moves ct in R2
+Qℓ−1: the level of ct becomes ℓ−
+1. Note that homomorphic addition and multiplication require the two input
+ciphertexts to be at the same level (which can be achieved by using the Rescale
+function). The output of addition remains at the same level, whereas the output
+of multiplication is one level less. We let Qtop denote the largest Qi – for a given
+N, this value is determined so that RLWEQtop,N remains sufficiently hard to fit
+the desired security level.
+We restrict ourselves to the description of plaintext-ciphertext multiplication,
+as we will not use of ciphertext-ciphertext multiplication.
+• PCMult. Given α ∈CN/2 and ct ∈R2
+Qk,N, PCMult computes and returns
+ct′ = RescaleQk,Qk−1(Ecdslot(α)·ct) ∈RQk−1,N. If Dec(sk, ct) ≈Ecdslot((mi)i),
+then we have Dec(sk, ct′) ≈Ecdslot((αimi)i).
+When α ∈R is a scalar, we can also define PCMult for coefficient encod-
+ing, which on input a ciphertext encrypting Ecdcoeff(m) returns a ciphertext
+encrypting Ecdcoeff(α · m).
+Bootstrapping. When a ciphertext ct reaches level 0, i.e., ct ∈RQ0, its mul-
+tiplicative level must be upgraded in order to allow for further multiplications.
+This is achieved via a process called bootstrapping.
+A significant number of important technical details being left aside, the main
+steps of this process are the following:
+
+11
+– S2C (for slot-to-coeffs) is a linear step which homomorphically changes the
+internal encoding of the message, from ct = Enc(Ecdslot(m)) to (a, b) =
+Enc(Ecdcoeff(m));
+– ModRaise lifts the ciphertext (a, b) from RQ0 to RQtop while preserving an
+identity as+b = Ecdcoeff(m)+Q0·I mod Qtop, where I is a small (unknown)
+integer;
+– C2S (for coeffs-to-slots) is the inverse operation of S2C and recovers ct′
+encrypting Ecdslot(m) + Q0I;
+– EvalMod homomorphically removes the Q0 · I part to recover a ciphertext
+encrypting Ecdslot(m) in RQ for some intermediate modulus Q.
+The CKKS bootstrapping chain comes in the following two flavours.
+• S2C-first bootstrapping follows the steps in the order above. S2C is then
+executed at a low level, with a lower cost. S2C-first bootstrapping should be
+started at a sufficiently high level to allow the homomorphic evaluation of
+the S2C function before reaching level 0 and re-increasing the modulus.
+• C2S-first bootstrapping starts with ModRaise which first raises the modulus
+to Qtop. It can thus be started at level 0. After raising the ciphertext to Qtop,
+C2S, EvalMod and S2C are successively executed before the data can be
+further processed. The whole bootstrapping chain is executed at high moduli,
+for a higher cost.
+In S2C-first bootstrapping, we call HalfBTS the part of the bootstrapping process
+that follows S2C. We let ℓS2C denote the number of levels used for S2C. In
+practice, the choice of ℓS2C = 3 is common.
+2.3
+From rings to subrings and modules, and back
+Throughout the end of this section, the integer N ′ is a power of 2 dividing N,
+and we let k = N/N ′. We shall consider four operations: moving from RLWEQ,N
+to RLWEQ,N′ and back; and moving from RLWEQ,N to MLWEN/N ′
+Q,N′ and back.
+When Q is too large for the former to preserve security, we shall use the latter
+as a substitute. We only give the specifications of the operations, We provide
+details on how they are implemented in Appendix A.
+Ring-switching. Ring-switching is a technique introduced in [6] and further
+developed in [19]. The goal is to decompose a large-ring ciphertext into several
+small-ring ciphertexts.
+• RingSwitch. On input ct = (a, b) ∈R2
+Q,N and swkQ,P,sk→sk′, RingSwitch re-
+turns (ai, bi) ∈R2
+Q,N′ for 0 ≤i < k such that, when viewed together, the
+underlying plaintexts correspond to the plaintext underlying (a, b).
+Conversely, starting from k ciphertexts cti ∈RQ,N′ for a common key sk′ ∈
+RN′ and a switching key swkP,Q,sk′→sk from sk′ to sk, we can key-switch the cti’s
+from sk′ to sk, to restore a RLWEQ,N ciphertext with key in RN.
+
+12
+Y. Bae et al.
+From RLWE to MLWE. When PQ is too large, providing the required switching
+key would impair the security. In this case, we can switch from RLWEQ,N to
+MLWEk
+Q,N′ as a secure alternative; the latter does not require key switching.
+• ModDecomp. On input ct = (a, b), ModDecomp returns (ai, bi) ∈Rk+1
+Q,N′
+for 0 ≤i < k, such that, when viewed together, the underlying plaintexts
+correspond to the plaintext underlying (a, b).
+Here a and sk play symmetric roles, and we can equivalently obtain a decom-
+position in k ciphertexts with common a part, but distinct secret keys; we call
+ShModDecomp the corresponding procedure.
+From MLWE to RLWE. Going back from k = N/N ′ MLWEk
+Q,N′ ciphertexts
+to one RLWEN,Q ciphertext is an instance of the ring-packing problem. This
+problem has been extensively studied (see, e.g., [11, 4, 8, 2]) in the context of
+packing multiple LWE ciphertexts into an RLWE ciphertext. The more general
+task of packing MLWEQ,N′ ciphertexts into an MLWEQ,N ciphertext is addressed
+in [2].
+• ModPack. On input (ai, bi) ∈Rk+1
+Q,N′ for 0 ≤i < k for a common key sk ∈
+Rk
+N′, ModDecomp returns a ciphertext (a, b) ∈R2
+Q,N whose underlying plain-
+text corresponds to the tuple of plaintexts underlying the (ai, bi)’s. This
+requires switching keys.
+We will also use the ModKeySwitch algorithm from [2], which is the MLWE
+version of KeySwitch.
+3
+Multiple-secret RLWE with shared a-part
+Recall that a RLWE ciphertext for a secret sk ∈R and a plaintext m ∈R is a
+pair (a, b) ∈R2
+Q such that a · sk + b ≈m mod Q. We refer to a (resp. b) as the
+a-part (resp. b-part). A RLWE ciphertext hence consumes two elements of RQ
+to represent a single ring element m. This factor 2 also impacts the performance
+of homomorphic operations.
+A common approach is to seed the a-part, i.e., implicitly represent a by a
+much more compact seed ∈{0, 1}128 as a = H(seed) ∈RQ, where H is an
+extendable output function (such as SHAKE) modeled as a random oracle. This
+works well when the ciphertext (a, b) is the output of the encryption algorithm, in
+the symmetric setting (i.e., when the encryptor knows the secret key). After the
+ciphertext has been computed upon, the a-part becomes a combination of several
+a-parts and b-parts of various ciphertexts and components of the evaluation key,
+and it cannot be represented in seeded form anymore. We place ourselves in this
+context.
+
+13
+3.1
+RLWE ciphertexts with shared a-part
+Consider n RLWE ciphertexts cti = (ai, bi) ∈R2
+Q, 0 ≤i < n, under a common
+key sk ∈R and for plaintexts mi ∈R:
+∀i, 0 ≤i < n : ai · sk + bi ≈mi mod Q .
+We consider a different format for encoding those n plaintexts, involving n secret
+keys sk0, . . . , skn−1 ∈R. It consists of n+1 ring elements a and b0, . . . , bn−1 such
+that
+∀i, 0 ≤i < n : a · ski + bi ≈mi .
+This can be interpreted as n RLWE ciphertexts cti = (ai, bi) under keys ski and
+that satisfy ai = a for all i. In short, they share the a-part. Overall, to store n
+plaintexts, one only needs n + 1 elements of Rq instead of 2n.
+3.2
+Forward format conversion
+Assume that we have n ciphertexts cti = (ai, bi) ∈R2
+Q such that ai ·sk+bi ≈mi
+for some shared secret key sk and plaintexts mi (for all i with 0 ≤i < n). We aim
+at converting them to n ciphertexts ct′
+i = (a′, b′
+i) ∈R2
+Q such that a′·sk′
+i+b′
+i ≈mi
+(for all i with 0 ≤i < n), which share their a-parts. In this context, the secret
+keys sk, sk′
+0, . . . , sk′
+n−1 are all sampled during key generation. We assume the key
+generation algorithm also outputs a format-switching key:
+fmt-swkQ,P,sk→{sk′
+i}0≤i<n = (afmt-swk, Bfmt-swk) ∈Rn
+P Q × Rn×n
+P Q
+,
+for some auxiliary integer P with afmt-swk sampled uniformly in Rn
+P Q, and
+Bfmt-swk = −afmt-swk ·
+ sk′
+0, . . . , sk′
+n−1
+
++ E + P · sk · In mod PQ ,
+(6)
+where E ∈Rn×n has small-magnitude coefficients, and afmt-swk ·
+ sk′
+0, . . . , sk′
+n−1
+
+is the multiplication of a column matrix and a row matrix, resulting in a n ×
+n matrix. Note that afmt-swk can be seeded, to reduce memory consumption.
+Nevertheless, the matrix Bfmt-swk still contains n2 elements of RP Q.
+By a standard hybrid argument (see [31, Le. 6.2]), one can show that the for-
+mat conversion key fmt-swkQ,P,sk→{sk′
+i}0≤i<n is computationally indistinguishable
+from uniform.
+We can now introduce the format key switching procedure.
+• FmtSwitch. Given as input ciphertexts {(ai, bi)}0≤i<n for a secret key sk,
+the FmtSwitch algorithm uses the format switching key (afmt-swk, Bfmt-swk)
+to compute and return:
+a′ =
+ 1
+P
+
+⟨(a0, . . . , an−1)T , afmt-swk⟩mod PQ
+
+,
+(b′
+0, . . . , b′
+n−1) = (b0, . . . , bn−1) +
+ 1
+P
+
+(a0, . . . , an−1) · Bfmt-swk mod PQ
+
+.
+
+14
+Y. Bae et al.
+Note that the cost of FmtSwitch is dominated by O(n2) multiplications and
+additions in RP Q.
+Lemma 1. Using the notations above, assume that ai · sk + bi ≈mi mod Q for
+all 0 ≤i < n. If P ≥Q, then a′ · sk′
+i + b′
+i ≈mi mod Q for all 0 ≤i < n.
+Proof. Let 0 ≤i < n. There exist ea, eb ∈R[X]/(XN + 1) with coefficients in
+[−1/2, 1/2] and ka, kb ∈R such that, over R[X]/(XN + 1):
+a′ · sk′
+i = 1
+P ⟨(a0, . . . , an−1)T , afmt-swk⟩· sk′
+i + ea · sk′
+i + kaQ ,
+b′
+i = bi + 1
+P (a0, . . . , an−1) · Bfmt-swk,i + eb + kbQ ,
+where Bfmt-swk,i refers to the i-th column of B. Taking the i-th column of Equa-
+tion (6), we obtain that there exists µ ∈R, such that the following holds over R:
+afmt-swk · sk′
+i + Bfmt-swk,i = ei + P · (0, . . . , 0, sk, 0, . . . , 0)T + µPQ ,
+where ei refers to the i-th column of E and sk is in the i-th coefficient of
+(0, . . . , 0, sk, 0, . . . , 0)T . Combining the last three equations, we obtain:
+a′ · sk′
+i + b′
+i = ai · sk + bi + (ka + kb + µ)Q
++
+ 1
+P ⟨(a0, . . . , an−1)T , ei⟩+ ea · sk′
+i + eb
+
+≈mi + (ka + kb + µ)Q .
+Here, we used the fact that the ai’s have coefficients in [−Q/2, Q/2] and P ≥
+Q, implying that the ring element
+1
+P ⟨(a0, . . . , an−1)T , ei⟩has small-magnitude
+coefficients. Reducing modulo Q gives the result.
+⊓⊔
+3.3
+Improved forward format conversion
+A drawback of the format conversion approach described above is the quadratic
+growth of the size of the format conversion key and the quadratic cost, as a
+function of n. We propose an alternative recursive approach: first, each pair
+of ciphertexts is transformed so that they share their a-parts (i.e., there are
+only n/2 distinct a-parts); then each pair of pair of ciphertexts is transformed
+so that they share their a-parts (i.e., there are only n/4 distinct a-parts), etc.
+For the sake of simplicity, assume that n = 2κ for some integer κ ≥1. We
+define sk(0) = sk and sk(κ) = (sk′
+0, . . . , sk′
+2κ−1). For ℓ∈[1, κ −1], we sample
+secret keys sk(ℓ)
+0 , . . . , sk(ℓ)
+2ℓ−1 and define sk(ℓ) as their concatenation (we could
+alternatively define sk(ℓ) as the first 2ℓelements of sk(κ)). We define the recursive
+format conversion key as follows:
+^
+fmt-swkQ,P,sk→{sk′
+i}0≤i<n = {(a(ℓ)
+fmt-swk, B(ℓ)
+fmt-swk)}ℓ∈[1,κ] ,
+
+15
+for some auxiliary integer P, with a(ℓ)
+fmt-swk sampled uniformly in R2
+P Q (and pos-
+sibly seeded), and
+B(ℓ)
+fmt-swk = −a(ℓ)
+fmt-swk · sk(ℓ) + E(ℓ)
++P ·
+ 
+sk(ℓ−1)
+0
+. . . sk(ℓ−1)
+2ℓ−1−1
+sk(ℓ−1)
+0
+. . . sk(ℓ−1)
+2ℓ−1−1
+!
+∈R2×2ℓ
+P Q
+,
+where E(ℓ) has small-magnitude coefficients.
+Now, given as input the ciphertexts {(ai, bi)}0≤i<k, the format conversion
+proceeds as follows. We define, for all ℓ≤κ and 0 ≤i ≤2κ−ℓ−1:
+a(ℓ)
+i
+=
+ 1
+P
+
+⟨(a(ℓ−1)
+2i
+, a(ℓ−1)
+2i+1 )T , a(ℓ)
+fmt-swk⟩mod PQ
+
+,
+(b(ℓ)
+i2ℓ, . . . , b(ℓ)
+i2ℓ+1−1) = (b(ℓ−1)
+i2ℓ
+, . . . , b(ℓ−1)
+i2ℓ+1−1)
++
+ 1
+P
+
+(a(ℓ−1)
+2i
+, a(ℓ−1)
+2i+1 ) · B(ℓ)
+fmt-swk mod PQ
+
+.
+Assume that ai · sk + bi ≈mi mod Q for all 0 ≤i < n. It may be checked by
+induction that we have, for all ℓ≤κ, 0 ≤i < 2κ−ℓand 0 ≤j < 2ℓ:
+a(ℓ)
+i
+· sk(ℓ)
+j
++ b(ℓ)
+i2ℓ+j ≈mi2ℓ+j mod Q .
+For ℓ= κ, the latter equation provides the correctness of the format conversion.
+Letting a′ = a(κ)
+0
+and b′
+i = b(κ)
+i
+, we have that a′ · sk′
+i + b′
+i ≈mi mod Q, for
+all 0 ≤i < n.
+Compared to the approach of Subsection 3.2, this variant has a format conver-
+sion key size that grows only linearly with the number n of ciphertexts. Further,
+its cost is dominated by O(n log n) multiplications in RP Q, compared to O(n2).
+However, this asymptotic improvement may not show in practice as this method
+involves more changes of modulus (from Q to PQ and backwards), which is
+relatively costly.
+3.4
+Backward format conversion
+Suppose some computations have been run on shared-a ciphertexts, initially
+under keys (sk′
+i)0≤i<n and we want to convert back to ciphertexts for a share
+secret sk. This may be implemented using the KeySwitch algorithm; we shall let
+the corresponding procedure be denoted by Backward-FmtSwitch. We observe
+that this introduces a circular security assumption, as the format conversion key
+from sk to the ski’s contains RLWE encryptions of P ·sk under the sk′
+i’s, and the
+backward format conversion keys contain RLWE encryptions of P ·sk′
+i’s under sk.
+3.5
+RLWE ciphertexts with subring a-part
+Assume we have a ciphertext (a, b) ∈R2
+Q,N for a secret key sk. Using the ring-
+switching technique described in Section 2.3 allows to turn (a, b) into n cipher-
+texts in RQ,N′. We can then use the techniques above to have them share their
+a-parts.
+
+16
+Y. Bae et al.
+This approach does not require to have multiple ciphertexts at the beginning,
+but relies on the observation that a large-ring ciphertext may be viewed as
+several subring ciphertexts and these subring ciphertexts can be transformed
+into ciphertext with shared-a in a subring when the modulus is sufficiently small.
+4
+Matrix multiplication algorithms
+In this section, we describe new reductions from PC-MM to PP-MM’s, for di-
+verse matrix dimensions d ≥Ω(N 1/2+ε). These rely on matrix equations that
+preserve the formats of the ciphertexts when multiplying by the plaintext ma-
+trix. These formats differ from standard RLWE ciphertexts: the MLWE format
+is interesting for small-dimensional PC-MM, and shared-a RLWE is efficient for
+large-dimensional PC-MM.
+The conversion between RLWE ciphertexts and shared-a RLWE ciphertexts
+was described in Section 3. Conversions between MLWE and RLWE formats
+have been described in [2] (see Section 2). All conversions require eO(dN) bit
+operations, which is asymptotically less significant than the cost for matrix mul-
+tiplication for d = Ω(N 1/2+ε) (under the assumption that matrix multiplication
+has a cubic cost).
+We focus on coefficients-encoded ciphertexts at modulus Q1 = q0q1. For
+simplicity, we restrict the discussion to square matrices, although our algorithms
+extend to rectangular matrices. For the rectangular matrices, the number of
+columns of the encrypted matrix determines the choice of algorithm to use. In
+particular, if it is larger (resp. smaller) than N, we can rely on the multi-secret
+shared-a RLWE (resp. MLWE) format.
+4.1
+Multi-secret RLWE for large dimensions
+For large matrix dimensions, with d ≥N, the cost of PP-MM is not negligible.
+Hence, reducing a single floating-point d×d×d PC-MM to two modular d×d×d
+PP-MM may not be satisfactory. Instead, we give a reduction to one d × d × d
+modular PP-MM and one d × d × N modular PP-MM. For this purpose, we rely
+on multi-secret shared-a RLWE. We assume that d = nN for some integer n.
+Matrix view of multi-secret RLWE. Consider coefficients-encoded shared-
+a RLWE ciphertexts (a, bj = −a · skj + mj) ∈R2
+Q1,N for 0 ≤j < n, for
+messages m0, . . . , mn−1 and secret keys sk0, . . . , skn−1. We have the following
+equation, modulo Q1:
+aT ·
+
+Toep(sk0)| · · · |Toep(skn−1)
+
++ [bT
+0 | · · · |bT
+n−1] = [mT
+0 | · · · |mT
+n−1] ,
+where a, the bi’s and the mi’s are N-dimensional vectors corresponding to a,
+the bi’s and the mi’s, respectively.
+Now, to encrypt the d × d matrix M, we encrypt each row using the above
+process, with one a-part for the row and n secret keys, which are the same
+across all rows. More concretely, we consider the ciphertexts (ai, bi,j = −ai ·
+
+17
+skj + mi,[jN,(j+1)N)) ∈R2
+Q1,N for 0 ≤i < d and 0 ≤j < n. Here, the nota-
+tion mi,[jN,(j+1)N) refers to the ring element whose coefficients are mi,jN, . . . ,
+mi,(j+1)N−1. We call this a d × n bundle of shared-a RLWE ciphertexts.
+Lemma 2. For any d × d/N bundle of shared-a RLWE ciphertexts (ai, bi,j =
+−ai · skj + mi,[jN,(j+1)N))) ∈R2
+Q1,N for 0 ≤i < d and 0 ≤j < n, there exist
+a d × N matrix A and a d × d matrix B over ZQ1 such that
+A ·
+Toep(sk0)| · · · |Toep(skd/N−1)
++ B = M .
+(7)
+Conversely, if such a matrix equation holds, then there exists a d × d/N bundle
+of shared-a RLWE ciphertexts (ai, bi,j) such that bi,j = mi,[jN,(j+1)N) −ai · skj ∈
+R2
+Q1,N for 0 ≤i < d and 0 ≤j < d/N.
+This lemma is a direct consequence of the matrix form of the polynomial product
+in RQ1,N, which we state now. For u = PN−1
+i=0 uiXi ∈RQ1,N, we define Vec(u) ∈
+ZN
+Q1 to be the N-dimensional row vector [u0, . . . , uN−1]; Vec() is obviously a
+linear isomorphism.
+Lemma 3. Let u, s, v, w ∈RQ1,N. The following identities are equivalent:
+us + v = w ⇔Vec(u)Toep(s) + Vec(v) = Vec(w).
+Proof. We rewrite the identity w = us + v under the equivalent form w =
+v + PN−1
+i=0 ui · (Xis). By taking Vec() of both sides, we get
+Vec(w) = Vec(v) +
+N−1
+X
+i=0
+uiVec(Xis).
+By definition, Vec(Xis) is the i-th row of Toep(s). The last sum is thus equal to
+Vec(u)Toep(s), as claimed.
+⊓⊔
+Proof of Lemma 2. We apply Lemma 3 to u = ai, v = skj and get
+Vec(ai) · Toep(skj) + Vec(bij) = Vec(mij),
+for 0 ≤i < d, 0 ≤j < d/N. Stacking the ai vertically, the skj horizontally, and
+the bij and mi,[jN,(j+1)N)’s both ways yields Equation (7).
+Conversely, if such a matrix equation holds, we define the ring elements ai
+from the i-th row of A for each i, 0 ≤i < d, the secret key skj from the j-th
+Toeplitz matrix for each j, 0 ≤j < d/N. Finally, we define the ring elements bi,j
+(resp. mi,[jN,(j+1)N)) from the j-th piece of length N of the i-th row of B (resp.
+M). Then, Equation (7) is equivalent to bi,j = mi,[jN,(j+1)N) −ai · skj ∈R2
+Q1,N,
+which is a d × d/N bundle of RLWE ciphertexts.
+⊓⊔
+PC-MM algorithm for large dimensions. We now use Equation (7) to
+design a PC-MM algorithm. It consists in multiplying both sides of Equation (7)
+from the left by the plaintext matrix U. To be more precise, suppose we are given
+
+18
+Y. Bae et al.
+a d×k bundle of shared-a RLWE ciphertexts encrypting the d×d matrix M. By
+left-multiplying by a d × d matrix U, we obtain the following matrix equation:
+(UA) ·
+Toep(sk0)| · · · |Toep(skk−1)
++ (UB) = (UM).
+By Lemma 2, the result corresponds to a d × k bundle of shared-a RLWE ci-
+phertexts encrypting the d × d matrix UM. The cost consists in a d × d × N
+PP-MM of U and A and a d × d × d PP-MM of U with B.
+For PC-MM with inputs and outputs of ordinary RLWE formats, we first (for-
+ward) convert the format so that the a-part involved in each given row matches,
+for secrets sk0, . . . , skk−1. For this purpose, we use either conversion algorithm
+described in Section 3. Then, we compute PC-MM as described above. Finally,
+we (backward) convert the format, obtaining RLWE ciphertexts with a shared
+secret sk, encrypting the matrix U ˙M. To accelerate backward conversion, we
+rescale the ciphertexts after PC-MM, even though it is not necessary for a stan-
+dalone PC-MM. Algorithm 1 describes the entire process.
+Algorithm 1 PC-MM for dimension above the RLWE ring degree N
+Input: A matrix U ∈Rd×d, with d = kN for some integer k ≥1,
+coefficients-encoded RLWE ciphertexts (cti)0≤i<d2/N in RQ1,N,
+each of which encrypts a segment of a row of a matrix M ∈Rd×d.
+Input: Switching keys fmt-swkQ1,P,sk→{ski}0≤i<n and swkQ0,P,ski→sk for 0 ≤i < n.
+Output: Coefficients-encoded RLWE ciphertexts in RQ0,N,
+each of which encrypts a segment of a row of the matrix UM ∈Rd×d.
+1: for i ←0 to d do
+2:
+(ai, bi,j) ←FmtSwitch(ctni, · · · , ctn(i+1)−1; fmt-swkQ1,P,sk→{ski}0≤i<n)
+3: end for
+4: (A, B) ←((ai,j)0≤i<d,0≤j<N, (bi,j)0≤i<d,0≤j<d)
+5: (A′, B′) ←(U · A, U · B)
+6: for i ←0 to d and j ←0 to d/N do
+7:
+ct′
+i,j ←(P
+k a′
+i,kXk, P
+k b′
+i,jN+kXk) ∈R2
+Q1,N
+8:
+ct′
+i,j ←Rescale(ct′
+i,j; Q1, Q0)
+9:
+ct′
+i,j ←KeySwitch(ct′
+i,j; swkQ0,P,ski→sk)
+10: end for
+11: return all (ct′)i,j’s
+Besides the d × d × N and d × d × d PP-MM’s, the algorithm involves O(d)
+format conversion key switchings with n = d/N secrets (Step 2), O(d2/N) cipher-
+text rescalings (Step 8) and O(d2/N) key switchings (Step 9). The non-PP-MM
+costs hence grow as eO(d2 log Q1) bit operations. This is negligible compared to
+the cost eO(dω log Q1) of matrix multiplication over ZQ1. Overall, for d large com-
+pared to N, the cost is almost only that of one PP-MM in the same dimensions
+as the PC-MM under scope.
+We note that in some scenarios, it may be preferable not to perform the back-
+ward format conversion (Step 9) and keep ciphertexts that share their a-parts.
+
+19
+On the other side, there exist scenarios in which we already have ciphertexts
+sharing a-parts, which enables us to skip forward format conversion (Step 2).
+4.2
+MLWE for small dimensions
+For matrices of dimension d below the ring degree N, the matrix multiplica-
+tion requires a higher level of granularity than that of the RLWE ring. If fully
+using the coefficients of the RLWE ciphertexts, then several columns, rows or
+diagonals of the encrypted matrix are stored in a single ciphertext. This makes
+homomorphic computations more cumbersome, possibly requiring permutations
+and maskings to extract relevant data from the ciphertexts. This requires key
+switching within the matrix multiplication algorithm, which incurs a computa-
+tional overhead, as it prevents from reducing directly to PP-MM and benefit
+from highly efficient PP-MM software.
+Matrix view of MLWE. Assume we are given a coefficients-encoded MLWE
+ciphertext ((aj)0≤j<k, b = −P
+j ajskj + m), where aj ∈RQ1,N for all j. Then
+we have the following equation modulo Q1:
+aT ·
+
+
+Toep(sk0)
+...
+Toep(skk−1)
+
++ bT
+= mT ,
+(8)
+where b and m are the vectors corresponding to the (degree-N) ring element b
+and m, and a is the concatenation of the vectors corresponding to the aj’s. When
+we have multiple MLWE ciphertexts with a shared secret key sk = (skj)0≤j<k,
+Equation (8) becomes a matrix equation.
+Lemma 4. Let cti = ((ai,j)0≤j<k, bi = −P
+j ai,jskj +mi,[0,d)) be n coefficients-
+encoded MLWEk
+Q1,d for the same secret key sk = (skj)0≤j<k. Then there exist an
+n × kd matrix A and an n × d matrix B over ZQ1 such that
+A ·
+
+
+Toep(sk0)
+...
+Toep(skk−1)
+
++ B = M .
+(9)
+Conversely, if such a matrix equation holds, then there exist n coefficients-
+encoded MLWEk
+Q1,d ciphertexts cti = ((ai,j)0≤j<k, bi) such that bi = −P
+j ai,jskj+
+mi,[0,d) for all i.
+The proof follows from applying Lemma 3 to u = aij, s = skj, v = bi,
+w = mi,[0,d) and suitably stacking the matrix identity obtained for 0 ≤i < n,
+0 ≤j < k.
+PC-MM algorithm for small dimensions. Similarly to the large-dimensional
+case, Equation (9) provides a reduction from PC-MM (with MLWE ciphertexts)
+to two modular PP-MM. Assume we are given d MLWE ciphertexts of degree d
+
+20
+Y. Bae et al.
+and rank k that encrypt a matrix M, row by row. Here k is set so that MLWEk
+Q1,d
+is hard. To multiply M by the d × d plaintext matrix U, we multiply both sides
+of Equation (9) on the left by U. We obtain the following matrix equation:
+(UA) ·
+
+
+Toep(sk0)
+...
+Toep(skk−1)
+
++ (UB) = (UM) .
+By Lemma 4, the result corresponds to d MLWE ciphertexts of rank k over RQ1,d.
+The cost is that of a d × d × dk PP-MM and a d × d × d PP-MM.
+For PC-MM with ordinary degree N RLWE inputs and outputs, we use the
+conversions between degree N RLWE and MLWEk
+Q1,d (see Section 2), along with
+the above reduction to PP-MM. Algorithm 2 describes the entire process. It
+requires that d ≥N 1/2.
+Besides the d×d×N and d×d×d PP-MM’s, the algorithm involves O(d2/N)
+conversions from RLWE-format ciphertexts in degree N = kd to MLWE-format
+ciphertexts with degree d and rank k (Step 2), as well as O(d2/N) conversions
+from MLWE-format ciphertexts with the same parameters to RLWE-format ci-
+phertext (Step 14). The non-PP-MM costs hence grow as eO(d2 log Q1) bit oper-
+ations. This is negligible compared to the cost eO((1+N/d)·dω log Q1) of matrix
+multiplication.
+Note that MLWE-format ciphertexts can be used in place of RLWE-format
+ciphertexts when transferring data from client to server, with enhanced granu-
+larity (see [2]). In such a scenario, the first conversion, from RLWE to MLWE,
+may hence be skipped.
+4.3
+Faster PC-MM with precomputation
+We now design a reduction from PC-MM to one PP-MM, with precomputation.
+Importantly, we can leverage the technique from Section 5 so that the PP-MM is
+indeed a floating-point PP-MM rather than a modular PP-MM. This then gives
+an optimal reduction from PC-MM to a single floating-point PP-MM.
+Another matrix view of multi-secret RLWE. Consider coefficients-encoded
+shared-a RLWE ciphertexts (a, bj = −a · skj + mj) ∈R2
+Q1,N for 0 ≤j < n, for
+messages m0, . . . , mn−1 and secret keys sk0, . . . , skn−1. We have the following
+equation, modulo Q1:
+
+
+skT
+0
+...
+skT
+n−1
+
+· Toep(a) +
+
+
+bT
+0
+...
+bT
+n−1
+
+=
+
+
+mT
+0
+...
+mT
+n−1
+
+,
+where we identified ski, bi and mi with the column vector corresponding to its
+coefficients. To encrypt d×d matrices with d ≥N, we proceed as in Section 4.1.
+We obtain the following lemma:
+
+21
+Algorithm 2 PC-MM for dimension below the RLWE ring degree N
+Input: A matrix U ∈Rd×d, with N = kd for some integer k ≥1,
+coefficients-encoded RLWE ciphertexts (cti)0≤i<d2/N in RQ1,N,
+each of which encrypts a strip of rows of a matrix M ∈Rd×d.
+Input: Switching keys for ModPack
+Output: Coefficients-encoded RLWE ciphertexts in RQ0,N,
+each of which encrypts a strip of rows of the matrix UM ∈Rd×d.
+1: for i ←0 to d2/N do
+2:
+((adi+j, bdi+j))0≤j<k ←ModDecomp(cti)
+3: end for
+4: for i ←0 to d do
+5:
+Set the i-th row of A as the concatenation of coefficients of ai
+6:
+Set the i-th row of B as the coefficients of bi
+7: end for
+8: (A′, B′) ←(UA, UB)
+9: for i ←0 to d do
+10:
+Set the concatenation of coefficients of a′
+i as the i-th row of A′
+11:
+Set the coefficients of bi as the i-th row of B′
+12:
+Rescale ((a′
+i, bi); Q1, Q0)
+13: end for
+14: for i ←0 to d2/N do
+15:
+ct′
+i ←ModPack((a′
+di+j, b′
+di+j)0≤j<k)
+16: end for
+17: return all ct′
+i’s
+Lemma 5. For any given d/N×d bundle of shared-a RLWE ciphertexts (ai, bi,j =
+−ai · skj + mi,[jN,(j+1)N)) ∈R2
+Q1,N for 0 ≤i < d/N and 0 ≤j < d, there exists
+a d × N matrix S and a d × d matrix B over ZQ1 such that
+S ·
+h
+Toep(a0)| · · · |Toep(ad/N−1)
+i
++ B = M .
+(10)
+Conversely, if such a matrix equation holds, then there exists a d/N ×d bundle of
+shared-a RLWE ciphertexts (ai, bi,j) such that bi,j = −ai · skj + m[i,jN..(j+1)N) ∈
+R2
+Q1,N for 0 ≤i < d/N and 0 ≤j < d.
+The proof follows from applying Lemma 3 to u = skj, s = ai, v = bi,j,
+w = mi,[jN,(j+1)N) and suitably stacking the matrix identity obtained for 0 ≤
+i < d/N, 0 ≤j < d.
+Precomputation PC-MM algorithm for large dimensions. By multiply-
+ing both sides of Equation (10) on the left by U, we obtain
+(US) ·
+h
+Toep(a0)| · · · |Toep(ad/N−1)
+i
++ (UB) = (UM) .
+(11)
+Lemma 5 implies that this is equivalent to shared-a RLWE ciphertexts, with
+secret keys corresponding to each row of US.
+
+22
+Y. Bae et al.
+Observe that US is independent of the ciphertext, and depends only on the
+secret keys. Theorefore, if U is known in advance, we can precompute the key-
+switching key from each row of US to a common secret key, in an off-line phase.
+Then, in the online phase, a single PP-MM UB completes the PC-MM with
+shared-a RLWE ciphertexts.
+Assuming the inputs is given by RLWE ciphertexts, we first (forward) con-
+vert the ciphertexts to shared-a ciphertexts, where the sharing is across a matrix
+row, and for secrets sk0, · · · skn−1. We then compute a single PP-MM for UB
+and do not perform any on-line computation for the a-part. Finally, we (back-
+ward) convert to RLWE ciphertexts for a shared secret sk, using pre-computed
+switching keys from US. This is formalized in Algorithm 3.
+When U is not known at setup, it is also possible to generate the switching
+keys from US to sk after U is known. For given switching keys for backward
+format conversion which correspond to the rows of S, we can perform PP-MM
+to the switching keys, obtaining the desired key from US to sk.
+In this precomputation-based algorithm (and the one described below), we
+have secret keys for US, which do not have small magnitude coefficients. To
+keep the rescaling error small, we switch the secret to a small secret (e.g., sparse
+ternary secret) before any rescaling.
+Another matrix view of multi-secret MLWE. For matrices of size d × d
+with d < N, we use shared-a MLWE formats to reduce PC-MM to a single
+PP-MM, with precomputation. Consider coefficients-encoded shared-a MLWE
+ciphertexts (a, bj = −⟨a, skj⟩+ mj) ∈Rk+1
+Q1,N for 0 ≤j < n for some n, for
+messages mj’s and secret keys skj’s. We have the following equation modulo Q1:
+
+
+skT
+0
+...
+skT
+n−1
+
+·
+
+
+Toep(a0)
+...
+Toep(ak−1)
+
++
+
+
+bT
+0
+...
+bT
+n−1
+
+=
+
+
+mT
+0
+...
+mT
+n−1
+
+,
+where the bj’s and the mj’s are N-dimensional vectors corresponding to the bj’s,
+the mj’s, respectively; the rows of the left matrix are kN-dimensional vectors
+corresponding to ski ∈Rk
+Q1,N for all 0 ≤i < n, and aj is the j-th ring element
+of a’s for all 0 ≤j < k.
+To encrypt a d×d matrix M with d dividing N, we consider shared-a MLWE
+ciphertext (a, bj = −⟨a, skj⟩+mj) ∈Rk+1
+Q1,d for 0 ≤j < d, where mj corresponds
+to the j-th row of M. Note that the security of MLWE is determined by dk.
+Lemma 6. For any d shared-a MLWE ciphertexts (a, bj = −⟨a, skj⟩+ mj) ∈
+Rk+1
+Q1,d for 0 ≤j < d, there exist a d × N matrix S and a d × d matrix B
+over ZQ1 such that
+S ·
+
+
+Toep(a0)
+...
+Toep(aN/d−1)
+
++ B = M .
+(12)
+Conversely, if such a matrix equation holds, then there exist d shared-a MLWE
+ciphertexts (a, bj) such that bj = −⟨a, skj⟩+ mj ∈Rk+1
+Q1,d for 0 ≤j < d.
+
+23
+This again follows from Lemma 3 for u = skij, s = ai, v = bj, w = mj,
+0 ≤i < N/d, 0 ≤j < d, and stacking the matrix identity thus obtained.
+Precomputation PC-MM algorithm for small dimensions. Similarly to
+the large-dimensional case, we can reduce PC-MM to a PP-MM of UB, by allow-
+ing the precomputation of US on the key material. Concretely, by multiplying
+both sides of Equation (12) on the left, we have:
+(US) ·
+
+
+Toep(a0)
+...
+Toep(ak−1)
+
++ (UB) = (UM) .
+During the online phase, we evaluate the PP-MM corresponding to the b-part,
+and do not change the a-part. Switching keys from US to a common RLWE
+secret can be precomputed.
+To apply this to ordinary RLWE-format ciphertexts, we first convert RLWE-
+format ciphertexts to shared-a MLWE ciphertexts. This is achieved by converting
+from RLWE ciphertexts to shared-a RLWE ciphertexts and then from RLWE
+ciphertexts to MLWE ciphertexts using the ShModDecomp procedure.
+The opposite direction also can be achieved in two steps: (a) go from shared-a
+MLWE ciphertexts to shared-secret MLWE ciphertexts by using ModKeySwitch
+(see Section 2.3), and (b) run ModPack to obtain RLWE ciphertexts. The whole
+process is described in Algorithm 4, which requires that d ≥N 1/2.
+For the backward conversion, it is even possible to convert shared-a MLWE
+ciphertexts into ordinary RLWE in one step, if we have a key-switching key from
+the column of US to a common RLWE secret.
+5
+Optimizing the b-part matrix multiplication
+The algorithms from Section 4 rely on PP-MM’s modulo an integer which is
+small but can still be larger than a machine word. Note that modular PP-MM
+is not as fast as floating-point PP-MM, which benefits from dedicated libraries
+such as OpenBLAS [28]. For our implementation, we reduce PP-MM modulo an
+integer to several floating-point PP-MM’s (see Section 7.1).
+To reduce the cost of the PP-MM’s, we explain below how to implement
+the PP-MM corresponding to the b-parts of the ciphertexts, i.e., the evalua-
+tion of UB, with a floating-point PP-MM rather than a modular one. In the
+precomputation setting (see Subsection 4.3), this gives a reduction from one
+floating-point PC-MM to one floating-point PP-MM.
+Note that the b-part of RLWE/MLWE ciphertexts contains the information
+of the plaintext message in specific positions of bits. In particular, a CKKS
+ciphertext contains the plaintext message only in the most significant bits of
+the b-part, while the least significant bits consist of numerical errors and RLWE
+or MLWE errors that are irrelevant. Therefore, for the b-part U · B mod Q1,
+we can multiply the most significant bits of U with the most significant bits
+of B and keep the most significant bits of U·B (without reduction modulo Q1).
+
+24
+Y. Bae et al.
+This can be achieved with double-precision floating-point PP-MM, unless the
+required target precision is too large. The required precision is driven by the
+target precision and the overflow modulo Q1. Chopping off the bits of the b-
+part is a classical technique in lattice-based cryptography, used for example in
+Kyber [3] and dating back to as far as [30]. Here we extend this technique to the
+context of PC-MM.
+We first explain how to use floating-point arithmetic to multiply a scalar of
+the b-part of a single ciphertext. Suppose we are given b ∈RQ1,N, where Q1 =
+q0q1. Note that the prime q1 is used solely for PC-MM, while q0 is possibly
+related to other homomorphic computations beyond scalar multiplications (e.g.,
+bootstrapping). From this, we note that q1 can be much smaller than q0 (e.g., we
+take q1 ≈218 and q0 ≈258 in our experiments). To multiply b by a scalar u ∈R:
+• we first extract the first 53 most significant bits of b, to obtain a floating-
+point number eb;
+• we then multiply it with the encoding Ecd(u) ∈Z of u with scaling fac-
+tor ∆1 = q1 (i.e., Ecd(u) has magnitude ≈q1); let y denote the result;
+• finally, the modular reduction by q0 completes the entire multiplication; it is
+performed by dividing y by q0q1, taking the fractional part, and multiplying
+by q0.
+Note that eb contains the first 53-bits of b and has magnitude ≈Q1 = q0q1.
+The quantity y is about q1 times larger, and corresponds to an approximation
+of b · Ecd(u) over the reals, to ≈53 bits of precision. Dividing by q0q1 maintains
+this precision, but the output is now of magnitude ≈q1. Taking the fractional
+part leads to a loss of ≈log q1 bits of precision. This precision is maintained
+while re-multiplying by q0. Overall, this gives an approximation to b′ = (Ecd(u)·
+b mod q0q1)/q1 to a precision of ≈53−log q1 bits. Figure 1 visualizes this process.
+Now, assume that the scaling factor of m in b was ∆. Then so is the scaling
+factor of m·Ecd(u) in b′ (as we set ∆1 = q1). This means that in our approxima-
+tion to b′, the quantity m·Ecd(u) is correct to precision ≈53−log q1−log(q0/∆).
+As Ecd(u) approximates ∆1 · u to ≈log q1 bits, the plaintext underlying b′ ap-
+proximates m · u to a precision of
+≈min
+
+53 −log q1 −log
+ q0
+∆
+
+, log q1
+
+bits .
+To compute UB mod Q1, we adopt the same strategy. More precisely, for d×d
+matrices, we first extract the first 53 most significant bits of each entry of B,
+then we perform a floating-point PP-MM with the matrix U that encodes a
+real-valued matrix with integers and a scaling factor of ∆1 = q1, and finally, we
+reduce each entry modulo q0 (by dividing by q0q1, taking the fractional part and
+multiplying by q0). This requires d2 modular reductions, which is not significant
+compared to matrix multiplication in dimension d. Heuristically, we expect a
+growth of the coefficients by a factor
+√
+d, which leads to an output precision of
+≈min
+
+53 −log q1 −log
+ q0
+∆
+
+−1
+2 log d , log q1
+
+bits .
+
+25
+Fig. 1. Illustration of floating-point PP-MM of the b-part. The green areas correspond
+to the data underlying the ciphertext. The pink area is the
+mod q0q1 overflow due to
+multiplication by Ecd(u).
+Depending on the matrices to be multiplied, the precision loss could be higher.
+In particular, in the worst case, the (log d)/2 term should be replaced by log d.
+6
+Bootstrapping improvements
+In this section, we show how the shared-a representation of multiple ciphertexts
+can be leveraged to accelerate bootstrapping in a situation where several cipher-
+texts must be bootstrapped at once. This is a common situation in PC-MM,
+as storing the encrypted input and output matrices often requires several ci-
+phertexts. First, we describe how RLWE key-switching, and thus rotations and
+conjugations, can be computed while preserving the shared-a representation. We
+then explain how to fuse bootstrapping with PC-MM, hence providing a form
+of programmable bootstrapping for matrix multiplication.
+6.1
+Shared-a homomorphic operations
+We start by describing versions of the homomorphic operations Add, PCMult,
+Rot, Conj which benefit from the shared-a format and preserve it.
+Shared-a Add and PCMult. We define the following algorithms.
+• Sh-Add. Given as input two n-tuples of shared-a ciphertexts ((a, bi))0≤i<n
+and ((a′, b′
+i))0≤i<n both for secret keys sk1, . . . , skn, Sh-Add computes and
+returns ct+ = ((a + a′, bi + b′
+i))0≤i<n.
+• Sh-PCMult. Given as input a n-tuple of shared-a ciphertexts ((a, bi))0≤i<n
+and m ∈R, Sh-PCMult computes and returns ct× = ((ma, mbi))0≤i<n.
+Note that the outputs of Sh-Add and Sh-PCMult remain in shared-a format.
+Further, we note that the Rescale algorithm is compatible with the shared a-
+part format. Concretely, when applying Rescale to two RLWE ciphertexts (a, b1)
+and (a, b2), the output ciphertexts (a′, b′
+1) and (a′, b′
+2) have the same a-part.
+In the precomputation algorithms from Section 4, we may end up with
+shared-a ciphertexts for larger secret keys (as the secret key matrix is multi-
+plied by the plaintext matrix U). This can lead to larger rounding errors when
+
+26
+Y. Bae et al.
+applying Rescale. To circumvent the difficulty, one may use a shared-a preserving
+version of the KeySwitch algorithm to switch to smaller-magnitude secret keys.
+Shared-a KeySwitch. We start by describing the shared-a switching key format.
+• Sh-SWKGen. Given two integers P, Q and two tuples of secret keys sk =
+(ski)0≤i<n, sk′ = (sk′
+i)0≤i<n ∈Rn
+N, Sh-SWKGen returns a switching key
+Sh-swkQ,P,sk→sk′ ∈RP Q,N ×Rn
+P Q,N from shared-a key sk to shared-a key sk′
+for a shared-a ciphertext modulo Q with auxiliary integer P. This key is of
+the form:
+Sh-swkQ,P,sk→sk′ = (aSh-swk, (bSh-swk,i)i) ∈RP Q,N × Rn
+P Q,N ,
+with bSh-swk,i = −aSh-swk·sk′
+i+ei+P·ski , where ei ∈RN has small-magnitude
+coefficients, for 0 ≤i < n.
+This shared-a switching key can also be viewed as a n-tuple of switching keys
+with shared a-part. We now describe shared-a key switching.
+• Sh-KeySwitch. Given a shared-a switching key Sh-swk = Sh-swkQ,P,sk→sk′,
+and a n-uple of ciphertexts (cti)0≤i<n in shared-a format, where cti =
+((a, bi))0≤i<n is an encryption of mi under the secret key ski, Sh-KeySwitch
+returns the shared-a tuple of ciphertexts
+((a′, b′
+i))0≤i<n = (KeySwitch(Sh-swki, (a, bi))0≤i<n.
+It may be checked that the output of Sh-KeySwitch is in shared-a format, and
+that (a′, b′
+i) decrypts to mi under the secret key sk′
+i, for all 0 ≤i < n.
+The shared-a key-switching procedure also allows to define rotations and
+conjugation procedures that preserve the shared-a format.
+Cost of shared-a operations. We readily observe that the costs of Sh-Add and
+Sh-PCMult are almost half of those of regular Add and PCMult, when n is large.
+We turn to the cost of Sh-KeySwitch. From a computational point of view, key-
+switching can be decomposed into three steps: ModUp (raising from modulo Q
+to PQ), MultSwk (multiplying), ModDown (lowering the modulus to Q). The
+first one operates only on the a-part, and can thus be fully batched in shared-
+a representation, while the last two operate on both parts of the ciphertext.
+Table 2 compares the number of ring element operations in ModUp, and similarly
+for MultSwk and ModDown for Sh-KeySwitch over a n-tuple of ciphertexts, to
+the KeySwitch counterpart. Based on the table, we see that the shared-a key-
+switching can be expected to be at least twice as fast as the usual key-switching
+operation, when n is large enough.
+It should however be pointed out that, as we use the shared-a format for
+the switching key, the key size grows linearly with n. To be more specific, the
+switching key size for rank n shared-a format is (n + 1)/2 times larger than that
+of the single secret format. When working at high levels, this implies a large
+memory footprint.
+
+27
+ModUp MultSwk ModDown
+n× KeySwitch
+n
+2n
+2n
+Sh-KeySwitch
+1
+n + 1
+n + 1
+Table 2. Numbers of ring operations, for naive key-switching and shared-a keyswitch-
+ing over n ciphertexts.
+6.2
+Batch-bootstrapping
+We now use the shared-a primitives to improve the efficiency of the S2C and C2S
+bootstrapping steps. S2C and C2S both correspond to a sequence of products
+of a plaintext matrix M with a ciphertext ct, the slots of which are seen as
+an N/2-dimensional vector. The matrix-vector multiplications are followed by a
+conjugation step and additions. The matrix-vector products are evaluated, using
+the diagonal method [21], as a sum:
+X
+j
+Diagj(M) ⊙Rotj(ct) ,
+(13)
+where Diagj(M) = (m0,j, . . . , mN/2−j−1,N/2−1, mN/2−j,0, . . . , mN/2−1,j−1) is the
+j-th diagonal of M.
+All the operations used in Equation (13) have a shared-a counterpart, which
+preserves the shared-a structure. This also holds for the Baby-Step-Giant-Step
+version of Equation (13). One can thus replace C2S and S2C by shared-a coun-
+terparts, which we will call Sh-C2S and Sh-S2C.
+It remains to schedule the format switching from ordinary representation to
+shared-a. For this, we note that the only step of the bootstrapping process which
+does not have a shared-a preserving version is EvalMod, which consists in the
+evaluation of a large-degree polynomial, requiring ciphertext-ciphertext multi-
+plications. In the case of S2C-first bootstrap, we thus place the forward format
+conversion before S2C, and the backward format conversion before EvalMod:
+[FmtSwitch] →[Sh-S2C] →[ModRaise] →[Sh-C2S]
+→[Backward-FmtSwitch] →[EvalMod] .
+In the case of C2S-first bootstrapping, forward and backward format conversions
+are inserted at the beginning and end of C2S and S2C, respectively:
+[FmtSwitch] →[ModRaise] →[Sh-C2S] →[Backward-FmtSwitch]
+→[EvalMod] →[FmtSwitch] →[Sh-S2C] →[Backward-FmtSwitch] .
+6.3
+Matrix multiplication and bootstrapping
+Designing efficient algorithms and implementations in CKKS (the situation is
+the same in the BFV/BGV context) is a more demanding process than designing
+“usual” algorithms. Indeed, computations in CKKS have, roughly, a cost that
+
+28
+Y. Bae et al.
+is linear in ℓ+ 1, where ℓis the current level of modulus. The algorithm design
+should always include a scheduling task targetting the placement of computa-
+tionally intensive steps, such as matrix multiplication, at the lowest available
+level. This implies that such steps are typically followed by bootstrapping.
+We can go further and study the interaction of our PC-MM algorithms with
+the bootstrapping process. The fact that our algorithms use the coefficient en-
+coding points strongly in this direction. Indeed, a ciphertext has a coefficient-
+encoded message at the lowest level during S2C-first bootstrapping, which most
+of the current CKKS implementations follow. Putting the PC-MM step at this
+stage proves to be an optimal solution to the issue of performing PC-MM at a
+low level.
+We prove below that Algorithm 1 (d ≥N) also works if the input is slot-
+encoded. This allows, in this case, other options for the PC-MM computation.
+While we still believe that fusing linear algebra and bootstrapping remains
+preferable, we shall also discuss, for the sake of completeness, the other available
+options.
+Since PC-MM (when the matrix dimensions are not small) usually encounters
+lots of ciphertexts for (simultaneous) bootstrapping, we use the batch bootstrap-
+ping techniques of Section 6.2 while fusing PC-MM and bootstrapping. Putting
+all ingredients together with ring switching, we propose a fast PC-MM algorithm
+fused with batch bootstrapping, which we call MaMBo (for Matrix Multiplica-
+tion Bootstrapping).
+Compatibility with slots-encoded ciphertexts for d ≥N. An important
+question regarding fusing with other FHE operations is whether the PC-MM
+algorithms are compatible with slot-encoded ciphertexts. For ease of discussion,
+let us focus on the simpler case of PC-MM with d = N and without precom-
+putation (i.e., the algorithm from [26]). Recall the following equation from the
+introduction:
+A · Toep(sk) + B = M ,
+where the rows of A, B and M correspond to the coefficients of a, b and m parts
+of the input ciphertexts. We now observe that the coefficients-encoded matrix
+M ∈RN×N is related to the slots-encoded matrix M′ ∈CN×N/2 as M′ = MF,
+where F ∈CN×N/2 is the C2S matrix. We then have UM′ = UMF , for any
+scaled plaintext matrix U ∈ZN×N. Therefore, PC-MM with slots encodings is
+equivalent to PC-MM with coefficients encodings when d = N. It may be checked
+that Algorithm 1 for d > N are similarly compatible with slots encoding.
+Combining PCMM with bootstrapping. To combine the PC-MM algo-
+rithms with bootstrapping while performing computationally demanding PC-
+MM at a low level, there seems to be three options:
+1. S2C, coefficients-encoded PC-MM, and then HalfBTS;
+2. Slots-encoded PC-MM, then S2C-first bootstrapping; [d ≥N]
+3. Slots-encoded PC-MM, then C2S-first bootstrapping. [d ≥N]
+
+29
+In the first option, one runs PC-MM at level 1, and starts S2C at level
+ℓS2C + 1, where ℓS2C refers to the depth consumption of S2C. This is often the
+most efficient option.
+In the second option, one runs PC-MM at level ℓS2C + 1, and starts S2C
+at level ℓS2C. This leads to a slower PC-MM but slightly faster S2C for input
+ciphertexts, compared to the first option. The second option might be interesting
+if there are significantly more input ciphertexts than the output ciphertexts. For
+instance, for U ∈Rd1×d2 where d1 ≪d2, this option could be preferable.
+Finally, in the third option, one runs PC-MM at level 1, but starts S2C at
+higher levels. This results in fast PC-MM but slower S2C for the outputs. The
+third option might be advantageous for some limited scenarios, notably if one
+wants to lower the level of heavy computations, possibly unrelated to PC-MM.
+MaMBo: fast PC-MM fused with batch bootstrapping. Now, we put
+all algorithms together, along with ring switching. We shall focus on the first
+option, for PC-MM between square matrices of dimension d. This framework
+can be extended to rectangular matrices, and similar chains can be designed for
+the other two options when d ≥N.
+We are first given d2/N slots-encoded RLWE-based FHE ciphertexts of de-
+gree N. We start with decreasing the moduli of input ciphertexts to level ℓS2C+1,
+and run batch S2C to convert them into d2/N coefficients-encoded RLWE cipher-
+texts of degree N at level 1. Then, we use ring switching (see Section 2) to obtain
+d2N1/N coefficients-encoded RLWE ciphertexts of degree N1, where N1 is typi-
+cally significantly smaller than N. This ring switching procedure provides more
+granularity for PC-MM, and we can select the PC-MM algorithm depending
+on N1 rather than N. The subring degree N1 should be sufficiently large for the
+security of the ring switching key, i.e., the parameters (N1, PQ1) should provide
+sufficient security (typical parameters are N = 216 and N1 = 213). By evalu-
+ating the PC-MM with the algorithms of Section 4, we obtain d2N1/N RLWE
+ciphertexts of degree N1 at level 0. Finally, we combine them into d2/N RLWE
+ciphertexts of degree N at level 0 by ring switching, and use batch HalfBTS
+(ModRaise, Sh-C2S and EvalMod) to complete the overall PC-MM process.
+7
+Implementation and experiments
+Our implementations use the HEaaN library [23] implementation of CKKS. The
+provided running times correspond to experiments on an Intel Xeon Gold 6242
+CPU running at 2.80GHz, using a single thread. The HEaaN library takes ad-
+vantage of the AVX512 instructions.
+7.1
+Modular PP-MM using floating-point PP-MM
+Several algorithms from Section 4 reduce PC-MM to exact modular PP-MM,
+namely multiplication of matrices over ZQ1. Such an exact modular matrix mul-
+tiplication can be reduced to (several) floating-point matrix multiplications, al-
+lowing to take advantage of a fast BLAS implementation. This technique is folk-
+lore, and is implemented in libraries such as FFLAS-FFPACK [17, 15]. We have
+
+30
+Y. Bae et al.
+re-implemented it in our settingWe refer the interested reader to the Appendix
+for a description of our strategy regarding this matter.
+7.2
+PC-MM experiments
+We have implemented and experimented with the algorithms from Sections 4.1
+and 4.2, which do not use the offline precomputation of the key-switching ma-
+terial associated to the U · S part. We take as input coefficients-encoded RLWE
+ciphertexts of degree 213 and return output coefficients in the same format. The
+starting modulus log Q1 is 76, and the final modulus log Q0 is 58, where the
+scale factor ∆= 242. We used a sparse secret key with Hamming weight 2 730.
+nThese parameters even allow for a switching key at a modulus PQ1 satisfy-
+ing log PQ1 ≤152, with more than 128-bit security, based on [1]. While our
+algorithms can be solely used for PC-MM with bootstrapping, a switching key
+(towards our parameters) can bridge our parameters with FHE parameters.
+As our ring degree is N = 213, we use MLWE format for log d < 13, RLWE
+format for log d = 13, and shared-a RLWE format for log d > 14. To encrypt
+the d × d matrix, we took d2/N RLWE ciphertexts as input and output, e.g.,
+8, 32, · · · , 32 768 ciphertexts.
+For the experiments, we uniformly sampled U and M in [−1, 1]d×d, with
+log d ranging from 8 to 14. We executed the PC-MM algorithms and measured
+the latency and the relative error between the decrypted matrix and the exact
+product matrix. To be more precise, if X ̸= 0 is the exact product U·M and Y is
+the result returned by our algorithm, our accuracy measure is the relative error
+∥Xi,j −Yi,j∥∞/∥Xi,j∥∞, where ∥(mij)0≤i,j<d∥∞is max0≤i,j<d |mij|.
+PP-MM
+Format conv.
+Accuracy
+Total time
+log d Alg. a part
+b part
+Pre.
+Post.
+b part
+b part
+(mod.)
+fp.
+(mod.)
+fp.
+(mod.)
+fp.
+8
+Alg. 2 0.207 (7.16e-3) 4.40e-3 8.79e-3 9.00e-2 19.2/19.0 13.2/12.7 (0.315) 0.309
+9
+Alg. 2 0.488 (0.0308) 0.0172 0.0150
+0.163 19.2/18.9 13.4/13.0 (0.696) 0.684
+10
+Alg. 2
+1.29
+(0.164)
+0.0774 0.0365
+0.294 19.2/19.0 13.3/12.9 (1.78)
+1.70
+11
+Alg. 2
+3.90
+(0.994)
+0.388
+0.0811
+0.721 19.2/19.0 13.4/13.0 (5.73)
+5.06
+12
+Alg. 2
+13.0
+(6.60)
+2.21
+0.237
+1.79
+19.2/19.0 13.5/13.3 (21.8)
+17.1
+13∗
+49.0
+(48.3)
+15.1
+-
+-
+19.1
+13.6
+(96.8)
+64.6
+14∗Alg. 1
+186
+(384)
+108
+33.5
+20.1
+19.3
+13.6
+(625)
+347
+Table 3. Experimental results for the algorithms with two PP-MM’s; we report both
+the results with two modular PP-MM, and one modular PP-MM and one fp-PP-MM
+(Sec. 5). The timings are in seconds. All matrices are d × d square matrices. For rows
+indicated by ∗, a single experiments was run, compared for 100 for the other rows.
+For the accuracy column, the first figure is the worst relative accuracy, expressed in
+bits, whereas the second one is average relative accuracy. For d = 213, the (mod.)
+columns correspond to the LZ algorithm while the fp. columns include our floating-
+point optimization (Section 5).
+
+31
+The results are provided in Table 3. The “Format conv.” columns account
+for the cost of converting the input to the ciphertext format required for the
+corresponding algorithm (i.e., the relevant parts of ModDecomp or FmtSwitch),
+and postprocessing to convert to the output ciphertext format (i.e., the relevant
+parts of ModPack or Backward-FmtSwitch). The columns “a-part” and “b-part”
+give the total cost of the involved PP-MM’s. Finally, the “Total time” column
+reports both the total time for Algorithms 1 and 2 without (column “(mod.)”)
+and with (column “fp”) the optimization described in Section 5.
+The figures show, in particular, a good fit with the expected complexity: the
+costs of handling the a-part and format conversion is expected to grow quadrat-
+ically with d, whereas the cost of the b-part grows roughly as a cubic function
+of d. Regarding format conversion, we stress that the pre-processing phase of one
+algorithm reduces to simple manipulations (ModDecomp) whereas actual com-
+putations (FmtSwitch) are performed in the other algorithm; this explains the
+much larger figure for the pre-processing for d = 214. Finally, using fp-PP-MM
+saves a constant factor of 2 to 4; the impact of this saving, as expected, becomes
+noticeable as the dimension grows.
+A more complete comparison with [26] can be found in Appendix D.
+7.3
+Batched-bootstrapping experiments
+We have implemented and tested the naive version of FmtSwitch, and the al-
+gorithms Sh-S2C and Sh-C2S, and incorporated them in the batched S2C-first
+bootstrapping chain described in Section 6.2. We considered the real bootstrap-
+ping version of CKKS bootstrapping, i.e., for real-valued data. The main impact
+is that the EvalMod function is only evaluated once, instead of twice (for the
+real and imaginary parts) in the case of complex bootstrapping. We provide
+information about the HEaaN library parameters set we used, in Table 4
+Table 5 gives our experimental results. The first column (single ciphertext
+case) is the reference timing for the current bootstrapping implementation in
+HEaaN. We have experimented batches of up to k = 32 bootstrappings at a
+time. These experiments demonstrate an improvement by a factor > 3 on the
+S2C+C2S part and a speedup of a factor 2 over the whole bootstrapping chain.
+N log2(QP) log2(Q) dnum depth
+216
+1 555
+1 258
+5
+9
+Table 4. Information on the parameter preset (FGb) of the HEaaN library we used
+to test batch bootstrapping. dnum denotes the gadget rank.
+7.4
+MaMBo cost
+Finally, even though we have not implemented MaMBo as a whole, we have
+measured the timings for all individual MaMBo steps. We thus can estimate the
+
+32
+Y. Bae et al.
+Batch size
+1
+2
+4
+8
+16
+32
+FmtSwitch
+-
+0.039 0.146 0.426 0.994 2.39
+Sh-S2C
+0.89 1.20
+1.85
+3.17
+5.86 11.4
+Sh-C2S
+7.44 9.55
+13.7
+21.3
+37.6 71.5
+Backward-FmtSwitch
+-
+0.251 0.406
+0.7
+1.34 2.54
+EvalMod
+2.60 5.16
+10.4
+20.8
+42.2 84.5
+Full BTS
+11.7 17.5
+28.6
+50.3
+95.4 187
+Amortized BTS
+11.7 8.75
+7.15
+6.29
+5.96 5.84
+S2C+C2S speedup
+-
+1.55
+2.14
+2.72
+3.07 3.21
+Total speedup
+-
+1.33
+1.63
+1.86
+1.96 2.00
+Table 5. Timings (in seconds) for our implementation of S2C-first batched bootstrap-
+ping for real inputs (see Section 6.2).
+total cost of MaMBo the fused PC-MM with batch bootstrapping. We limit
+ourselves to Option 1 of Section 6.3. We recall the steps of MaMBo below. The
+indices outside of the brackets refer to the level(s) where each step is executed.
+[FmtSwitch]4 →[Sh-S2C]4→1 →[RingSwitch216→213]1 →[PC-MM]1→0
+→[RingSwitch213→216]0 →[FmtSwitch]0 →[HalfBTS] .
+For the sake of comparison, HEaaN’s current implementation of the complex
+bootstrapping algorithm (starting at level 3) costs 15.3s per ciphertext in our
+experimental setting; for large matrices, MaMBo is thus 41% faster than the
+current bootstrapping (without PC-MM).
+d FmtSwitch Sh-S2C RingSwitch PC-MM RingSwitch FmtSwitch HalfBTS
+MaMBo
+(lev. 4)
+(lev. 4)
+Fwd.
+(lev. 1)
+Bck.
+(lev. 0)
+total /ctxt
+28
+-
+1.20
+0.0196
+0.361
+0.0153
+-
+16.4
+18.0
+18.0
+29
+0.151
+2.63
+0.0497
+0.735
+0.0535
+0.0513
+38.6
+42.3
+10.6
+210
+0.888
+8.44
+0.183
+1.82
+0.212
+0.474
+131
+143
+8.92
+211
+6.23
+31.8
+0.700
+5.16
+0.786
+2.94
+533
+581
+9.07
+212
+22.2
+121
+2.85
+17.9
+3.20
+11.8
+2130
+2310
+9.03
+213
+104
+551
+12.3
+65.3
+13.3
+51.4
+8410
+9200
+8.99
+214
+432
+1970
+47.8
+355
+54.2
+192
+34200
+34200 9.09
+Table 6. MaMBo cost as a function of the dimension. All timings are given in seconds.
+For the bootstrapping process, real ciphertexts are pairwise combined into complex
+ciphertexts, and complex bootstrapping is used. A single experiment was run for all d.
+This table shows that MaMBo quickly attains an asymptotic regime of 9s
+per ciphertext for fused PC-MM and bootstrapping (as soon as the dimension
+exceeds 210). Our interpretation is that the variations around this value are
+related to noise in timings measurements, which might be linked to the huge
+memory footprint of PC-MM in those dimensions.
+
+33
+References
+1. Albrecht, M.R., Player, R., Scott, S.: On the concrete hardness of learning with
+errors. J. Math. Cryptol. (2015), software available at https://github.com/malb/
+lattice-estimator, git commit# 5350825
+2. Bae, Y., Cheon, J.H., Kim, J., Park, J.H., Stehl´e, D.: HERMES: efficient ring
+packing using MLWE ciphertexts and application to transciphering. In: CRYPTO
+(2023)
+3. Bos, J.W., Ducas, L., Kiltz, E., Lepoint, T., Lyubashevsky, V., Schanck, J.M.,
+Schwabe, P., Seiler, G., Stehl´e, D.: CRYSTALS - Kyber: A CCA-secure module-
+lattice-based KEM. In: EuroS&P (2018)
+4. Boura, C., Gama, N., Georgieva, M., Jetchev, D.: CHIMERA: combining Ring-
+LWE-based fully homomorphic encryption schemes. J. Math. Cryptol. (2020)
+5. Brakerski, Z.: Fully homomorphic encryption without modulus switching from clas-
+sical gapSVP. In: CRYPTO (2012)
+6. Brakerski, Z., Gentry, C., Vaikuntanathan, V.: (Leveled) fully homomorphic en-
+cryption without bootstrapping. ACM Trans. Comput. Theory (2014)
+7. Brakerski, Z., Langlois, A., Peikert, C., Regev, O., Stehl´e, D.: Classical hardness
+of learning with errors. In: STOC (2013)
+8. Chen, H., Dai, W., Kim, M., Song, Y.: Homomorphic conversion between (ring)
+LWE ciphertexts. In: ACNS (2021)
+9. Cheon, J.H., Han, K., Kim, A., Kim, M., Song, Y.: Bootstrapping for approximate
+homomorphic encryption. In: EUROCRYPT (2018)
+10. Cheon, J.H., Kim, A., Kim, M., Song, Y.: Homomorphic encryption for arithmetic
+of approximate numbers. In: ASIACRYPT (2017)
+11. Chillotti, I., Gama, N., Georgieva, M., Izabach`ene, M.: Faster packed homomorphic
+operations and efficient circuit bootstrapping for TFHE. In: ASIACRYPT (2017)
+12. Chillotti, I., Joye, M., Paillier, P.: Programmable bootstrapping enables efficient
+homomorphic inference of deep neural networks. In: CSCML (2021)
+13. Devlin, J., Chang, M.W., Lee, K., Toutanova, K.: BERT: Pre-training of deep
+bidirectional transformers for language understanding (2018), available at https:
+//arxiv.org/abs/1810.04805
+14. Ding, Y., Guo, H., Guan, Y., Liu, W., Huo, J., Guan, Z., Zhang, X.: East: Effi-
+cient and accurate secure transformer framework for inference (2023), available at
+https://arxiv.org/abs/2308.09923
+15. Dumas, J.G., Giorgi, P., Pernet, C.: Dense linear algebra over word-size prime
+fields: the FFLAS and FFPACK packages. ACM Trans. on Mathematical Software
+(2008)
+16. Fan, J., Vercauteren, F.: Somewhat practical fully homomorphic encryption (2012),
+available at http://eprint.iacr.org/2012/144
+17. FFLAS14, T.F.F.G.: FFLAS-FFPACK: Finite Field Linear Algebra Subroutines /
+Package, v2.0.0 edn. (2014), http://linalg.org/projects/fflas-ffpack
+18. Froelicher, D., Cho, H., Edupalli, M., Sousa, J.S., Bossuat, J.P., Pyrgelis, A.,
+Troncoso-Pastoriza, J.R., Berger, B., Hubaux, J.P.: Scalable and privacy-preserving
+federated principal component analysis (2023), available at https://arxiv.org/
+abs/2304.00129
+19. Gentry, C., Halevi, S., Peikert, C., Smart, N.P.: Ring switching in BGV-style ho-
+momorphic encryption. In: SCN (2012)
+20. Goldwasser, S., Kalai, Y.T., Peikert, C., Vaikuntanathan, V.: Robustness of the
+learning with errors assumption. In: ICS (2010)
+
+34
+Y. Bae et al.
+21. Halevi, S., Shoup, V.: Algorithms in HElib. In: CRYPTO (2014)
+22. Hao, M., Li, H., Chen, H., Xing, P., Xu, G., Zhang, T.: Iron: Private inference on
+transformers. Advances in Neural Information Processing Systems (2022)
+23. HEaaN, C.: HEaaN library (2022), available at https://www.cryptolab.co.kr/
+en/products-en/heaan-he/
+24. Jiang, X., Kim, M., Lauter, K., Song, Y.: Secure outsourced matrix computation
+and application to neural networks. In: CCS (2018)
+25. Langlois, A., Stehl´e, D.: Worst-case to average-case reductions for module lattices.
+Des. Codes Cryptogr. (2015)
+26. Liu, J., Zhang, L.F.: Privacy-preserving and publicly verifiable matrix multiplica-
+tion. IEEE Transactions on Services Computing (2022)
+27. Lyubashevsky, V., Peikert, C., Regev, O.: On ideal lattices and learning with errors
+over rings. In: EUROCRYPT (2010)
+28. OpenBLAS: An optimized BLAS library – version 0.3.26, available at https://
+www.openblas.net/
+29. Pang, Q., Zhu, J., Mollering, H., Zheng, W., Schneider, T.: BOLT: Privacy-
+preserving, accurate and efficient inference for transformers (2023), available at
+https://eprint.iacr.org/2023/1893
+30. Peikert, C.: Public-key cryptosystems from the worst-case shortest vector problem.
+In: STOC (2009)
+31. Peikert, C., Waters, B.: Lossy trapdoor functions and their applications. In: STOC
+(2008)
+32. Radford, A., Narasimhan, K., Salimans, T., Sutskever, I.: Improving language un-
+derstanding by generative pre-training (2018), available at https://openai.com/
+research/language-unsupervised
+33. Stehl´e, D., Steinfeld, R., Tanaka, K., Xagawa, K.: Efficient public key encryption
+based on ideal lattices. In: ASIACRYPT (2009)
+34. Touvron, H., Lavril, T., Izacard, G., Martinet, X., Lachaux, M.A., Lacroix, T.,
+Rozi`ere, B., Goyal, N., Hambro, E., Azhar, F., Rodriguez, A., Joulin, A., Grave,
+E., Lample, G.: LLaMA: Open and efficient foundation language models (2023),
+available at https://arxiv.org/abs/2302.13971
+35. Zhang, J., Liu, J., Yang, X., Wang, Y., Chen, K., Hou, X., Ren, K., Yang, X.:
+Secure transformer inference made non-interactive (2023), available at https://
+eprint.iacr.org/2024/136
+
+35
+Appendices
+A
+On sub-rings and MLWE-RLWE conversions
+For the sake of completeness, we describe the procedures mentioned in 2.3.
+Subrings. We define the cyclotomic ring RQ,N′ of order 2N ′ as RQ,N′ =
+ZQ[Y ]/(Y N′ + 1). The map Y
+7→XN/N ′ extends to a ring-homomorphism
+from RQ,N′ to RQ,N, which embeds RQ,N′ into RQ,N. The ring RQ,N con-
+tains k copies of RQ,N′: an element a = a0 + a1X + . . . + aN−1XN−1 ∈RQ,N
+may be viewed as k elements in RQ,N′ by writing
+a =
+
+a0 + akXk + . . . + ak(N′−1)Xk(N′−1)
++ X
+
+a1 + ak+1Xk + . . . + ak(N′−1)+1Xk(N′−1)
++ . . .
++ Xk−1 
+ak−1 + a2k−1Xk + . . . + akN ′−1Xk(N′−1)
+,
+(14)
+and identifying Xk with the indeterminate Y of RQ,N′. For an element a ∈
+RQ,N, we shall use the notation e∗
+i (a) for the coefficient of Xi in the decompo-
+sition (14) of a over RQ,N′.
+Ring-switching. The goal is to decompose a ciphertext ct = (a, b) ∈(RQ,N)2
+for RLWEQ,N under a key sk ∈RN to a set of ciphertexts (ct′
+i = (a′
+i, b′
+i))0≤i<k ∈
+(R2
+Q,N′)k for RLWEQ,N′ under a secret key sk′ ∈RN′. This is accomplished by
+first switching key from sk to sk′ using a switching key
+swkQ,P,sk→sk′ = (aswk, bswk) = (aswk, −aswk · sk′ + e + P · sk) ∈R2
+P Q,N ,
+for which sk′ belongs to the subring RN′, i.e., whose non-zero coefficients as
+viewed as an element of RN can only correspond to the Xki’s for 0 ≤i < N ′. In
+fact, the pair (aswk, bswk) may be viewed as k RLWE pairs in the subring RP Q,N ′
+that share the same secret. Note that providing this switching key requires the
+security of RLWE in degree N ′, which in turns requires that PQ should not be
+too large. Ring-switching is then described as:
+• RingSwitch. On input ct = (a, b) ∈RQ,N and swkQ,P,sk→sk′, set (ea,eb) ←
+KeySwitch((a, b), swkQ,P,sk→sk′), and return (ai, bi) = (e∗
+i (ea), e∗
+i (eb)) for 0 ≤
+i < k.
+From RLWE to MLWE. Let ct = (a, b) ∈R2
+Q,N be an RLWEQ,N ciphertext
+under a secret key sk ∈RN. The identity a · sk + b = m may be rewritten in
+module form as
+X
+0≤i<k
+e∗
+i (m)Xi =
+X
+0≤j,ℓ<k
+e∗
+ℓ(a)Xℓe∗
+j(sk)Xj +
+X
+0≤i<k
+e∗
+i (b)Xi
+(15)
+=
+X
+0≤i<k
+ ⟨eai, sk′⟩+ e∗
+i (b)
+
+Xi ,
+
+36
+Y. Bae et al.
+where sk′ = (e∗
+0(sk), . . . , e∗
+k−1(sk)) ∈Rk
+N ′ and
+eai = (e∗
+i (a), e∗
+i−1(a), . . . , e∗
+0(a), Y e∗
+k−1(a), . . . , Y e∗
+i+1(a)) ∈Rk
+Q,N′ .
+This shows that for 0 ≤i < k, the tuple (eai, e∗
+i (b)) is an MLWEk
+Q,N′ encryption
+of mi under the key sk′. We thus define the RLWE to MLWE decomposition as:
+• ModDecomp. On input ct = (a, b), return the k ciphertexts (eai , e∗
+i (b)) for
+0 ≤i < k, defined as above.
+As a and sk play a symmetric role in Equation (15), we can also write
+X
+0≤i<k
+e∗
+i (m)Xi =
+X
+0≤i<k
+
+⟨a′, eski⟩+ e∗
+i (b)
+
+Xi ,
+where a′ and esk are obtained from a and sk as in the previous case. We then
+obtain a decomposition in k ciphertexts with common a part, but distinct secret
+keys; this gives the ShModDecomp algorithm.
+From MLWE to RLWE. Let ct = (a, b) ∈Rk+1
+Q,N′ be an MLWE-ciphertext for
+sk ∈Rk
+N ′. We define esk = P
+0≤i<k skiXi ∈RN and let swkP,Q,esk→sk′ ∈RP Q,N
+be an RLWE-switching key from esk to a new key sk′.
+• ModKeySwitch goes through the following steps:
+1. Embed: ea ←a0 + P
+1≤i<k aiXiY −1 ∈RQ,N; then (ea, b) is an RLWEQ,N
+encryption of em ∈RQ,N such that e∗
+0( em) = m.
+2. (a′, b′) ←KeySwitch((ea, b), swkQ,P,esk→sk′).
+3. Extract: using ModDecomp, recover (ea′
+0, b′
+0) encrypting e∗
+0( em) = m under
+(e∗
+0(sk′), . . . , e∗
+k−1(sk′)).
+Module packing takes as input (cti)0≤i<k where cti = (ai, bi) encrypts mi
+under a common MLWE-secret key sk ∈Rk
+N′. It first combines the various cti’s
+in polynomial form, turning the k = N/N ′ MLWEk
+Q,N′ ciphertexts into a single
+MLWEk
+Q,N ciphertext, then reduces the MLWE dimension to 1 by switching, sep-
+arately, all the components of the MLWE secret key vector to sk′. It thus requires
+switching keys swki = swkQ,P,ski→sk′. It outputs a single RLWEQ,N ciphertext.
+• ModPack proceeds as follows:
+1. ct′ = (A, B) ←(P
+0≤i<k a′
+iXi, P
+0≤i<k b′
+iXi) ∈Rk+1
+Q,N.
+2. For 0 ≤i < k, run (A′
+i, βi) ←KeySwitch((Ai, 0), swki).
+3. Return (P
+0≤i<k A′
+i, B + P
+0≤i<k βi) ∈R2
+Q,N, which encrypts m =
+P
+0≤i<k miXi under sk′.
+The correctness of the process follows from the identity m−B ≈P
+0≤i<k Ai·
+ski ≈P
+0≤i<k(A′
+i · sk′ + βi).
+
+37
+Algorithm 3 Precomputation-based PC-MM for dimension above the RLWE
+ring degree N
+Input: A matrix U ∈Rd×d, with d = kN for some integer k ≥1,
+coefficients-encoded RLWE ciphertexts (cti)0≤i<d2/N in RQ1,N,
+each of which encrypts a segment of a row of a matrix M ∈Rd×d.
+Input: Switching keys fmt-swkQ1,P,sk→{ski}0≤i<k and swkQ0,P,sk′
+i→sk for 0 ≤i < k,
+where U[skT
+0 | · · · |skT
+d−1]T = [sk′
+0
+T | · · · |sk′
+d−1
+T ]T .
+Output: Coefficients-encoded RLWE ciphertexts in RQ0,N,
+each of which encrypts a segment of a row of the matrix UM ∈Rd×d.
+1: for i ←0 to d do
+2:
+(ai, bi,j) ←FmtSwitch(ctki, · · · , ctk(i+1)−1; fmt-swkQ1,P,sk→{ski}0≤i<k)
+3: end for
+4: B ←(bi,j)0≤i<d,0≤j<d
+5: B′ ←U · B
+6: for i ←0 to d and j ←0 to k do
+7:
+ct′
+i,j ←(P
+ℓai,ℓXℓ, P
+ℓb′
+i,jN+ℓXℓ) ∈R2
+Q1,N
+8:
+ct′
+i,j ←KeySwitch(ct′
+i,j; swkQ0,P,sk′
+i→sk)
+9:
+ct′
+i,j ←Rescale(ct′
+i,j; Q1, Q0)
+10: end for
+11: return all (ct′)i,j’s
+B
+Precomputation-based algorithms
+In this Section, we give a full description of the precomputation-based algorithms
+outlined in Sections 4.3. Algorithm 3 is to be used when the dimension d is larger
+than the ring degree N, whereas Algorithm 4 is to be used for d < N.
+C
+Reduction of Modular PP-MM to floating-point
+PP-MM
+For d < 215, we have implemented our own reduction from one PP-MM between
+a matrix U with entries bounded by 218 and a matrix modulo q0 ≈258, to three
+floating-point PC-MM’s using BLAS plus a quadratic (in d) number of integer
+operations.
+We shall not undertake a systematic study of this reduction, which is folklore;
+we restrict ourselves to the parameter values of our implementation. We wish
+to compute U · M, where M is defined modulo q0 < 260, and the coefficients of
+U are bounded by ∥U∥∞= 218. For these parameter values, we claim that for
+d < 215, PP-MM modulo q0 can be reduced to 3 floating-point PP-MM, plus a
+quadratic (in d) number of operations on integers ≤293 in absolute value.
+We define δ = 220, and given an integer x ∈[0, q0 −1], we write x = x(2) ·δ2 +
+x(1) · δ + x(0) the base-δ decomposition of x, where 0 ≤xi < δ, i = 0, 1, 2. Given
+a d × d matrix M = ( ˜mij)0≤i,j<d over Z/q0Z, and letting mij denote the unique
+
+38
+Y. Bae et al.
+Algorithm 4 Precomputation-based PC-MM for dimension below the RLWE
+ring degree N
+Input: A matrix U ∈Rd×d, with N = kd for some integer k ≥1,
+coefficients-encoded RLWE ciphertexts (cti)0≤i<d2/N in RQ1,N,
+each of which encrypts a strip of rows of a matrix M ∈Rd×d.
+Input: Switching keys fmt-swkQ1,P,sk→{ski}0≤i<d2/N , swkQ0,P,sk′
+i→sk for 0 ≤i < k,
+where U[skT
+0 | · · · |skT
+d−1]T = [sk′
+0
+T | · · · |sk′
+d−1
+T ]T , and switching keys for ModPack
+Output: Coefficients-encoded RLWE ciphertexts in RQ0,N,
+each of which encrypts a strip of rows of the matrix UM ∈Rd×d.
+1: (a, bi) ←FmtSwitch(cti)0≤i<d2/N; fmt-swkQ1,P,sk→{ski}0≤i<d2/N )
+2: for i ←0 to d2/N do
+3:
+((adi+j, bdi+j))0≤j<k ←ShModDecomp(cti)
+4: end for
+5: for i ←0 to d do
+6:
+Set the i-th row of B as the coefficients of bi
+7: end for
+8: B′ ←UB
+9: for i ←0 to d do
+10:
+Set the coefficients of b′
+i as the i-th row of B′
+11: end for
+12: for i ←0 to d2/N do
+13:
+for j ←0 to k do
+14:
+(a′
+di+j, b′
+di+j) ←KeySwitch((a′
+di+j, b′
+di+j); swkQ0,P,sk′
+i→sk)
+15:
+end for
+16:
+ct′
+i ←ModPack((a′
+di+j, b′
+di+j)0≤j<k)
+17:
+Rescale (ct′
+i; Q1, Q0)
+18: end for
+19: return all ct′
+i’s
+
+39
+integer congruent to ˜mij modulo q, we extend this notation to the matrix M as
+M = δ2 · M (2) + δ · M (1) + M (0), where M (k) = (m(k)
+ij )0≤i,j<d for k = 0, 1, 2.
+The largest integer occuring in the computation of U · M (i), i = 0, 1, 2, is
+upper bounded by d∥U∥∞δ < 253 in absolute value. We can thus compute exactly
+each of the U · M (i), using floating-point arithmetic; the sum
+δ2 · UM (2) + δ · UM (1) + UM (0),
+(16)
+which has quadratic cost (smaller than matrix multiplication for d large enough)
+is then evaluated using integer arithmetic. Finally, one can check that the integers
+occuring in this linear combination are < 293 in absolute value, as claimed.
+D
+Comparison to [26]
+We conducted experiments to compare our algorithms with optimization in Sec-
+tion 5 to the LZ algorithm introduced in [26], under the same parameters in
+Section 7.2. We note that all parameters achieve 128-bits security. Since [26]
+does not provide experimental results for PC-MM, in order to provide a fair
+comparison, we implemented [26] for d = N by using OpenBLAS [28] as our
+algorithms.
+However, the [26] algorithm, as described, is restricted to a matrix dimension
+d equal to, or larger than, the RLWE ring degree N. One trivial modification
+is to use fewer RLWE slots; that is, in order to encrypt a d × d matrix, we
+allocate d RLWE ciphertexts with d messages out of N available slots. We have
+implemented this variant of [26] algorithm for small matrices, in order to be
+able to provide a comparison with our algorithms addressing a larger range of
+dimensions. However, we remark that this modification might incur additional
+computation and communication costs before and after PC-MM.
+For all cases, our optimization in Section 5 improves the efficiency a lot, and
+the cost of format conversions is relatively minor compared to the improvement
+from our optimization. We remark that our LZ implementation might have larger
+precision (e.g., ≈19.2 bits) since we did not use the optimization technique in
+Section 5, while our algorithms also provide reasonable precision (e.g., ≈13.4).
+Table 7 reports the timings in seconds.
+log d
+8
+9
+10
+11
+12
+13
+14
+[26] 0.423 1.05 2.75 8.13 27.4 96.8 786
+Ours 0.309 0.684 1.70 5.06 17.1 64.6 347
+Table 7.
+Comparison between our algorithms and our implementation of [26]. All
+timings are in seconds, for the product of two d × d matrices.
+E
+Table of notations
+
+40
+Y. Bae et al.
+PC-MM, PP-MM
+Sec. 1, p .1
+(FP, Mod)-PP-MM
+Table 1, p. 3
+RLWE
+Sec. 2.1, p. 8
+MLWE
+Sec. 2.1, p. 8
+R, RN, Rq, Rq,N
+Sec. 2, p. 8
+ω
+Sec. 2, p. 8
+N
+RLWE ring-degree
+d
+input matrix dimension
+k
+MLWE rank
+ℓS2C
+Sec. 2.2, p. 11
+Qi
+Sec. 2.2, p. 10
+Qtop
+Sec. 2.2, p. 10
+Toep()
+Sec. 1.1, p. 4
+ai,[j,k)
+Sec. 4.1, p. 17
+DFT, iDFT
+Sec. 2.2, p. 9 S2C, C2S, ModRaise Sec. 2.2, p. 11
+Ecdcoeff
+Sec. 2.2, p. 9
+Ecdslot, Dcdslot
+Sec. 2.2, p. 9
+FmtSwitch
+Sec. 3.2, p. 13 Backward-FmtSwitch Sec. 3.4, p. 15
+ModDecomp, ShModDecomp Sec. 2.3, p. 12
+ModPack
+Sec. 2.3, p. 12
+EvalMod
+Sec. 2.2, p. 11
+Sh-S2C, Sh-C2S
+Sec. 6.2, p. 27
+KeySwitch
+Sec. 2.2, p. 9
+ModKeySwitch
+Sec. 2.3, p. 12
+HalfBTS
+Sec. 2.2, p. 11
+Rescale
+Sec. 2.2, p. 10
+

@@ -1,0 +1,1861 @@
+This paper is included in the Proceedings of the 
+33rd USENIX Security Symposium.
+August 14–16, 2024 • Philadelphia, PA, USA
+978-1-939133-44-1
+Open access to the Proceedings of the 
+33rd USENIX Security Symposium 
+is sponsored by USENIX.
+Mempool Privacy via Batched Threshold 
+Encryption: Attacks and Defenses
+Arka Rai Choudhuri, NTT Research; Sanjam Garg, Julien Piet, 
+and Guru-Vamsi Policharla, University of California, Berkeley
+https://www.usenix.org/conference/usenixsecurity24/presentation/choudhuri
+
+Mempool Privacy via Batched Threshold Encryption:
+Attacks and Defenses
+Arka Rai Choudhuri
+NTT Research
+Sanjam Garg
+UC Berkeley
+Julien Piet
+UC Berkeley
+Guru-Vamsi Policharla
+UC Berkeley
+Abstract
+With the rising popularity of DeFi applications it is important
+to implement protections for regular users of these DeFi plat-
+forms against large parties with massive amounts of resources
+allowing them to engage in market manipulation strategies
+such as frontrunning/backrunning. Moreover, there are many
+situations (such as recovery of funds from vulnerable smart
+contracts) where a user may not want to reveal their trans-
+action until it has been executed. As such, it is clear that
+preserving the privacy of transactions in the mempool is an
+important goal.
+In this work we focus on achieving mempool transac-
+tion privacy through a new primitive that we term batched-
+threshold encryption, which is a variant of threshold en-
+cryption with strict efficiency requirements to better model
+the needs of resource constrained environments such as
+blockchains. Unlike the naive use of threshold encryption,
+which requires communication proportional to O(nB) to
+decrypt B transactions with a committee of n parties, our
+batched-threshold encryption scheme only needs O(n) com-
+munication. We additionally discuss pitfalls in prior ap-
+proaches that use (vanilla) threshold encryption for mempool
+privacy.
+To show that our scheme is concretely efficient, we imple-
+ment our scheme and find that transactions can be encrypted in
+under 6 ms, independent of committee size, and the communi-
+cation required to decrypt an entire batch of B transactions is
+80 bytes per party, independent of the number of transactions
+B, making it an attractive choice when communication is very
+expensive. If deployed on Ethereum, which processes close
+to 500 transaction per block, it takes close to 2.8 s for each
+committee member to compute a partial decryption and under
+3.5 s to decrypt all transactions for a block in single-threaded
+mode.
+1
+Introduction
+A prominent application of cryptocurrencies and blockchain
+technologies is in Decentralized Finance (DeFi) which aims
+to provide financial services through a decentralized network
+of parties. A significant amount of capital has been invested
+in this space with a peak value peak of over $250 billion in
+December 2021.1 This capital was drawn not just from retail
+investors but also from major institutional players.
+The traditional financial system has well documented evi-
+dence [44] to prove that in the absence of regulations, market
+manipulation strategies will be employed by insiders who
+seek to financially exploit the average consumer. However,
+despite the large amounts of capital locked in the DeFi space,
+there is virtually no protections implemented for consumers
+against miners/builders who can not only see the details of
+all transactions submitted by clients to a memory pool (mem-
+pool) but also control the order in which transactions will be
+executed.
+Although cryptocurrencies promise a fair and permission-
+less platform where all users are on a level playing field,
+the reality is far from this. Unsurprisingly, the DeFi space
+is ripe for exploitation by greedy (although arguably ratio-
+nal) miners who can frontrun/backrun/sandwich client trades
+to extract additional value from the asymmetric information
+available to them. This was first documented as “Miner Ex-
+tractable Value” or MEV in [18]. Early work focused on de-
+vising the best strategies to implement MEV [1,26,61,63,65].
+Many studies since have shown it to be a widespread prob-
+lem in blockchains [14, 32, 37, 51, 60]. In particular, an es-
+timated 200,000,000 USD were lost on Ethereum in 2021
+alone, mostly benefiting miners [48]. In the case of trading on
+Decentralized Exchanges, the attacks mentioned above allow
+a miner to extract financial gains at the expense of the users.
+Alternatively, consider the situation where a user discovers
+a bug in their smart contract that allows any party to drain all
+of its funds. A natural course of action is to update the smart
+contract with new code. But the diff between the old and new
+code could reveal the bug to any party with access to the
+mempool, allowing an attacker to exploit the bug before it is
+fixed. This class of attack is actually widespread, and has been
+1https://cointelegraph.com/news/defi-needs-to-start-creating-real-world-
+value-if-it-wants-to-survive
+USENIX Association
+33rd USENIX Security Symposium    3513
+
+observed and documented [52,54]. In fact, with the recent
+advancements in Large Language Models, researchers have
+shown that fine-tuning can be carried out to identify bugs in
+smart contracts [20]. Using the same strategy, it is conceivable
+that an attacker could also automate this process. Finally,
+revealing the content of transactions allow malicious miners
+to selectively censor targeted groups of users or transactions.
+Protecting the privacy of transactions in the mempool has
+been a subject of active discussion [5,40,46,49,53,58] and
+threshold public key encryption [21,23,28] has emerged as
+the de facto solution to this problem. A threshold public key
+encryption system has a single public key, and distributes the
+private key among n decryption servers such that at least a
+threshold number (say k) are needed for decryption. At a high
+level, threshold encryption is used as follows. First, a com-
+mittee - corresponding to the decryption servers - is set up
+such that the committe members are in possession of the (dis-
+tributed) private key, and all users encrypt to the committee’s
+public key. Miners can only see encrypted transactions in the
+mempool and create blocks containing ciphertexts. After the
+block has been confirmed, the committee jointly decrypts all
+transactions that have been included and announces them to
+all nodes in the network.
+Existing solutions are insufficient to solve the problem of
+mempool privacy for two main reasons. First, the proposed
+solutions fail to account for a malleability attack, where an
+adversary could create a related transaction ciphertext, submit
+that instead, and learn information about a transaction which
+has not been included on chain. This is a very realistic attack
+as most users don’t run their own nodes and instead rely on
+other untrusted nodes who submit transactions for them.
+Second, the communication involved to decrypt ciphertexts
+is O(nB) instead of O(B) without privacy, where n is the com-
+mittee size and B is the block size (number of transactions
+in a block). In a widely distributed network like blockchains,
+the additional latency introduced in an already time-critical
+system is untenable. We emphasize here that the metric of in-
+terest is not the bandwidth available on a node but the latency
+of the underlying broadcast/gossip network. In otherwords, it
+is not how fast a committee member can upload their partial
+decryptions to some server but how fast a message broadcast
+by a committee member can reach all nodes on the network,
+as all parties need to decrypt the ciphertexts. For concrete
+numbers, we refer to [22], which shows that each kilobyte
+over 20kB adds an 80ms delay to the time it takes for a mes-
+sage to reach a majority of nodes.
+Deployed systems [58] have attempted to handle this by
+introducing a new encryption scheme similar to that of [24],
+where clients encrypt to an epoch, and the decryption key
+is the same for all ciphertexts in that epoch. However, this
+makes unacceptable compromises to privacy, as ciphertexts
+that are not included/withheld lose privacy despite not being
+confirmed transactions. We refer to this property as pending
+transaction privacy. We summarize a comparison against
+prior work in Table 1 and elaborate on other possible attack
+vectors in Section 3.
+Our Model. To address the above two problems we introduce
+a new security notion of batched-threshold-encryption which
+protects the privacy of messages against adaptive chosen ci-
+phertext attacks [7] and in addition demands that an entire
+batch of ciphertexts can be decrypted non-interactively, and
+with sub-linear communication. This translates to ensuring
+that (i) each member of the committee can locally compute
+partial decryption given only the batch of ciphertexts, and
+these can later be combined by any party (even outside the
+committee) to recover the messages; and (ii) the size of partial
+decryption is sub-linear in the batch size.
+Scheme
+Comm.
+Pending Tx
+privacy
+Setup
+Thresh. Enc.
+[13,25]
+O(nB)
+✓
+DKG
+Ferveo [5]
+O(nB)
+✓
+DKG
+McFly [24]
+O(n)
+✗
+DKG
+Shutter [58]
+O(n)
+✗
+DKG
+This Work
+O(n)
+✓
+MPC +
+Epoch Setup
+Table 1: A comparison of this work against prior work in
+terms of communication to decrypt a batch of B transactions
+and whether the scheme preserves the privacy of transactions
+which were submitted but may not have been included in the
+batch. DKG refers to a distirbuted key generation protocol and
+MPC refers to a (more expensive) multi-party computation
+protocol used during the setup phase and Epoch Setup refers
+to a per epoch setup that can be carried out well before the
+actual epoch takes place.
+1.1
+Our Contributions
+In this work,
+• We demonstrate the inefficacy of existing approaches in
+protecting the privacy of transactions in the mempool,
+highlighting the need for improved security definitions
+and constructions. In particular, we show that the Shutter
+Network [58] suffers from the issues highlighted in the
+prior section. (Section 3)
+• We undertake a formal study of encrypted mempools
+and propose the notion of batched-threshold encryption,
+which we argue is the appropriate security notion of
+threshold encryption for mempool privacy. Additionally,
+our definitions demands efficiency properties that aim
+3514    33rd USENIX Security Symposium
+USENIX Association
+
+to model the limited bandwidth available in large-scale
+distributed networks. (Section 6)
+• We then provide the first concretely efficient construction
+satisfying the batched-threshold encryption definition.
+Importantly, to decrypt a batch of messages, the size of
+partial decryption is independent of the batch size; in
+fact, it is just one field element. The ciphertext size is 370
+bytes for a 32 byte message, and only ≈3× larger than
+the Cramer-Shoup threshold encryption scheme [12,13],
+which does not satisfy necessary efficiency requirements.
+(Section 7). However, our scheme incurs a more expen-
+sive setup (≈100×) along with a per epoch setup, which
+can be carried out well before the actual epoch. We be-
+lieve that this can be a favorable trade-off when the
+number of transactions in a block is large, as our scheme
+reduces the communication during the time-sensitive
+phase (decryption) by several orders of magnitude. Con-
+cretely, for a block of 512 transactions and a committee
+size of 128, we reduce the communication by over 300×.
+Moreover, this number will only grow larger as the num-
+ber of transactions in a block increases. (Section 7)
+• We created a Rust crate for our batched-threshold en-
+cryption scheme. It takes < 6 ms to encrypt a ciphertext.
+For an Ethereum deployment, which processes ≈500
+transactions per block, it would take close to 2.8 ms to
+compute a partial decryption and < 3.5 s to reconstruct
+all messages. We emphasize that our scheme can take
+advantage of multi-threaded architectures and Ethereum
+nodes are likely to already have machines with multiple
+cores. (Section 9)
+2
+Our Techniques
+We now describe the main ideas underlying our work. Before
+we describe our construction, we note that a common theme
+when describing the shortcomings of prior approaches was the
+lack of clearly defined security properties. Further, the security
+needs to be defined while ensuring that any solution we pro-
+pose is agnostic to the system (or blockchain) it is deployed
+on. To this end, we define a new primitive called batched
+threshold public key encryption (bTPKE) whose properties
+(to be defined shortly) will prove sufficient in achieving mem-
+pool transaction privacy. We elaborate below.
+Batched Threshold Public Key Encryption At a high level,
+this primitive specifies a public key for which some parties
+that are designated as servers are given (threshold) shares of
+the corresponding secret key. Users, who are not necessarily
+servers, are then allowed to encrypt to the public key such
+that: (i) a batch of B ciphertext are chosen by the servers to be
+decrypted; (ii) each server broadcasts a short batch decryption
+key (of size independent of B) that enables decryption of all
+ciphertexts included in the batch; and (iii) the contents the
+ciphertexts not included in the batch remain hidden.
+Given the properties described for a bTPKE, it follows in
+a straightforward manner how one can utilize the primitive to
+realize the the guarantees for mempool privacy. Specifically,
+in the mempool privacy setting, the miners correspond to
+the bTPKE servers, and users encrypt transactions using the
+bTPKE encryption scheme with the guarantee that encrypted
+transactions that are not selected by miners in the batch hide
+the underlying transaction. Further, the efficiency properties
+of bTPKE ensure that this is indeed a feasible solution to
+guarantee mempool transaction privacy. Note that, as desired,
+the properties of the bTPKE are agnostic to how the batch
+of ciphertexts to be decrypted are decided, and thus work for
+any set of selected transactions.
+In Section 6 we formalize the above described properties
+via an ideal functionality FbTPKE, which is motivated by the
+ideal functionality for threshold encryption schemes that are
+secure against chosen ciphertext attack [13]. The main differ-
+ence in our setting is that our ideal functionality incorporates
+a notion of “epochs” such that users can encrypt messages to
+a specific epoch, and a batch of ciphertexts to be decrypted
+must all belong to the same epoch.
+Construction For simplicity, in this overview, we will high-
+light the main ideas underlying our bTPKE construction in
+the setting that there is a single server that is honest. We defer
+the extension to the threshold setting with multiple servers to
+Section 7, where we use the threshold to emulate the single
+honest server. As a further simplification, we first describe a
+scheme that provides the weak form of security where privacy
+is guaranteed only against adversaries that only see cipher-
+texts (indistinguishability of chosen plaintext), but not their
+decryption. We will then describe the shortcomings of this
+construction, and then strengthen it to achieve the desired
+security guarantees.
+Our construction is based on polynomial-commitment
+schemes, where such a scheme allows a user to generate a
+“commitment” com to a polynomial p(X) such that the user
+at a later point can provide a short proof of opening with re-
+spect to com to pairs (x,y) given the polynomial p with the
+guarantee that p(x) = y. We now describe the template of our
+bTPKE construction: (i) the public-key will correspond to the
+commitment com of an unspecified degree B polynomial, i.e.
+the polynomial will be determined by the transactions and
+the reader can think of com as a commitment to an arbitrary
+polynomial that will be explained correctly later; (ii) each
+user will sample a pair (xi,yi) and “encrypt” their message mi
+to only be decrypted using the proof of opening of (xi,yi) with
+respect to com; and (iii) finally, the server given B ciphertexts,
+each with their corresponding (xi,yi) pair, uses a trapdoor to
+explain com to be a commitment to a degree B polynomial
+p(X) such that for each i ∈[B] p(xi) = yi - since a degree B
+polynomial is fully determined by B+1 points, the server can
+simply broadcast a single pair (0,p(0)) which allows all par-
+USENIX Association
+33rd USENIX Security Symposium    3515
+
+ties to reconstruct p(X) via polynomial interpolation using the
+points {(0,p(0)),(x1,y1),··· ,(xB,yB)}. Once p(X) is recon-
+structed, as discussed from the properties of the polynomial
+commitment scheme, anyone with access to the polynomial
+p(X) can compute the proof of openings to (xi,yi) and thus
+decrypt the ciphertexts. We now fill in the details of the tem-
+plate using the KZG polynomial commitment scheme [39].
+We first briefly describe the commitment scheme below.
+In the KZG scheme, the commitment to a degree B
+polynomial p(X) given the common reference string crs =
+(g,gτ,gτ2,··· ,gτB) is simply the deterministic value com =
+gp(τ). Here g is the generator of a multiplicative group G, and
+the committer is able to compute gp(τ) given the crs, with-
+out knowledge of τ - which is the trapdoor hidden from the
+committer. Given a pair (x,y) such that y = p(x), the proof of
+opening is a group element π = gq(τ) that is a commitment to
+q, which is a polynomial such that q(X) = (p(X)−y)/(X −x).
+If the group is appropriately equipped with a pairing operation
+e(·,·) (see Section 5 for details on groups and pairing opera-
+tions), verification of the proof of opening is done by checking
+the equality e(com/gy,g) = e(π,gτ/gx). The binding prop-
+erty of the scheme guarantees that if τ is hidden from the
+committer, for any pair (x′,y′) such that p(x′) ̸= y′, one can-
+not find a group element π′ that satisfies the aforementioned
+verification check.
+Given the discussed properties from the KZG polynomial
+commitment scheme, specifically the verification check, we
+use ideas present in the construction of the Boneh-Franklin
+Identity Based Encrytion (IBE) scheme [11] (also recently
+used in the context of encryption under signature verifi-
+cation [24, 45]). Specifically, the public key is the CRS
+(g,gτ,gτ2,··· ,gτB) and a random group element com = gα
+treated as a “commitment” to a polynomial yet to be deter-
+mined. The server is in possession of the trapdoors α and
+τ. To encrypt a message M with respect to the public key
+com, a user first samples a pair (x,y), and then computes the
+ciphertext as
+ct = (x,y, (gτ/gx)ρ, H(e(com/gy,g))ρ ⊕M)
+where H is a hash function (modeled as a random oracle in our
+security proofs), and ρ is a randomly sampled value. Given
+B ciphertexts {(xi,yi,ci,1,ci,2)}i∈[B]2, the server explains the
+commitment com by interpolating the unique degree B poly-
+nomial p(X) using the B+1 points (x1,y1),··· ,(xB,yB) and
+(τ,α) (where we view α = p(τ) by treating com as a KZG
+commitment). The server then simply broadcasts the batch
+decryption key (0,p(0)).
+To decrypt, any user in possession of the B ciphertexts
+{(xi,yi,ci,1,ci,2)}i∈[B] and (0,p(0)), performs the following
+steps in order: (i) reconstructs the polynomial p(X) using the
+B+1 points in its possession; for each i ∈[B], (ii) computes
+the proof of opening πi with respect to com and the pair
+2For simplicity, we assume that the B xi are all distinct.
+(xi,yi); and (iii) compute mi as H(e(π,ci,2))⊕ci,1. From the
+correctness of the KZG verification, it is easy to see that the
+decryption procedure does indeed reconstruct the B encrypted
+messages. Further, the server was only required to send 2
+elements to enable the decryption of a batch of B ciphertexts.
+Any ciphertext with (ex,ey) not selected as a part of the B
+ciphertexts will (with high probability) be such that p(ex) ̸= ey
+if (ex,ey) is sampled randomly. Thus, by the binding property
+of the KZG commitment scheme, com, given p(X), cannot be
+opened to the pair (ex,ey) ensuring that the ciphertext encrypted
+using (ex,ey) remains hidden.
+First, an observant reader may note that in the use cases
+envisioned, the security argued above is insufficient since the
+adversary can “maul” ciphertexts to break any privacy guaran-
+tees upon obtaining the batch decryption key. For instance, an
+adversary can simply flip bits in the ci,2 component of ct, and
+perhaps more devastatingly, since the batch decryption key
+solely depends on the pair (x,y), the adversary can execute
+a “copy attack” by copying the pair (x,y) from an honest
+ciphertext to generate a new ciphertext such that given the
+batch decryption key, the adversary can decrypt the honest
+ciphertext even if was not included in the batch of ciphertexts
+to be decrypted. As we will describe shortly in Section 3,
+prior works often fail to address these pitfalls.
+Second, note that while the binding of the KZG scheme
+guarantees that ciphertexts with pairs (ex,ey) that won’t be
+included in the B ciphertexts cannot be decrypted, our use
+case requires a stronger property - namely that even given
+a ciphertext with a pair (x,y) that will be included in the B
+ciphertexts, an adversarial user should not be able to decrypt
+the ciphertext (i.e. compute opening proof) until the server
+broadcasts the batch decryption key. This latter requirement
+requires the use of a variant of KZG that is randomized, and a
+subsequent strengthening of the ‘KZG assumption’ to argue
+security.
+In the remainder of this section, we describe how we handle
+the first type of malleability issues, and defer details regarding
+the “randomized KZG” to the technical sections.
+Adding Non-Malleability Adding non-malleability to ci-
+phertexts corresponds closely to securing encryption scheme
+against chosen ciphertext attacks, and in this work we shall
+follow the same approach. To prevent an adversarial mauling
+of the ci,2 component, we use the folkore approach used in the
+context of adding non-malleability to El-Gamal encryption
+(see [57]) by additionally attaching a non-interactive proof
+of knowledge to our ciphertext ct proving knowledge of the
+encryption randomness ρ in the exponent. By assuming that
+the proof of knowledge extractor is an online extractor (see
+remark below), this approach prevents the malleability of the
+(ci,1,ci,2) component of ct. This unfortunately doesn’t protect
+the aforementioned “copy attack” since the adversary can
+replace (ci,1,cti,2) with a fresh ciphertext while keeping (x,y)
+the same. We handle this in a similar fashion by changing
+the way y is generated, and having the prover explain the
+3516    33rd USENIX Security Symposium
+USENIX Association
+
+generation of y. Specifically, the user still samples x at ran-
+dom, but for y the user first samples a random exponent s,
+computes y = H(S) where S = gs and then provide a non-
+interactive proof of knowledge of s such that S = gs. Thus our
+final ciphertext is of the form
+ct = (x,S,y, (gτ/gx)ρ, H(e(com/gy,g)ρ)⊕M,Π1,Π2),
+where Π1 and Π2 correspond to the non-interactive proofs
+of knowledge discussed above. Intuitively, for any ciphertext
+such that Π1 and Π2 verify, the adversary is able to explain
+the y that is used, and the message that is encrypted. It turns
+out that this intuition can be formalized, and is sufficient to
+provide the security guarantees of our primitive. Note that the
+above description was intended to provide only the key ideas
+in our construction, and we refer the reader to Section 7 for
+the full details.
+Remark 1. We note that for our implemented solution to be
+efficient, we use the non-interactive version of Schnorr pro-
+tocol [55] to prove knowledge of discrete log. Unfortunately,
+it was observed in [57] that proving security of the folklore
+El-Gamal construction, even in the random oracle model, is
+problematic using the Schnorr protocol. At a very high level,
+this stems from the fact that the Schnorr protocol necessi-
+tates rewinding for extraction, which is incompatible with
+the decryption queries of an adversary mounting a chosen
+ciphertext attack (see [57] for details). This is in fact more
+broadly an issue with any proof of knowledge protocol that
+requires rewinding, and thus in our construction we assume
+the existence of a ‘straight-line extractor’ to circumvent this
+issue. We justify our instantiation of the Schnorr protocol
+by noting that in the Random Oracle Model in conjunction
+with the Algebraic Group Mode (AGM), Schnorr does indeed
+have straight line extraction and can be used to prove that
+the folklore ‘Schnorr signed El Gamal’ is chosen ciphertext
+secure [29]. The ideas in that work directly extend to our
+setting as well.
+3
+Pitfalls in prior work
+In this section we describe a flaw in the Shutter Network [58]
+that allows an adversary to compromise transactions privacy
+by exploiting the malleability of the encryption scheme. We
+believe that this not only necessitates the need for a formal
+security model, but also informing the various choices in our
+construction.
+The Shutter Network [58] uses it’s own construction of
+threshold encryption for mempool privacy. Indeed it is more
+efficient than other proposals in the space (such as Ferveo [5]
+or MEVade [50]), and has been integrated to work on top
+of Ethereum without requiring changes to the base protocol.
+However, we found a few flaws in its design and implementa-
+tion that render it insecure in its current form.
+We begin by describing shutter’s encryption scheme. We
+note that at the time of writing this paper, we were not able to
+find a whitepaper containing a specification of their scheme
+and had to infer details of their protocol from their GitHub
+repository. 3
+Shutter works in epochs, each corresponding to a set of
+encrypted transactions. At the beginning of the protocol, an
+eon-secret key ske ∈F is secret shared amongst the committee
+and they publish an eon-public key pke = hske. For each epoch,
+a unique epoch id eid ∈G1 is broadcast to users. Then, users
+encrypt transactions as follows:
+• C1 = hr for r ←F
+• C2 ←H(e(eid,pke)r) ⊕M. Here, M could be replaced
+with an encapsulation key which is in turn used to en-
+crypt a long message.
+The user then sends (C1,C2) as the encryption of their transac-
+tion. In order to decrypt, the committee members each release
+shares of a private epoch key sk = eidske. Then, anyone can
+decrypt as M = H(e(sk,C1)) ⊕C2. We now describe some
+flaws with this design.
+• First observe that ciphertexts can easily be mauled by
+flipping some bits, and they remain valid ciphertexts.
+Any party who intercepts a user’s transaction can modify
+the ciphertexts, have it be included on chain and learn
+the transaction without the transaction being included
+on chain. Thus, this already violates the IND-CCA2
+requirements.
+• Next, Shutter’s efficiency gains compared to Ferveo and
+MEVade come from sharing a decryption key for all
+transactions submitted during the same epoch: every
+transaction encrypted to that epoch can be decrypted
+once the key is released, regardless of whether the trans-
+action was actually included on chain. This means trans-
+actions that are stuck in the mempool and don’t make
+it on chain before the end of the epoch will be revealed
+even though they won’t be executed. For the optimistic
+roll-up version of Shutter [59], a malicious collator (the
+entity in charge of selecting a batch of transactions)
+could withhold transactions from the batch, and still be
+able to decrypt them once the key is published.
+3.1
+Disclosure
+Upon disclosing our findings to the Shutter team and the
+Cryptographers who designed Shutter’s protocol – Stefan
+Dziembowski (University of Warsaw and IDEAS NCBR) and
+Sebastian Faust (TU Darmstadt) – we received the following
+responses:
+3https://github.com/shutter-network/shutter/blob/
+42b2338ed4970bc0df95fa6bdf6b752b57d8ce2f/shlib/shcrypto/
+encryption.go#L50
+USENIX Association
+33rd USENIX Security Symposium    3517
+
+From the Shutter team:
+We thank the authors for finding and disclosing the
+malleability vulnerability in our implementation,
+which we have fixed thereupon. We are aware of
+the lack of pending transaction privacy in our proto-
+col, but consider it prohibitively difficult to exploit
+in the practical scenarios we are focusing on. This
+is because the fact that transactions are encrypted
+largely prevents targeted attacks, because modern
+blockchains and rollups usually include transac-
+tions very quickly,4 and because leaked transac-
+tions are prohibited from being included in future
+blocks. In one variant of our protocol intended for
+a different setting,5 we achieve pending transac-
+tion privacy, but at the cost of a communication
+overhead linear in the number of transactions. Nev-
+ertheless, we agree with the authors that achieving
+pending transaction privacy in an efficient manner
+is very valuable.
+From the Cryptographers:
+Thanks for looking at Shutter’s implementation and
+informing us about its issues! We address them
+below. About the “stuck in the mempool” problem -
+you are right - Shutter assumes that the transactions
+make it to the blockchain before the decryption key
+is published (how big of a problem it is depends on
+the concrete application).
+About malleability: the formal cryptographic de-
+scription of the Shutter protocol we prepared in
+2021 did not suffer from this problem. In fact, we
+were well aware of the non-malleability require-
+ment, so we based Shutter on non-malleable ID-
+based threshold encryption. The bug you found was
+introduced during Shutter programming. We take
+it as a lesson on the importance of interaction be-
+tween the cryptographers and software developers
+during the entire system development process. The
+development team has fixed the issue in the mean-
+time. We will also publish the Shutter description
+(as it was designed in 2021) in a paper that we will
+put on the Cryptology Eprint archive soon. Thanks
+again!
+4
+Related Work
+Trusted-Execution. One could explore Trusted-Execution
+based solutions where the enclave contains the secret key
+4https://arxiv.org/pdf/2201.05574.pdf
+5https://github.com/gnosischain/specs/blob/
+6e454e5ebb0655495e2584c355f81609cc2d7c11/shutter/low-level.
+md
+of a public-key encryption scheme and clients can encrypt
+their transactions to this public key. The TEE then decrypts
+and publishes a block of transactions, which gets included
+on-chain. Given that over $1 billion USD of MEV has been
+extracted,6 and that TEEs have been repeatedly shown to be
+exploitable,7 it is not reasonable to expect that this approach
+is secure in the long-term.
+Cryptographic. Here, clients use cryptography to hide the
+content of their transaction until it is included in a block i.e.
+execution is confirmed and ordering has been fixed. The three
+main approaches considered are timelock encryption [10],
+threshold encryption [5,40,46,49,58] and witness encryption
+[30].
+In timelock encryption, transactions lose privacy if they are
+not included within a given window of time and also need
+wasteful computation to be carried out leading to additional
+delays.
+Threshold encryption with adaptive chosen ciphertext secu-
+rity [12,13], provides the required privacy guarantees but the
+communication is proportional to the number of transactions
+times the committee size for decryption, which is a bottleneck
+for scaling these systems.
+Finally, witness encryption is typically considered to be
+impractical but a recent work by Döttling et al. [24] showed
+that you can build signature based witness encryption even
+for aggregate and threshold BLS signatures where a signature
+on some public message is the decryption key. Now users
+can encrypt transactions to a predictable block number and
+committee members can sign this block number. Thus it is
+guaranteed that a key to decrypt the ciphertext will appear (in
+the form of a signature on the block number) at some point in
+the future. Although this allows for encryption to the future,
+it is not clear how to ensure that transactions which are not
+included on-chain will not be decrypted.
+In contrast, our work achieves the best of threshold encryp-
+tion and signature based witness encryption as the communi-
+cation to decrypt an entire block of transactions is independent
+of the block size and privacy of transactions that have not been
+included is still preserved.
+Order-fairness. An alternate approach to reducing MEV in-
+volves attaining consensus amongst miners on the order of
+incoming transactions to the mempool. This method aims to
+limit transaction reordering, thus limiting a miner’s potential
+for extracting MEV. Themis [41] and Aequitas [42] illustrate
+the principle of decentralized order fairness. These methods,
+however, can only guarantee a weak form of order-fairness,
+dubbed batch order-fairness, which does not entirely elim-
+inate MEV. A protocol suite for maintaining order fairness
+based on linearizability has been proposed in Wendy [43],
+although it only ensures coarse order-fairness and does not
+wholly rule out all possible reorderings.
+6See https://explore.flashbots.net for flasbhots statistics.
+7https://sgx.fail
+3518    33rd USENIX Security Symposium
+USENIX Association
+
+MEV-resistant DEX. Several strategies for redefining DEXs
+transaction processing model have been proposed. McMe-
+namin et al. [47] and Heimbach et al. [36] offer game-theoretic
+defenses against MEV extraction through frequent batch auc-
+tions and setting slippage tolerance, respectively. Off-chain
+communication [17] and multi-party computation [4] have
+been suggested as means to eliminate arbitrage. A unified
+AMM to mitigate attacks is proposed by A2MM [64]. De-
+spite improved guarantees, these models are more complex
+and potentially more vulnerable to smart contract bugs. Fur-
+thermore, they do not restrict MEV across different DEXs.
+5
+Preliminaries
+We use [n] to denote the set {1,2,...,n}. The security param-
+eter is denoted by λ ∈N. A function f : N →N is said to be
+polynomial if there exists a constant c such that f(n) ≤nc
+for all n ∈N, and we write poly(·) to denote such a function.
+A function f : N →[0,1] is said to be negligible if for every
+c ∈N, there exists N ∈N such that for all n > N, f(n) < n−c,
+and we write negl(·) to denote such a function. A probability
+is noticeable if it is not negligible, and overwhelming if it is
+equal to 1−negl(λ) for some negligible function negl(λ). For
+a set S, we write s ←S to indicate that s is sampled uniformly
+at random from S. For a random variable D, we write d ←D
+to indicate that d is sampled according to D. An algorithm
+A is PPT (probabilistic polynomial-time) if its running time
+is bounded by some polynomial in the size of its input. For
+two ensembles of random variables {D0,λ}λ∈N, {D1,λ}λ∈N,
+we write D0 ≈c D1 to indicate that for all PPT A, it holds that
+
+Pr
+d←D0,λ
+[A(d) = 1]−
+Pr
+d←D1,λ
+[A(d) = 1]
+ ≤1
+2 +negl(λ).
+We use e to denote an efficiently computable non-
+degenerate bilinear pairing from the groups (G1,G2) to a
+target group GT and use F to denote the associated field. We
+will represent the Shamir secret sharing of an element x as
+[x], with i-th share represented as [x]i. We note that while we
+overload the previously discussed notation [n], the notation
+for secret shares will be clear from the context.
+The random oracle model. In the random oracle model
+(ROM), parties are given oracle access to some function H
+that is sampled uniformly at random from the space of all
+functions H : X →Y , where X and Y are finite non-empty
+sets. That is, parties can query their oracle on an input x ∈X
+and receive in return H(x) ∈Y . When proving security of
+a protocol in the random oracle model, the simulator Sim is
+able to “control” the oracle, observing queries made by the
+adversary and simulating responses.
+Lagrange Polynomials. We will use Li(x) = Πd−1
+j=0,j̸=i
+(x−x j)
+(xi−x j)
+to denote the i-th lagrange polynomial for polynomials of
+degree ≤d over a sufficiently large field, corresponding to
+a domain Ω= {x0,x1,...,xd}. These polynomials have the
+property that f(τ) = ∑d
+i=0 Li(τ)f(xi) for any point τ /∈Ωin
+the field.
+Non-interactive Zero-Knowledge proofs. Let L be an NP-
+language and R the corresponding NP-relation. A Simulation
+Extractable-NIZK for R consists of the following algorithms:
+• Setup(1λ) →(crs,td): Takes as input a security parameter,
+and outputs a common reference string crs and trapdoor td.
+• Prove(crs,x,w) →π: Takes as input crs and any pair
+(x,w) ∈R and outputs a proof π for the statement x ∈L.
+• Verify(crs,x,π) →b: Takes as input crs, statement x and
+proof π and outputs a bit b indicating whether verification
+has passed or failed.
+• SimProve(crs,td,x) →π: Takes as input crs, trapdoor td
+and statement x and outputs a simulated proof π.
+We will drop the crs term wherever implicit. An SE-NIZK
+satisfies satisfies the following properties:
+• Perfect Completeness. An SE-NIZK satisfies perfect
+completeness if for any (x,w) ∈R , we have
+Pr
+
+(crs,td) ←Setup(1λ)
+π ←Prove(crs,x,w) : Verify(x,π) = 1
+
+= 1
+• Proof of knowledge (and soundness). For every PPT ad-
+versary A, there is a PPT extractor Ext such that
+Pr
+
+
+(crs,td) ←Setup(1λ)
+(x,π) ←A(crs)
+w ←Ext(crs)
+: Verify(x,π) = 1
+(x,w) /∈R
+
+
+≤negl(λ)
+• Computational Zero-knowledge. There exists a simula-
+tor Sim such that for all stateful distinguishers A the
+following probabilities are equal:
+Pr
+
+
+(crs,td) ←Setup(1λ)
+(x,w) ←A(crs)
+π ←Prove(crs,x,w)
+: (x,w) ∈R
+A(π) = 1
+
+−
+Pr
+
+
+(crs,td) ←Setup(1λ)
+(x,w) ←A(crs)
+π ←SimProve(crs,td,x)
+: (x,w) ∈R
+A(π) = 1
+
+
+
+≤negl(λ)
+• Weak Simulation-Extractability. For every PPT adversary
+A, there exists a PPT extractor Ext such that
+Pr
+" (crs,td) ←Setup(1λ)
+(x,π) ←ASimProve
+w ←Ext
+:
+Verify(x,π) = 1
+∧(x,w) /∈R
+∧x /∈Q
+#
+≤negl(λ)
+USENIX Association
+33rd USENIX Security Symposium    3519
+
+where A has oracle access to SimProve(crs,td,·), and
+Q is a list of queries made by the adversary.
+We will also demand that the proof is straight-line extractable.
+This means that the extractor can, on input a valid proof and
+(potentially) the list of random-oracle queries made by the
+adversary (prover), extract a witness with overwhelming prob-
+ability without rewinding the prover.
+6
+Model and Definitions
+To define the security and efficiency requirements of our
+batched-threshold encryption scheme we extend the IND-
+CCA2 threshold encryption definition from [13]. First we
+specify the syntax for batched-threshold encryption.
+• Setup(1λ,n,t,B) →{pk,(sk1,...,skn)}:
+On
+input
+threshold t for n parties, and batch size B, outputs the
+public key pk along with secret keys for each party.
+• ESetup(1λ,n,t,B) →{epk,com,(td1,...,tdn)}: An op-
+tional, per epoch setup, which has the same inputs as
+Setup and outputs strings epk,com ∈{0,1}∗which is
+published and trapdoor information (td1,...,tdn) for
+each member of the committee.
+• Enc(pk,epk,com,m) →ct: Takes as input a message m,
+epoch setup epk,com, and a public key pk and encrypts
+m to output a ciphertext ct.
+• BatchDec((ct1,...,ctB),ski,tdi) →di: Takes as input B
+ciphertexts (ct1,...,ctB), and a secret key ski and out-
+puts a partial decryption di or outputs ⊥.
+• Combine(pk,epk,com(ct1,...,ctB),{di}i∈S)
+→
+(m1,...,mB): Takes as input the public key pk, epoch
+setup epk,com and t + 1 partial decryptions where
+S ⊆[n] and |S| = t +1, and output messages (m1,...,mB)
+or ⊥.
+Efficiency. We impose various efficiency constraints on
+the above algorithms. Setup and ESetup must run in time
+poly(n,t,B,λ). Enc must run in O(1) time. BatchDec must
+be non-interactive i.e., each party computes it’s partial de-
+cryption independently. It must also run in time poly(B,λ)
+and the size of each partial decryption must be sub-linear in
+the batch size (o(B)) and independent of number of parties.
+Finally, Combine must run in time poly(B,n,λ).
+The ideal functionality. We now describe an ideal functional-
+ity (Fig. 1) similar to [13] which models an idealized encryp-
+tion service. Note that to closely model applications we have
+in mind, the interaction with the ideal functionality proceeds
+in epochs. Further, note that the batch of ciphertexts to be
+decrypted can be determined in an arbitrary manner.8
+Note that the ideal functionality already incorporates the
+progression of the protocol through epochs by specifying
+epoch ids (eid). Any protocol that securely emulates this ideal
+functionality, does not leak information about the ciphertexts
+not decrypted in the epoch. The definition further ensures that
+there is no leakage of any long term secret information in the
+protocol across epochs. Indeed, the protocol we describe will
+be shown to securely emulate the ideal functionality.
+FbTPKE
+Parties: Clients who encrypt messages (U1,...,Um) and
+Servers (S1,...,Sn).
+Parameters: Space of receipts C ⊂{0,1}∗, number of
+servers n, threshold 0 < t ≤n, and batch size B.
+Setup. If all servers send (Setup,(S1,...,Sn)) then no-
+tify all servers that setup was successful, else, send ⊥to
+all servers. Adversary specifies a distribution Γ over C.
+If setup was successful:
+EpochSetup. Maintain two lists of epoch ids Lr and Lc.
+If any t +1 parties send (ESetup,eid), and eid /∈Lr ∪Lc,
+then add eid to Lr.
+Encryption. When a client U sends (Enc,m,eid), sam-
+ple a receipt c ←Γ and store (c,m,eid). Announce c to
+all parties.
+BatchDecryption.
+When
+t + 1
+servers
+send
+(Dec,(c1,...,cB),eid), if
+tuples
+of
+the
+form
+{(ci,mi,eid)}i∈[B]
+have
+been
+previously
+stored,
+and eid ∈Lr, then send the corresponding messages
+{mi}i∈[B] to the servers. Remove eid from Lr and add it
+to Lc.
+Figure 1: Ideal Functionality for Threshold Public-Key En-
+cryption scheme.
+7
+Construction
+We build a concretely efficient scheme for batch-threshold
+encryption where the communication to decrypt an entire
+block of B ciphertexts is independent of the number of trans-
+actions and only requires each member of the committee to
+send one field element. Both our ciphertexts and public key
+have constant size and do not grow with the batch size nor
+the number of parties in the committee. We present our con-
+struction assuming a trusted dealer that runs the Setup and
+8In secure computation, this is often explicitly modeled by the environ-
+ment. Since we do not discuss composability in this work, we refrain from
+formally defining the environment for improved readability, and implicitly
+use the fact that the environment determines the batch of ciphertexts to be
+decrypted.
+3520    33rd USENIX Security Symposium
+USENIX Association
+
+ESetup algorithms, and distributes necessary information to
+the committee. In Section 8 we briefly describe how one can
+use (specialized) multiparty computation (MPC) to emulate
+the trusted dealer using the committee.
+Before we describe of our construction we first recall the
+KZG polynomial commitment scheme [39]. Specifically, we
+use the randomized version of the KZG scheme, with the
+randomizing polynomial degree set to be 1. Intuitively, we
+do not require a higher degree randomizing polynomial be-
+cause we use the polynomial commitment scheme in an ’all or
+nothing’ manner - we only require the underlying polynomial
+in the commitment be hiding until a single opening proof is
+provided, which in our case will correspond to revealing the
+entire polynomial.
+KZG Commitment Scheme [39].
+The setup consists of
+a crs = (g,gτ,gτ2,...,gτB, ˜g,h,hτ, ˜h) for randomly sampled
+generators g ̸= ˜g ∈G1, h ̸= ˜h ∈G2 and dlogg ˜g = dlogh˜h. The
+commitment to a polynomial of degree ≤B is computed
+as com = ˜grgp(τ), where r ←$ F. To open the polynomial at
+a point x∗to the value y∗, the prover publishes π = (π1 =
+gq(τ),π2 = gr), where q(x) = (p(x)−y∗)/(x−x∗). The proof
+is verified by checking that
+e(com/gy∗,h) = e(π1,hτ/hx∗)·e(π2, ˜h).
+(1)
+For convenience of notation we will separate the crs into two
+separate crs1 = (g,gτ,gτ2,...,gτB,h,hτ) and crs2 = ( ˜g, ˜h). We
+note that from the above description, to compute the opening
+to the polynomial it suffices to be in possession of the poly-
+nomial p, and gr, i.e. it is not required to know r to compute
+π. We will utilize this observation in our construction.
+Setup. Now to build the desired batched-threshold encryp-
+tion scheme we use the KZG commitment scheme as follows.
+The committee runs a setup procedure for a batch size B,
+and publishes crs1 = (g,gτ,gτ2,...,gτB,h,hτ). The commit-
+tee also holds Shamir secret shares of the trapdoor – La-
+grange coefficients (L0(γ),L1(γ),...,LB(γ)) on the domain
+ΩL = {x0,x1,...,xB}, for some γ /∈ΩL. Note that the batch
+size B is an upper limit and dummy ciphertexts can always
+be inserted to appropriately pad any batch of size < B.
+For our concrete instantiation, whenever an FFT is to
+be carried out, we use domains that form a smooth mul-
+tiplicative subgroup such as the roots of unity (Ω=
+{1,ω,ω2,...,ωB−1}) in a prime field. However, for the La-
+grange polynomials we use ΩL = {1,ω,ω2,...,ωB−1,τ}.
+Looking ahead, we have to interpolate a polynomial over the
+points Ω∪{γ} in order to produce KZG opening proofs over
+all points in Ω[27], but this can still be done in O(BlogB)
+time as the domain is almost smooth. The idea is to first
+interpolate a quotient polynomial q(x) over the smooth sub-
+set Ω. Then we observe that the polynomial we are inter-
+ested can be computed using O(B) multiplications as f(x) =
+q(x)(x−γ)+ f(γ).
+EpochSetup. For each epoch, the committee samples a fresh
+crs2 = ( ˜g, ˜h) such that dlogg ˜g = dlogh˜h and publishes a ran-
+dom group element com = gα ˜gr for which they hold shares
+of αLB(γ), and r.
+Remark 2. We note that to compute αLB(γ), EpochSetup
+requires the “secret state” LB(γ) (dependent on τ sampled
+in Setup). When emulating the trusted dealer via an MPC,
+at the end of Setup, the committee members will have also
+possess shares of LB(γ) which will allow for the subsequent
+computation of the shares of αLB(γ) for each instance of
+EpochSetup via an MPC. This ensures distributed transfer of
+the secret state LB(γ) between the two setups without affecting
+efficiency. In our trusted dealer description, we assume this
+state is maintained between the two setups.
+Encrypt. Now to encrypt a message we rely on the fact that
+the opening proof π is hard to compute. Taking a closer look
+at the KZG verification equation, we observe that if the en-
+cryptor exponentiates the left hand side of Eq. (1) by ρ for any
+x∗∈Ω,y∗∈F, then this is a uniformly random element that
+can be used to mask the message. However, the committee
+must still be able to decrypt the ciphertext and we do this by
+providing hints – (hτ/hx∗)ρ and ˜hρ as part of the ciphertext.
+Decrypt. To decrypt, it is sufficient to produce a proof π of
+opening the commitment to y∗at x∗. Here we note that the
+shares of the powers of τ, and α actually form a trapdoor
+that allows the committee to equivocate the commitment,
+and hence open it to any point (x∗,y∗) of their choice. As
+described in Fig. 2, the committee will choose a batch of
+transactions and decrypts them by equivocating the commit-
+ment according to the ciphertexts.
+In more detail, a threshold number of parties in the com-
+mittee agree on a batch of ciphertexts {ct1,...,ctB} to be de-
+crypted for some particular epoch. The committee then finds
+the unique degree-B polynomial p(x) satisfying the following
+constraints, where tgi corresponds to the y value sampled
+during Encrypt:
+• {p(ωi) = tgi}B−1
+i=0
+• p(τ) = α
+and output p(γ), where com = gα ˜gr is that epoch’s setup and
+γ /∈ΩL. Given p(γ), the polynomial p(x) can be recovered,
+allowing anyone to generate the first term of opening proof π1.
+We note that this can be computed non-interactively as p(γ) =
+∑B
+i=0 p(xi)Li(γ) and the parties have shares of LB(γ)p(τ) and
+{Li(γ)}B−1
+i=0 along with {p(xi)}B−1
+i=0 in the clear. Since shamir
+secret sharing is linearly homomorphic, the committee can
+compute shares of p(γ) locally as
+[p(γ)] =
+B−1
+∑
+i=0
+p(xi)[Li(γ)]+[LB(γ)p(τ)].
+USENIX Association
+33rd USENIX Security Symposium    3521
+
+In addition, each member of the committee also sends shares
+of ˜gr computed as ˜g[r], which allows π2 to be recovered. Thus,
+reconstruction only requires one field element and one group
+element to be sent by each party. For simplicity of exposition,
+we use a trusted dealer in Fig. 2, to handle the Setup and
+EpochSetup phases. In Section 8 we discuss how the dealer
+can be emulated using secure multi-party computation.
+CCA2 security. It is easy to see that simply masking the
+message with randomness leaves it susceptible to man-in-the-
+middle attacks. We handle this by making y∗the output of a
+one way function and having the encryptor attach a simulation-
+extractable NIZK proving knowledge of the pre-image of
+the one way function and the randomness ρ used, and the
+ciphertext is a tag in the NIZK. The one way function we
+use is based on the discrete log problem and the NIZK is a
+very efficient sigma protocol (proof of knowledge of discrete
+logarithm).
+8
+Emulating the Dealer
+In this section we discuss how the committee can use secure
+multi-party computation to emulate the trusted dealer.
+8.1
+Setup
+The Setup requires the committee to secret share the Lagrange
+coefficients – L0(γ),L1(γ),...,LB−1(γ) defined on the domain
+ΩL = {1,ω,...,ωB−1,τ}, for some γ /∈ΩL. In addition they
+also publish crs1 = (g,gτ,gτ2,...,gτB,h,hτ). The MPC first
+samples a secret sharing of a random value τ and computes
+it’s powers τ2,...,τB−1 using standard techniques [19]. In
+fact, all terms can be computed in constant rounds using [3].
+Given shares of the powers of τ, the parties can locally expo-
+nentiate their share and announce {g[τi]}i∈[B−1]. The crs can
+now be computed by carrying out Lagrange interpolation in
+the exponent.
+We now describe an MPC protocol to distribute shares of
+the i-th Lagrange coefficient Li(γ). Recall that for a domain
+Ω= {x0,x1,...,xB}, Li(γ) = Πj̸=i
+γ−x j
+xi−x j . We separate this into
+two cases:
+• (xi = ωi) Here, a secret value (τ) only shows up once in
+the numerator and once in the denominator. Thus, this
+only requires computing one inversion and one multipli-
+cation of a secret shared value. Again, these can be done
+using standard techniques.
+• (xi = τ) Although this is not needed in the setup phase, it
+will be needed later in the epoch setup phase. This case
+is slightly trickier as (τ) appears multiple times in the
+denominator. However, upon expanding the denominator
+in symbolic manner, the denominator is just a linear
+combination of the powers of τ. Since the parties already
+have a secret sharing of the powers of τ, they can locally
+Batched-Threshold Encryption
+Parameters: A pairing friendly group (G1,G2,GT ).
+• Setup(1λ,n,t,B): A trusted dealer runs the setup for
+NIZK and the commitment scheme and sets pk =
+(crsNIZK,ck,crs1 = (g,gτ,gτ2,...,gτB,h,hτ)), and dis-
+tributes shares of (L0(γ),L1(γ),...,LB−1(γ)) to the com-
+mittee, setting for each i ∈[n], ski = {[L j(γ)]i}B−1
+j=0 . Out-
+put (pk,(sk1,...,skn)).
+• ESetup(1λ,n,t,B):
+The
+trusted
+dealer
+samples
+α,δ,r ←$ F and sets crs2 = ( ˜g = gδ, ˜h = hδ) and
+com = gα ˜gr. They also secret share αLB(γ) (see
+Remark 2) and gr with the committee members.
+Output (epk,td1,...,tdn) where epk = crs2
+and
+for each i ∈[n], tdi = ([αLB(γ)]i,[r]i). Additionally
+commitments {ci = Com([r]i;ηi)}i∈[n] to {[r]i}i∈[n] are
+published and the opening ηi to ci is given to the i-th
+committee member.
+• Enc(pk,epk,com,m): To encrypt a message M for a
+particular epoch with com as the epoch setup, sample
+s ←$ F and compute S ←gs and tg ←H(S) where tg ∈
+F. Finally, sample a random value ˆx ∈Ωand output the
+following as ct:
+– ct(1) = H(e(com/gtg,h)ρ)⊕M
+– ct(2) = (hτ/hˆx)ρ
+– ct(3) = ˜hρ
+– S
+– ˆx
+– φ = NIZK{s,ρ | gs = S ∧ct(2) = hρ(τ−ˆx)
+∧ct(3) ∧ct(1) ∧ˆx}
+• BatchDec((ct0,...,ctB−1),ski,tdi):
+A
+threshold
+number of parties in the committee agree on a
+batch of ciphertexts {ct0,...,ctB−1} such that ev-
+ery ciphertext has a valid proof φi, e( ˜g,ct(2)
+i
+) =
+e(gτ−ˆxi,ct(3)
+i
+), and {ˆx0,..., ˆxB−1} = Ω\ {γ}, where
+cti = (ct(1)
+i
+,ct(2)
+i
+,Si, ˆxi,φi). The i-th party then outputs
+[p(γ)]i =
+B−1
+∑
+j=0
+p(xi)[L j(γ)]i +[LB(γ)p(τ)]i,
+and g[r]i along with a proof φ′ = NIZK{ηi,[r]i | ci =
+Com([r]i;ηi)∧g[r]i} . Shares with φ′ not verifying are
+discarded.
+• Combine(pk,(ct1,...,ctB),{di}i∈S): Recover the poly-
+nomial p(x) and gr (using error-correction for p(x)
+if necessary) and produce KZG proofs of opening
+{πi = (gqi(τ),gr)}B−1
+i=0 for all points in Ω, where qi(x) =
+(p(x)−tgi)/(x−xi) and tgi = H(Si). Output
+{Mi = ct(1)
+i
+⊕H(e(π1
+i ,ct(2)
+i
+)·e(π2
+i ,ct(3)
+i
+))}B−1
+i=0 .
+Figure 2: Protocol for batched-threshold encryption
+3522    33rd USENIX Security Symposium
+USENIX Association
+
+compute shares of the denominator, effectively reducing
+to the case above.
+8.2
+Epoch Setup
+The epoch setup is much more simple and can be carried
+out for multiple epochs simultaneously, which also reduces
+the communication [6]. The parties only need to establish
+sharings of random values α,δ,r, after which shares can be
+locally exponentiated with appropriate group elements and
+announced to recover com, ˜g, ˜h. Finally, they carry out one
+multiplication to obtain shares of αLB(γ). To ensure that the
+correct shares of gr are revealed during partial decryption, we
+publish commitments to shares of r, using a publicly verifiable
+secret sharing protocol [31,35,38,56]. During batch decryp-
+tion, we provide a proof that [gr] was computed correctly (if
+cheating is detected).
+Although the MPC protocols described above are a straight-
+forward application of prior work, we expect them to be rea-
+sonably efficient. We also note that an important direction for
+future work is to optimize these protocols by exploiting the
+structure of the function being evaluated.
+9
+Implementation and Evaluation
+To evaluate the concrete performance of our batched-
+threshold encryption scheme we implemented a per-
+formant version of our scheme in Rust. We use the
+arkworks [2] library for implementations of pairing-friendly
+curves and associated algebra and the merlin library
+to handle the Fiat-Shamir transform. Our code can be
+found at https://github.com/guruvamsi-policharla/
+batch-threshold-encryption.
+Setup. All of our experiments for performance bench-
+marks Table 2 were run on a 2019 MacBook Pro with a
+2.4 GHz Intel Core i9 processor and 16 GB of DDR4 RAM
+in single threaded mode. Next, for the committee churn ex-
+periments, we adapted the implementation from [33] to our
+setting and simulated a WAN on the Google Cloud Platform
+using the NetEm package with a delay time of 200 ms, jitter
+time of 20 ms and a rate of 10 mbit per second. For the com-
+mittee nodes we used an e2-small instance with 2 GB RAM
+in single threaded mode.
+Algebra. We use BLS12-381 as our pairing friendly curve
+and the BLAKE3 hash function as our random oracle.
+Dealer. We implement the Setup and EpochSetup protocols
+using a trusted dealer for a committee of size 16. However,
+these can be replaced with efficient secure multi-party compu-
+tation protocols. We note that the Setup protocol is run only
+once per committee and the EpochSetup can be carried out by
+the committee during downtime where they are not issuing
+partial decryptions.
+Evaluation. We now evaluate the performance of our batched-
+threshold encryption scheme. In particular, we aim to answer
+three main questions and provide insights about bottlenecks
+in different parts of the protocol.
+• How long does it take to encrypt a message? What is the
+size of corresponding ciphertexts?
+• How long does it take for a committee member to com-
+pute partial decryptions and how does it vary with batch
+size? How does it vary with committee size?
+• How long does it take to recover all messages using
+partial decryptions and how does it vary with batch size?
+Encryption. As is evident from the protocol description
+Fig. 2, a constant number of operations are required to en-
+crypt a message, independent of committee/batch size. Our
+experiments show that it takes less than 6 ms to encrypt a
+32 byte message. The ciphertext consists of 1 G1 element, 2
+G2 elements, 3 F elements, a 2 byte description of ˆx, and a
+string proportional to the message length (32 bytes), resulting
+in a total size of 370 bytes with group element compression.
+This is ≈3× larger than the threshold Cramer-Shoup CCA2
+secure encryption scheme [12,13] which consists of 4 group
+elements in a non-pairing friendly group (128 bytes) such
+as [9].
+Partial Decryption. Here, each party in the committee checks
+a zero-knowledge proof, and then computes it’s partial de-
+cryption. We observe that over 99% of the cost comes from
+verifying the proofs of knowledge of discrete log and pairing
+checks needed for CCA2 security. This warrants the investi-
+gation of zero-knowledge proofs that can be verified faster in
+batches. Table 2 confirms that the time taken grows linearly
+in the size of the batch of transactions being decrypted. If our
+scheme was deployed on Ethereum, which processes roughly
+500 transactions per block, it would take approximately 2.8 s
+to verify and compute a partial decryption. Each partial de-
+cryption is 80 bytes (one F element and one G1 element).
+Batch size
+Partial decrypt (ms)
+Reconstruct (ms)
+8
+41.5
+41.9
+32
+173.4
+165.0
+128
+678.11
+781.4
+512
+2818.6
+3472.2
+Table 2: Benchmarks of time taken to compute partial decryp-
+tions and to reconstruct messages as the batch size grows.
+Reconstruct. Here, any party (without secrets) can recover
+the messages given all the partial decryptions. The bottleneck
+here is the O(BlogB) group operations, and O(B) pairings
+USENIX Association
+33rd USENIX Security Symposium    3523
+
+needed to produce all KZG opening proofs using [27]. We
+provide timings in Table 2. Again, if our scheme were to be
+deployed on Ethereum, it would cost less than 3.5 s to de-
+crypt 512 transactions in single-threaded mode and this can
+be fully parallelized. We note that we implement an optimistic
+decryption protocol where all the shares received from the
+committee are valid. If certain shares are invalid, the recon-
+struction protocol will need to use a more expensive error
+correction protocol such as [62].
+Varying Committee Size. Given that the only component
+that scales with committee size is the size of the Fast Fourier
+transform to reconstruct p(γ) and gr in Fig. 2, increasing the
+committee size when batch size is large (512 say), does not
+have a noticeable impact on the reconstruction time which is
+dominated by the cost of producing KZG opening proofs.
+Incentive Mechanism. Finding a good committee where a
+majority of parties behave honestly can be quite challenging.
+The Shutter network, which has deployed threshold encryp-
+tion, aims to solve this through decentralized governance via
+a ShutterDao, where the committee members are chosen by
+stakeholders in the system. To ensure liveness, one can reward
+nodes and penalize malicious behavior via stake slashing. We
+note that this is similar to the case where if too many block
+validators go offline in Ethereum, the blockchain comes to a
+standstill.
+Denial of Service. Unfortunately, transaction privacy comes
+with the additional challenge of potential denial of service
+attacks We present a few approaches to handle this below.
+However, these approaches are application specific and should
+be addressed more carefully in future work that aims to deploy
+encrypted mempools.
+A general strategy to prevent “spam” is to demand proofs
+from users that transactions are valid. These proofs can be
+quite efficient when designed for specific applications. Con-
+sider for instance, a DEX such as Uniswap on an L2, and the
+client wishes to exchange tokens. Here, it may be sufficient to
+encrypt just the amounts and token names along with a range
+proof showing that they indeed own enough tokens. Another
+option is to implement some kind of penalty for submitting
+invalid transactions, which raises the cost of launching a de-
+nial of service attack. Note that sender addresses need not be
+encrypted, which allows for “blacklisting” of repeat offenders.
+Remark 3. Not all transactions in the mempool need privacy.
+For instance, a peer-to-peer transfer can be submitted in the
+clear to the mempool as the recipient would receive the same
+amount, irrespective of the ordering of the block. Since trans-
+actions with mempool privacy are more expensive they can
+be priced differently, and those with a need for privacy can
+opt in.
+9.1
+End-to-End Performance.
+In this section, we compare the end to end performance of
+our batched-threshold encryption scheme with Ferveo [5],
+MEVade [50], McFly [24] and Shutter Network [58]. We
+consider the constant sized ciphertexts scheme from McFly
+which relies on the committee holding shamir shares of the
+secret key. The other scheme has ciphertext size linear in the
+committee size, which is impractical in the blockchain setting.
+We provide concrete performance figures in Table 3 for
+our work and contrast them with Ferveo [5], MEVade [50],
+McFly [24] and Shutter Network [58]. We also provide bench-
+marks on how expensive committee changes are in Table 4.
+Setup. All schemes apart from ours, only need a random
+value to be secret shared at the beginning of the protocol. In
+addition, our protocol needs to carry out multiplication and
+inversions in MPC. To estimate the cost of this we point to
+prior work [15] which provides benchmarks for a protocol run
+over a WAN with 50 parties. The depth of our setup circuit is
+3 as the powers of tau can be computed in depth 1 using [3],
+and the lagrange coefficients need an additional 2 rounds (one
+for inverse and one for multiplication). The number of gates
+is O(B) which is < 10000 for a batch size of 512. From Table
+5 of [3], we can see that a circuit of depth 20, and 1 million
+gates can be computed in under 3 minutes for the WAN con-
+figuration. This provides a very conservative upper bound on
+the setup protocol and the cost grows linearly with the number
+of parties. We note here that these protocols will abort when a
+party behaves maliciously. There are other guaranteed output
+delivery MPC protocols, albeit with more rounds but similar
+communication [34], that can identify misbehaving parties,
+allowing them to be penalized. One could run the protocols
+with abort, optimistically, and if parties abort, then they can
+run the guaranteed output delivery protocol.
+Epoch Setup. We assume that the setup for many epochs is
+carried out at once. Each epoch requires one multiplication
+and 3 secret shared random values for α,δ and r. However, in
+this case we additionally demand that the sharing of gr is a
+publicly verifiable secret sharing [31,35,38,56] as malicious
+parties should not be able to cause the protocol to abort after
+execution. For this particular task, a 50 node network, [38]
+takes less than 18 seconds on a LAN. We note here that the
+communication is actually quite small (< 1 MB) and most of
+the time is spent on computation. Thus, we expect that one can
+also scale this to a WAN setting without incurring much more
+overhead. Moreover the epoch setups can be paralellized and
+carried out well before the actual epoch. It is expected that
+this number will come down with faster implementations of
+hidden order groups. This cost can be further amortized when
+generating many sharings using techniques from [6].
+Practical findings. We used average transaction and block
+sizes, as well as selected a standard curve, to provide real
+estimates of the cost of our system. In particular, we analyze
+average transaction size increase, as well as the gas cost of
+3524    33rd USENIX Security Symposium
+USENIX Association
+
+Parameter
+Ferveo/MEVade
+McFly
+Shutter
+This Work
+Ciphertext size
+|G1|+|G2|
+|GT|+|G2|
+|G2|+S
+2|G2|+|G1|+3|F|+S+2
+Block decryption broadcast size
+nB|G1|
+n|G1|
+n|G1|
+n(|G1|+|F|)
+Change in transaction size
+12%
+23%
+10%
+30%
+Ciphertext storage gas cost (USD)
+15,120 ($0.7)
+30,240 ($1.4)
+13,440 ($0.6)
+42,000 ($1.9)
+|Partial Decryptions|
+3MB
+6KB
+6KB
+10KB
+|Partial Decryptions|/|Block Size|
+500%
+1%
+1%
+2%
+Table 3: Ciphertext size and total decryption broadcast size for n committee members, B transactions per block, in terms of S the
+size in bytes of the encapsulation key, and |G1|,|G2|,|GT|,|F| the size in bytes of the representation of elements from each group
+and field. Concrete numbers obtained with the BLS12-381 curve, using the average transaction and block size on Ethereum in
+2023. We use the ETH/USD rate on January 1, 2024 for conversions. The last two rows use a committee size of 128 and a block
+of 512 transactions to give real-world communication cost estimates.
+encryption, and the communication cost of decryption. These
+values are summarized in Table 3. We find:
+• Our setup phase is more expensive than prior works,
+who only need to establish one publicly verifiable se-
+cret sharing. But we conservatively expect this overhead
+to be under 100×. Moreover, our full setup is only run
+once for a given committee, and our per-epoch setup can
+be done in advance, and only requires communication
+between the committee members, where good network
+connections can be established. Whereas during decryp-
+tion, the partial decryptions need to be broadcast to the
+entire network, via gossiping which is typically much
+slower. Thus, we optimize the latter at the expense of
+the former. The size of the decryption shares needed to
+reveal all transactions in a block is only 2% of the size
+of a block using batched-threshold encryption, versus
+500% using Ferveo9, making propagation to all nodes in
+the blockchain prohibitively slow.
+• During batched decryption, each committee member
+broadcasts one group element from G1 and one field
+element. This is roughly the same as McFly and Shut-
+ter’s (our message size is roughly double), but we ad-
+ditionally provide transaction privacy. Ferveo provides
+pending transaction privacy but the amount of informa-
+tion that needs to be broadcast is B× larger. In a setting
+with n = 128 and B = 512 transactions, we only require
+a total broadcast of 10KB, versus 3MB for Ferveo. [22]
+showed that each kilobyte adds ≈80 ms to the block
+propagation time. This implies that Ferveo adds an over-
+head of ≈250 s for block propogation, whereas we add
+just 0.8 s.
+• Our ciphertext is slightly larger than prior works, but
+still constant size. In practice, we require 400 bytes for
+our ciphertext, which represents $2 additional spent gas,
+while Ferveo costs $0.7, McFly $1.4, and Shutter $0.6.
+9For a block size of 512, using the average size of an Ethereum transaction
+Committee churn. When a party joins or leaves the com-
+mittee, the old committee needs to securely "transfer" the
+secrets it holds to the new committee. This can be done using
+a dynamic pro-active secret sharing protocol such as [33]. We
+adapt their code to our setting and provide benchmarks in
+Table 4. Due to the structure of the protocol in [33], the setup
+phase, in one-shot, generates correlations required for the re-
+fresh of n/2 correlations. Even if we only need to refresh one
+secret, as is the case in prior work, such as Ferveo, we still
+have to pay the price of generating n/2 correlations during the
+setup phase. However, the refresh phase is the time taken to
+refresh one secret, but again this can be trivially parallelized
+across the total number of secrets that need to be refreshed.
+Extrapolating from Table 4, for a blocksize of 512, with a
+committee size of 64, tolerating 31 corruptions, and assuming
+each node can refresh 8 secrets in parallel (needs 8 threads),
+it would take less than 2 minutes on a WAN and under 4
+minutes on a LAN.
+Network
+Setup (s)
+Refresh (s)
+LAN
+6.24
+0.22
+WAN
+8.21
+1.5
+Table 4: Time taken to change a committee with 64 parties us-
+ing the protocol from [33] on a LAN and WAN network. Here
+Setup refers to the time taken to establish n/2 correlations
+used to "transfer" ownership of shamir secret shared values to
+a new committee. Refresh refers to the time taken to transfer
+one secret to the new committee.
+In conclusion, we believe that our work represents an impor-
+tant step towards achieving mempool privacy in blockchains.
+Although the (epoch) setup is more expensive than prior work,
+we believe it offers a desirable tradeoff when the committee
+changes are infrequent viz. orders of magnitude less commu-
+nication in the time-sensitive decryption step in exchange for
+a more expensive setup.
+USENIX Association
+33rd USENIX Security Symposium    3525
+
+10
+Acknowledgments
+We thank the USENIX Security Symposium reviewers for
+their valuable feedback. Research supported in part by
+DARPA under Agreement No. HR00112020026, AFOSR
+Award FA9550-19-1-0200, NSF CNS Award 1936826, and
+research gifts/awards by Visa Inc, BAIR Commons Meta
+Fund, Stellar Development Foundation, a J.P. Morgan Faculty
+Research Award, a Berkely Center for Responsible, Decen-
+tralized Intelligence (RDI) Fellowship and a Bakar Fellows
+Spark Award.
+References
+[1] Guillermo Angeris, Alex Evans, and Tarun Chitra. A
+note on bundle profit maximization. Stanford University,
+2021.
+[2] arkworks contributors. arkworks zksnark ecosystem.
+https://arkworks.rs, 2022.
+[3] Judit Bar-Ilan and Donald Beaver. Non-cryptographic
+fault-tolerant computing in constant number of rounds
+of interaction. In Piotr Rudnicki, editor, 8th ACM PODC,
+pages 201–209. ACM, August 1989.
+[4] Carsten Baum, Bernardo David, and Tore Kasper Fred-
+eriksen. P2DEX: privacy-preserving decentralized cryp-
+tocurrency exchange. In Kazue Sako and Nils Ole Tip-
+penhauer, editors, Applied Cryptography and Network
+Security - 19th International Conference, 2021.
+[5] Joseph Bebel and Dev Ojha. Ferveo: Threshold decryp-
+tion for mempool privacy in BFT networks. Cryptol-
+ogy ePrint Archive, Report 2022/898, 2022. https:
+//eprint.iacr.org/2022/898.
+[6] Zuzana Beerliová-Trubíniová and Martin Hirt. Perfectly-
+secure MPC with linear communication complexity. In
+Ran Canetti, editor, TCC 2008, volume 4948 of LNCS,
+pages 213–230. Springer, Heidelberg, March 2008.
+[7] Mihir Bellare, Anand Desai, David Pointcheval, and
+Phillip Rogaway. Relations among notions of security
+for public-key encryption schemes. In Hugo Krawczyk,
+editor, CRYPTO’98, volume 1462 of LNCS, pages 26–
+45. Springer, Heidelberg, August 1998.
+[8] Eli Ben-Sasson, Iddo Bentov, Yinon Horesh, and
+Michael Riabzev.
+Scalable, transparent, and post-
+quantum secure computational integrity. Cryptology
+ePrint Archive, Report 2018/046, 2018.
+https://
+eprint.iacr.org/2018/046.
+[9] Daniel J. Bernstein. Curve25519: New Diffie-Hellman
+speed records. In Moti Yung, Yevgeniy Dodis, Aggelos
+Kiayias, and Tal Malkin, editors, PKC 2006, volume
+3958 of LNCS, pages 207–228. Springer, Heidelberg,
+April 2006.
+[10] Dan Boneh, Joseph Bonneau, Benedikt Bünz, and Ben
+Fisch. Verifiable delay functions. In Hovav Shacham
+and Alexandra Boldyreva, editors, CRYPTO 2018, Part I,
+volume 10991 of LNCS, pages 757–788. Springer, Hei-
+delberg, August 2018.
+[11] Dan Boneh and Matthew K. Franklin. Identity-based
+encryption from the Weil pairing. In Joe Kilian, editor,
+CRYPTO 2001, volume 2139 of LNCS, pages 213–229.
+Springer, Heidelberg, August 2001.
+[12] Dan Boneh, Kevin Lewi, Hart William Montgomery,
+and Ananth Raghunathan. Key homomorphic PRFs and
+their applications. In Ran Canetti and Juan A. Garay,
+editors, CRYPTO 2013, Part I, volume 8042 of LNCS,
+pages 410–428. Springer, Heidelberg, August 2013.
+[13] Ran Canetti and Shafi Goldwasser. An efficient thresh-
+old public key cryptosystem secure against adaptive
+chosen ciphertext attack. In Jacques Stern, editor, EU-
+ROCRYPT’99, volume 1592 of LNCS, pages 90–106.
+Springer, Heidelberg, May 1999.
+[14] Agostino Capponi, Ruizhe Jia, and Ye Wang. The evo-
+lution of blockchain: from lit to dark. arXiv preprint,
+2022.
+[15] Koji Chida, Daniel Genkin, Koki Hamada, Dai Ikarashi,
+Ryo Kikuchi, Yehuda Lindell, and Ariel Nof. Fast large-
+scale honest-majority MPC for malicious adversaries.
+In Hovav Shacham and Alexandra Boldyreva, editors,
+CRYPTO 2018, Part III, volume 10993 of LNCS, pages
+34–64. Springer, Heidelberg, August 2018.
+[16] Arka Rai Choudhuri, Sanjam Garg, Julien Piet, and
+Guru-Vamsi Policharla. Mempool privacy via batched
+threshold encryption: Attacks and defenses. Cryptol-
+ogy ePrint Archive, Paper 2024/669, 2024.
+https:
+//eprint.iacr.org/2024/669.
+[17] Michele Ciampi, Muhammad Ishaq, Malik Magdon-
+Ismail, Rafail Ostrovsky, and Vassilis Zikas. Fairmm:
+A fast and frontrunning-resistant crypto market-maker.
+IACR Cryptology ePrint Archive, 2021.
+[18] Philip Daian, Steven Goldfeder, Tyler Kell, Yunqi Li,
+Xueyuan Zhao, Iddo Bentov, Lorenz Breidenbach, and
+Ari Juels. Flash boys 2.0: Frontrunning in decentral-
+ized exchanges, miner extractable value, and consensus
+instability. In 2020 IEEE Symposium on Security and
+Privacy, pages 910–927. IEEE Computer Society Press,
+May 2020.
+3526    33rd USENIX Security Symposium
+USENIX Association
+
+[19] Ivan Damgård and Jesper Buus Nielsen. Scalable and
+unconditionally secure multiparty computation. In Al-
+fred Menezes, editor, CRYPTO 2007, volume 4622 of
+LNCS, pages 572–590. Springer, Heidelberg, August
+2007.
+[20] Isaac David, Liyi Zhou, Kaihua Qin, Dawn Song,
+Lorenzo Cavallaro, and Arthur Gervais. Do you still
+need a manual smart contract audit?, 2023.
+[21] Alfredo De Santis, Yvo Desmedt, Yair Frankel, and Moti
+Yung. How to share a function securely. In 26th ACM
+STOC, pages 522–533. ACM Press, May 1994.
+[22] Christian Decker and Roger Wattenhofer. Information
+propagation in the bitcoin network. In IEEE P2P 2013
+Proceedings, pages 1–10, 2013.
+[23] Yvo Desmedt and Yair Frankel. Threshold cryptosys-
+tems. In Gilles Brassard, editor, CRYPTO’89, volume
+435 of LNCS, pages 307–315. Springer, Heidelberg, Au-
+gust 1990.
+[24] Nico Döttling, Lucjan Hanzlik, Bernardo Magri, and
+Stella Wohnig. McFly: Verifiable encryption to the fu-
+ture made practical. Cryptology ePrint Archive, Report
+2022/433, 2022. https://eprint.iacr.org/2022/
+433.
+[25] Taher ElGamal. On computing logarithms over finite
+fields. In Hugh C. Williams, editor, CRYPTO’85, vol-
+ume 218 of LNCS, pages 396–402. Springer, Heidelberg,
+August 1986.
+[26] Shayan Eskandari, Seyedehmahsa Moosavi, and Jeremy
+Clark. Sok: Transparent dishonesty: front-running at-
+tacks on blockchain. In International Conference on
+Financial Cryptography and Data Security, 2019.
+[27] Dankrad Feist and Dmitry Khovratovich. Fast amor-
+tized KZG proofs. Cryptology ePrint Archive, Report
+2023/033, 2023. https://eprint.iacr.org/2023/
+033.
+[28] Yair Frankel. A practical protocol for large group ori-
+ented networks. In Jean-Jacques Quisquater and Joos
+Vandewalle, editors, EUROCRYPT’89, volume 434 of
+LNCS, pages 56–61. Springer, Heidelberg, April 1990.
+[29] Georg Fuchsbauer, Antoine Plouviez, and Yannick
+Seurin. Blind schnorr signatures and signed ElGamal en-
+cryption in the algebraic group model. In Anne Canteaut
+and Yuval Ishai, editors, EUROCRYPT 2020, Part II, vol-
+ume 12106 of LNCS, pages 63–95. Springer, Heidelberg,
+May 2020.
+[30] Sanjam Garg, Craig Gentry, Amit Sahai, and Brent Wa-
+ters. Witness encryption and its applications. In Dan
+Boneh, Tim Roughgarden, and Joan Feigenbaum, edi-
+tors, 45th ACM STOC, pages 467–476. ACM Press, June
+2013.
+[31] Craig Gentry, Shai Halevi, and Vadim Lyubashevsky.
+Practical non-interactive publicly verifiable secret shar-
+ing with thousands of parties. In Orr Dunkelman and Ste-
+fan Dziembowski, editors, EUROCRYPT 2022, Part I,
+volume 13275 of LNCS, pages 458–487. Springer, Hei-
+delberg, May / June 2022.
+[32] Arthur Gervais, Ghassan
+O
+Karame, Karl Wüst,
+Vasileios Glykantzis, Hubert Ritzdorf, and Srdjan Cap-
+kun. On the security and performance of proof of work
+blockchains. In Proceedings of the 2016 ACM SIGSAC
+conference on computer and communications security,
+2016.
+[33] Vipul Goyal, Abhiram Kothapalli, Elisaweta Masserova,
+Bryan Parno, and Yifan Song. Storing and retrieving
+secrets on a blockchain. In Goichiro Hanaoka, Junji
+Shikata, and Yohei Watanabe, editors, PKC 2022, Part I,
+volume 13177 of LNCS, pages 252–282. Springer, Hei-
+delberg, March 2022.
+[34] Vipul Goyal, Yifan Song, and Chenzhi Zhu. Guaranteed
+output delivery comes free in honest majority MPC.
+In Daniele Micciancio and Thomas Ristenpart, editors,
+CRYPTO 2020, Part II, volume 12171 of LNCS, pages
+618–646. Springer, Heidelberg, August 2020.
+[35] Jens Groth. Non-interactive distributed key generation
+and key resharing. Cryptology ePrint Archive, Report
+2021/339, 2021. https://eprint.iacr.org/2021/
+339.
+[36] Lioba Heimbach and Roger Wattenhofer. Eliminating
+sandwich attacks with the help of game theory. arXiv
+preprint, 2022.
+[37] Aljosha Judmayer, Nicholas Stifter, Philipp Schindler,
+and Edgar R. Weippl. Estimating (miner) extractable
+value is hard, let’s go shopping! IACR Cryptology ePrint
+Archive, 2021.
+[38] Aniket Kate, Easwar Vivek Mangipudi, Pratyay Mukher-
+jee, Hamza Saleem, and Sri Aravinda Krishnan Thya-
+garajan. Non-interactive vss using class groups and
+application to dkg. Cryptology ePrint Archive, Paper
+2023/451, 2023. https://eprint.iacr.org/2023/
+451.
+[39] Aniket Kate, Gregory M. Zaverucha, and Ian Goldberg.
+Constant-size commitments to polynomials and their ap-
+plications. In Masayuki Abe, editor, ASIACRYPT 2010,
+volume 6477 of LNCS, pages 177–194. Springer, Hei-
+delberg, December 2010.
+USENIX Association
+33rd USENIX Security Symposium    3527
+
+[40] Alireza Kavousi, Duc V. Le, Philipp Jovanovic, and
+George Danezis. Blindperm: Efficient mev mitigation
+with an encrypted mempool and permutation. Cryp-
+tology ePrint Archive, Paper 2023/1061, 2023. https:
+//eprint.iacr.org/2023/1061.
+[41] Mahimna Kelkar, Soubhik Deb, Sishan Long, Ari Juels,
+and Sreeram Kannan.
+Themis: Fast, strong order-
+fairness in byzantine consensus.
+IACR Cryptology
+ePrint Archive, 2021.
+[42] Mahimna Kelkar, Fan Zhang, Steven Goldfeder, and
+Ari Juels. Order-fairness for byzantine consensus. In
+International Cryptology Conference, 2020.
+[43] Klaus Kursawe. Wendy, the good little fairness wid-
+get: Achieving order fairness for blockchains. In Pro-
+ceedings of the 2nd ACM Conference on Advances in
+Financial Technologies, 2020.
+[44] Tom CW Lin. The new market manipulation. Emory
+LJ, 66:1253, 2016.
+[45] Varun Madathil, Sri Aravinda Krishnan Thyagarajan,
+Dimitrios Vasilopoulos, Lloyd Fournier, Giulio Mala-
+volta, and Pedro Moreno-Sanchez.
+Cryptographic
+oracle-based conditional payments. In NDSS. The Inter-
+net Society, 2023.
+[46] Dahlia Malkhi and Pawel Szalachowski. Maximal ex-
+tractable value (mev) protection on a dag, 2022.
+[47] Conor McMenamin, Vanesa Daza, and Matthias Fitzi.
+Fairtradex: A decentralised exchange preventing value
+extraction. arXiv preprint, 2022.
+[48] Julien Piet, Jaiden Fairoze, and Nicholas Weaver. Ex-
+tracting godl [sic] from the salt mines: Ethereum miners
+extracting value, 2022.
+[49] Julien Piet, Vivek Nair, and Sanjay Subramanian.
+Mevade: An mev-resistant blockchain design. In 2023
+IEEE International Conference on Blockchain and Cryp-
+tocurrency (ICBC), pages 1–9. IEEE, 2023.
+[50] Julien Piet, Vivek Nair, and Sanjay Subramanian.
+Mevade: An mev-resistant blockchain design. In IEEE
+International Conference on Blockchain and Cryptocur-
+rency (ICBC), 2023.
+[51] Kaihua Qin, Liyi Zhou, and Arthur Gervais. Quantifying
+blockchain extractable value: How dark is the forest?
+arXiv preprint, 2021.
+[52] Dan
+Robinson.
+Ethereum
+is
+a
+dark
+for-
+est.
+https://www.paradigm.xyz/2020/08/
+ethereum-is-a-dark-forest, 2020.
+Accessed:
+2022-02-16.
+[53] Antoine Rondelet and Quintus Kilbourn. Threshold
+encrypted mempools: Limitations and considerations,
+2023.
+[54] samczsun.
+Escaping the dark forest.
+https:
+//samczsun.com/escaping-the-dark-forest/,
+2020. Accessed: 2022-02-16.
+[55] Claus-Peter Schnorr. Efficient signature generation by
+smart cards. Journal of Cryptology, 4(3):161–174, Jan-
+uary 1991.
+[56] Berry Schoenmakers. A simple publicly verifiable secret
+sharing scheme and its application to electronic. In
+Michael J. Wiener, editor, CRYPTO’99, volume 1666
+of LNCS, pages 148–164. Springer, Heidelberg, August
+1999.
+[57] Victor Shoup and Rosario Gennaro. Securing threshold
+cryptosystems against chosen ciphertext attack. Journal
+of Cryptology, 15(2):75–96, March 2002.
+[58] Shutter Network contributors.
+The shutter network.
+https://shutter.network, 2021.
+[59] Shutter Network contributors.
+Rolling shutter: Mev
+protection built into layer 2. https://blog.shutter.
+network/announcing-rolling-shutter/, 2022.
+[60] Christof Ferreira Torres, Ramiro Camino, et al. Frontrun-
+ner jones and the raiders of the dark forest: An empirical
+study of frontrunning on the ethereum blockchain. In
+30th USENIX Security Symposium, 2021.
+[61] Ye Wang, Yan Chen, Shuiguang Deng, and Roger Wat-
+tenhofer. Cyclic arbitrage in decentralized exchange
+markets. Available at SSRN 3834535, 2021.
+[62] Lloyd R Welch and Elwyn R Berlekamp. Error correc-
+tion for algebraic block codes, December 30 1986. US
+Patent 4,633,470.
+[63] Liyi Zhou, Kaihua Qin, Antoine Cully, Benjamin
+Livshits, and Arthur Gervais. On the just-in-time discov-
+ery of profit-generating transactions in defi protocols.
+In 2021 IEEE Symposium on Security and Privacy (SP),
+2021.
+[64] Liyi Zhou, Kaihua Qin, and Arthur Gervais. A2mm:
+Mitigating frontrunning, transaction reordering and con-
+sensus instability in decentralized exchanges. arXiv
+preprint, 2021.
+[65] Liyi Zhou, Kaihua Qin, Christof Ferreira Torres, Duc V
+Le, and Arthur Gervais.
+High-frequency trading on
+decentralized on-chain exchanges. In 2021 IEEE Sym-
+posium on Security and Privacy (SP), 2021.
+3528    33rd USENIX Security Symposium
+USENIX Association
+
+A
+Security Proof
+Due to space constraints, we defer the security proof to the full
+version of the paper [16]. Below, we introduce the q-SBDHT
+assumption (Definition 4) and the main theorem (Theorem 5).
+We prove security with guaranteed output delivery against
+a fully malicious adversary corrupting up to t < n/3 members
+of the committee and any number of users creating cipher-
+texts. We note that it is also possible to upgrade the protocol
+to t = n/2 using standard techniques of publishing commit-
+ments to secret keys of parties and proving that partial de-
+cryptions were computed correctly. For instance, one could
+use the KZG commitment scheme itself and prove that the
+computation was carried out using a zkSNARK such as the
+Halo2/STARK [8] proof systems. Although this would make
+the decryption procedure more expensive, one can always op-
+timistically decrypt without proofs and if it fails, then demand
+proofs. By introducing appropriate penalities such as slashing
+of stake, we can ensure that incorrect partial decryptions are
+rarely sent – similar to validators on Ethereum attesting to
+incorrect state transitions.
+In order to highlight the core technical ideas without dis-
+tractions, we focus on the t = n/3 case. In the process, we
+introduce a new assumption that is closely related to the as-
+sumption introduced in [39]. We call this the q-strong Bilinear
+Diffie Hellman Triple Assumption to indicate that there are
+additional triples given to the adversary beyond that in q-SDH
+and “Bilinear” to indicate that the Adversary needs to output
+a value in the target group.
+Definition 4 (q-SBDHT Assumption). Let a, b,c and d be
+sampled uniformly at random from F. Given as input a tuple
+(g,ga,ga2,...,gan,gb,gd,hd,hac,hcd), for every probabilistic
+polynomial time algorithm A,
+Pr[A(g,ga,ga2,...,gan,gb,gd,ha,hd,hac,hcd)
+→e(g,h)bc] ≤negl(λ).
+We briefly discuss the need for the new assumption, and
+discuss why the ‘KZG assumption’, i.e. the q-strong Diffie
+Hellman (q-SDH) assumption does not suffice for our setting.
+Specifically, in the KZG polynomial commitment scheme,
+the q-SDH is used to argue evaluation binding, which states
+that even for a (potentially adversarially) chosen polynomial
+commitment, the adversary cannot produce two accepting
+evaluation proofs for two distinct evaluations at the same
+evaluation point, i.e. adversary cannot find a commitment c, a
+tuple x,y,y′,π,π′ with y ̸= y′ such that: (i) π attests that y is a
+valid evaluation of x with respect to c; and (ii) π′ attests that y′
+is a valid evaluation of x with respect to c. Whereas we require
+that for an honestly generated commitment, if the adversary
+does not know the polynomial used in the commitment, it
+cannot generate a valid proof for any pair (x,y), even if y
+was such that p(x) = y, where p was the polynomial that
+was committed. We thus view the above assumption as a
+strengthening of q-SDH), necessary for our construction
+Theorem 5. The protocol in Fig. 2 securely emulates the
+FbTPKE ideal functionality (Fig. 1) in the dealer model against
+any static PPT adversary A corrupting < n/3 parties, given
+any weakly simulation-extractable NIZK, and provided the
+q-SBDHT assumption holds in the programmable random
+oracle model.
+Remark 6. We note that the n/3 threshold arises from the
+fact that adversarial committee members may send incorrect
+shares during the batch decryption procedure. One can also
+allow the adversary to corrupt < n/2 parties and prove that
+the protocol emulates the ideal functionality with abort. To
+achieve guaranteed output delivery in this setting we can
+use standard techniques (at the cost of concrete efficiency) of
+attaching proofs that all parties carried out their local com-
+putation correctly, thereby allowing us to successfully recover
+secrets from threshold secret sharing, even if n/2−1 corrupt
+parties behave maliciously and provide incorrect shares. In
+order to verify proofs of correct local computation, the state-
+ments need to be ‘public’. Proving correct computation over
+private shares is often done by broadcasting private shares
+to the committee by encrypting to the committee member in
+question, but as this is not relevant to our contribution, we
+ignore such details from this work and refer the reader to
+relevant multiparty computation works for more details.
+USENIX Association
+33rd USENIX Security Symposium    3529
+

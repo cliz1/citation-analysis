@@ -1,0 +1,2929 @@
+High-Order Masking of Lattice Signatures in Quasilinear Time
+Rafaël del Pino
+PQShield SAS, France
+rafael.del.pino@pqshield.com
+Thomas Prest
+PQShield SAS, France
+thomas.prest@pqshield.com
+Mélissa Rossi
+ANSSI, France
+melissa.rossi@ssi.gouv.fr
+Markku-Juhani O. Saarinen
+PQShield LTD, UK
+mjos@pqshield.com
+Abstract—In recent years, lattice-based signature schemes have
+emerged as the most prominent post-quantum solutions, as
+illustrated by NIST’s selection of Falcon and Dilithium for
+standardization. Both schemes enjoy good performance char-
+acteristics. However, their efficiency dwindles in the presence
+of side-channel protections, particularly masking – perhaps
+the strongest generic side-channel countermeasure. Masking
+at order d-1 requires randomizing all sensitive intermediate
+variables into d shares. With existing schemes, signature gen-
+eration complexity grows quadratically with the number of
+shares, making high-order masking prohibitively slow.
+In this paper, we turn the problem upside-down: We
+design a lattice-based signature scheme specifically for side-
+channel resistance and optimize the masked efficiency as a
+function of the number of shares. Our design avoids costly
+operations such as conversions between arithmetic and boolean
+encodings (A2B/B2A), masked rejection sampling, and does not
+require a masked SHAKE implementation or other symmetric
+primitives. The resulting scheme is called Raccoon and belongs
+to the family of Fiat-Shamir with aborts lattice-based signa-
+tures. Raccoon is the first lattice-based signature whose key
+generation and signing running time has only an O(d log(d))
+overhead, with d being the number of shares.
+Our Reference C implementation confirms that Raccoon’s
+performance is comparable to other state-of-the-art signature
+schemes, except that increasing the number of shares has a
+near-linear effect on its latency. We also present an FPGA
+implementation and perform a physical leakage assessment to
+verify its basic security properties.
+Index Terms—Post-Quantum Cryptography, Side-Channel Se-
+curity, Masking Countermeasures, Raccoon signature.
+1. Introduction
+Lattice-based signatures have emerged as prominent
+post-quantum solutions. They are computationally efficient
+and backed up by strong mathematical assumptions that
+are conjectured post-quantum secure. In July 2022, NIST
+announced [1] that it will standardize two lattice-based
+signatures: Dilithium [2] and Falcon [3].
+The picture is less favorable when it comes to the
+physical protection of implementations, partially because
+these schemes have been highly optimized for performance.
+Such optimizations often induce side-channel weaknesses,
+as highlighted in several attacks, for example Karabulut and
+Aysu [4] and Guerreau et al. [5] for Falcon, or Ravi et al.
+[6] and Marzougui et al. [7] for Dilithium.
+Masking is a generic countermeasure that offers prov-
+able protection against physical side-channel attacks and is
+broadly applied in embedded systems. Masking lattice-based
+signatures with an arbitrarily high number of shares has been
+achieved for schemes such as GLP [8], qTESLA [9] and
+BLISS [10], but the performance penalty factor is high (for
+2 shares: around ×15 for GLP [11] and ×4 for qTESLA-
+I [12]; for 4 shares: around ×73 for GLP and ×37 for
+qTESLA-I). Many works have also tried to mask variants of
+the NIST standards efficiently, but the performance penalty
+is still high, see a variant of Dilithium by Migliore et al. [13],
+or Mitaka by Espitau et al. [14]. Let us present the masking
+challenges in more detail.
+1.1. The challenges of masking lattice signatures
+As an illustration, Algorithm 1 presents a prototypical
+Fiat–Shamir with aborts lattice signature scheme based on
+Module Learning with Errors (or MLWE, see Definition 1).
+In this work, we focus on Fiat–Shamir with aborts lat-
+tice signature schemes as the requirements can be met
+with masking-friendly operations in a more natural way
+compared to the Falcon-like complex Gaussian sampling
+over lattices that belong in the hash-and-sign paradigm. We
+assume that the verification key vk is a small-secret MLWE
+sample (A, t = A · s + e).
+The blueprint of Algorithm 1 was introduced by Lyuba-
+shevsky [15], [16], then refined by Bai and Galbraith [17],
+and in Dilithium [2]. We now explain why masking such a
+scheme is challenging.
+Masking consists of randomizing any secret-dependent
+intermediate variable. Each of these secret-dependent in-
+termediate variables, say x, is split into t + 1 variables
+(xi)0≤i≤t called “shares”. The integer t is referred to as
+the masking order. We define d = t + 1 to differentiate the
+masking order and the number of shares.
+The two most deployed types of masking are arithmetic
+masking and Boolean masking. Concretely, a sensitive vari-
+1
+1168
+2023 IEEE Symposium on Security and Privacy (SP)
+© 2023, Rafaël del Pino. Under license to IEEE.
+DOI 10.1109/SP46215.2023.00160
+2023 IEEE Symposium on Security and Privacy (SP) | 978-1-6654-9336-9/23/$31.00 ©2023 IEEE | DOI: 10.1109/SP46215.2023.10179342
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+Algorithm 1 Sign(sk, vk, msg)
+Require: A signing key sk = s, a verification key (A, t),
+a message msg
+Ensure: A signature sig of msg under sk
+1: Sample r uniformly in a small set S
+2: u := Ar
+3: w := Truncate(u)
+▷Commitment
+4: c := H(w, msg)
+▷Challenge
+5: z := r + c · s
+▷Response
+6: y := A · z −c · t
+7: if CheckCondition(z, y) = False then
+8:
+goto Line 1
+▷Rejection sampling
+9: return sig := (c, z)
+able x is shared in (xi)0≤i≤t such that
+x = x0 + · · · + xt mod q for arithmetic masking,
+(1)
+x = x0 ⊕· · · ⊕xt for Boolean masking.
+(2)
+We will use Algorithm 1 to examine the many chal-
+lenges of masking Fiat–Shamir lattice signatures. We first
+observe that the most natural type of masking for MLWE is
+arithmetic masking. Indeed, it is compatible with the basic
+algebraic operations used in these algorithms. On the plus
+side, the knowledge of w does not provide any advantage
+for the attacker under no assumptions (or in some cases
+under mild assumptions [8, Def. 2 and Th. 1]). So, Line 4
+does not need to be masked. The main issue in masking
+Algorithm 1 boils down to masking non-linear operations:
+• Sampling r from a small set S (Line 1) is challenging in
+an arithmetic masked form. The most efficient known
+approach is to sample r in Boolean masked form,
+then convert the result in arithmetic masked form. This
+requires so-called mask conversions, see Coron et al.
+[18], [19], [20]. Despite efficiency improvements since
+their introduction in 2014, known secure mask conver-
+sion algorithms run in time at least O(d2). See Espitau
+et al. [8, Alg. 15], Migliore et al. [13, Alg. 13] and
+Gérard and Rossi [9, §3.2] for concrete instantiations
+of randomness generation with mask conversions.
+Some schemes replace Line 1 by sampling r according
+to a discrete Gaussian. This operation is even harder to
+mask, and the most masking-friendly approach requires
+cumulative distribution table look-up and thus even
+more comparisons are needed. See Barthe et al. [10,
+§5.3.2] and Gérard and Rossi [9, Alg. 9] for more
+details.
+• Truncate (Line 3) discards the least significant bits of
+u. This is straightforwardly expressed as a Boolean
+circuit, but challenging as an arithmetic circuit. Thus,
+mask conversions are also employed, which again
+slows down performance. Such a masked operation
+with conversions has been introduced by Gérard and
+Rossi [9, §3.3] Migliore et al. [13, Alg. 14-15].
+• CheckCondition (Line 7) verifies that (z, y) satisfies
+some constraints and outputs a boolean value. This
+step, called rejection sampling, is critical for the cor-
+rectness and zero-knowledge property of the scheme. It
+is critical to mask this part, since disclosing the output
+of CheckCondition(z, y) typically leaks the “direction”
+of the private key, which can lead to its recovery.
+In
+practice,
+most
+schemes
+verify
+that
+(a)
+z
+is
+short, and (b) y belongs to a set that guarantees
+{Truncate(y) = w}. Once again, the most efficient
+known techniques require expensive mask conversions
+– it has been performed this way in existing masked de-
+signs. See Barthe et al. [8, Alg. 16], [10, §4], Migliore
+et al. [13, §5.3.3], and Gérard and Rossi [9, Alg. 8] for
+concrete instantiations of masked rejection sampling.
+As explained above, while existing lattice-based signa-
+ture schemes can be masked, they are not optimized for
+good masking performance. To improve efficiency, some
+works have slightly modified the schemes to remove some
+steps and ease the conversions. Migliore et al. [13] forego
+Dilithium’s NTT-friendly modulus q for a power-of-two
+modulus that is more amenable to conversions. Espitau
+et al. [14] changes the Gaussian sampler in Falcon in a
+simpler way to avoid complex operations that could not be
+masked. However, the performance penalty factor is still
+non-linear in the masking order, making it quite unsatisfying
+and prohibitive for practical use in embedded devices.
+1.2. Our contributions
+In this work, we study the masking of lattice-based sig-
+natures from a different angle. Instead of tweaking existing
+schemes to improve their masked efficiency, we build from
+the ground up a lattice-based signature that is tailor-made
+to be masked efficiently. Our scheme is called Raccoon1. In
+the process, we managed to remove mask conversions from
+our design, as well as any masked gadget with an overhead
+higher than quasilinear. As a result, consider the question:
+“Is it possible to achieve a quasilinear masking
+overhead with lattice-based signatures?”
+We answer this question positively.
+Main contribution. Our main contribution is to propose
+a framework for building Fiat-Shamir lattice signatures
+that can be masked at order d with quasilinear overhead
+O(d log d). We achieve that by eliminating all the efficiency
+bottlenecks identified in Algorithm 1 and thus removing the
+need for mask conversions:
+1) We switch from small-secret MLWE to uniform-secret
+MLWE, a well-known reduction (c.f. Appendix A.1)
+proves that both problems are equivalent. This trivial-
+izes the generation of s and r in a masked fashion since
+they are now uniformly random over the underlying
+space. This also eliminates the need for checking that
+z is short in CheckCondition.
+2) We
+introduce
+a
+gadget
+(called
+ApproxShift)
+for
+Truncate(u) in a masked fashion in time O(d log d),
+1. We continue the cryptographic "tradition" of naming masking-friendly
+schemes after masked characters. Indeed, the face of a raccoon looks like
+it wears a mask.
+2
+1169
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+with one big caveat: the output is only an approxi-
+mation of the actual output of Truncate. Nevertheless,
+for key generation this is not an issue, and we can
+replace the expensive masked error generation of e by
+ApproxShift.
+3) Using ApproxShift to compute the commitment w
+(Line 3) is more problematic since its approximate out-
+put may break the correctness of the signature scheme.
+In addition, we still need to compute in masked form
+whether y belongs to a certain set which guarantees
+Truncate(y) = w. This is important for correctness,
+but also for the zero-knowledge property.
+It turns out that both issues can be solved simultane-
+ously. As in Dilithium, Truncate(y) and w may differ,
+and a hint h = w−Truncate(y) is sent in the signature
+to allow the verifier to recompute w. We also accept
+that a probing adversary may completely learn y; since
+w = c · e plus some noise, this might leak information
+about the private key. A careful Rényi-divergence based
+study shows that if we limit the number of signatures
+per key (in practice, to about 248), then our scheme
+remains secure in the presence of this leakage. In
+doing so, we completely remove the need to perform
+expensive check conditions on masked values.
+By combining all these individual improvements, we obtain
+a scheme whose masked operations are only refresh gadgets,
+additions, and multiplication with an unmasked operand and
+ApproxShift. As a result, the scheme can be masked in
+quasilinear time.
+Security proofs. We complement the design with two se-
+curity proofs. The first one reduces the black-box security
+of the signature scheme to the MLWE problem. The second
+proof ensures the masking security in the probing model by
+Ishai, Sahai and Wagner [21].
+Implementations. Masking is an efficient countermeasure:
+It is expected that the required number of side-channel
+observations to mount an attack grows exponentially in
+relation to the number of shares d, see Chari et al. [22]
+or Duc et al. [23]. We demonstrate that the performance of
+Raccoon is practical even at higher masking levels, leading
+to greater security margins against side-channel attacks.
+A 2-share version of the Raccoon C implementation
+exhibits roughly half of the signing performance of un-
+masked Dilithium (Table 4). Raccoon masking overhead
+grows sub-linearly up to d = 32 shares (Table 4, Fig. 1.)
+By comparison, a Dilithium3 implementation was reported
+to have an increasing 1.37 × d, 1.71 × d, and 1.91 × d per-
+share complexity for d ∈{4, 6, 8} shares when compared to
+d = 2 [24, Table 3].
+We also perform a TVLA-style leakage assessment of
+an RTL implementation of Raccoon-128 with d = 2. The
+implementation is tested on a resource-constrained Artix 7
+FPGA platform. Overall, the leakage characteristics, perfor-
+mance, and other implementation metrics demonstrate the
+feasibility of higher-order lattice signatures in applications
+such as authentication tokens, SoC platform security, smart
+cards, and cryptocurrency wallets.
+2 4
+8
+16
+32
+0
+0.5
+1
+1.5
+2
+Number of shares d
+Cycles / share (scaled to d = 2.)
+Raccoon Sign
+Dilithium Sign
+Figure 1.
+Cost of masking: Signing cycle count divided by d, normalized
+to a common start at 1 for d = 2 (unmasked implementations are not
+comparable.) For Raccoon, the cost of each additional share plateaus
+and grows very slowly due to quasilinear O(d log d) complexity. For
+Dilithium, each new share needs more resources as its masking complexity
+is polynomial; close to quadratic O(d2). Raccoon data is for CRACCOON
+(Table 4). Dilithium data is for randomized Dilithium3 [24, Table 3]. No
+masking data is available for Falcon.
+1.3. Comparison with Falcon and Dilithium
+It is illustrative to compare Raccoon to Dilithium [2],
+and Falcon [3], the two lattice-based signature schemes
+selected by NIST for standardization in 2022 [1]. All three
+schemes are believed to be resistant to attacks with quan-
+tum computers due to being based on well-studied lattice
+assumptions that are conjectured to be quantum-resistant.
+We provide a security proof in the ROM; in the quantum
+ROM (or QROM), we expect the proof strategy of Kiltz et
+al. [25] for Dilithium to be applicable to our scheme.
+1.3.1. Dilithium.
+In
+terms
+of
+cryptanalytic
+security,
+Raccoon uses assumptions very close to the ones of
+Dilithium. Instead of MLWE, Raccoon relies on an assump-
+tion we call Module Learning with Rounding and Errors
+(MLWRE), a hybrid between MLWE and MLWR. Since there
+is no known gap in concrete security between MLWR and
+MLWE, it is reasonable to assume that MLWRE is just as
+hard.
+Dilithium was not explicitly designed to facilitate side-
+channel countermeasures beyond timing attacks. As a result,
+masking Dilithium requires relatively complex gadgets as
+reported in works by Migliore et al. [13] and Azouaoui et
+al. [24]: a masked Keccak (SHAKE) permutation, masked
+conversions between Arithmetic and Boolean representa-
+tions (A2B and B2A), masked comparisons, and a masked
+rejection sampler. Overall, these gadgets make the masking
+overhead of Dilithium polynomial (almost quadratic) in d
+(See Fig. 1.) The design of Raccoon avoids these bottle-
+necks.
+1.3.2. Falcon. Cryptanalytic security of Falcon relies on
+the NTRU assumption. Although this assumption supports
+fewer security reductions than MLWE, it is widely believed
+to be as secure as MLWE for well-chosen parameters.
+3
+1170
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+We are not aware of any comparable masked Falcon
+implementations, even at first order (d = 2.) Masking
+Falcon represents a very significant technical challenge due
+to Falcon’s reliance on floating point (FP) arithmetic; IEEE
+754 [26] double-precision arithmetic is needed to manipulate
+secret variables. Additive or multiplicative masking can
+not be directly applied to floating point numbers, as the
+resulting distributions would be biased. To mask Falcon, it
+seems necessary to develop a masked floating point em-
+ulation library with individual (Boolean) masking gadgets
+for normalization, rounding, and other tasks required for FP
+multiplication and addition/subtraction. This is a complex
+engineering task and is likely to cause a high performance
+(or area) overhead.
+1.4. Structure of the paper
+In Section 2, we introduce the necessary preliminaries
+for lattice-based signatures, proof techniques and masking.
+Next, in Section 3, we introduce our new masking-friendly
+Raccoon scheme directly in its masked form. Section 4
+contains both the black-box security proof of the scheme
+and the masking proof in the probing model. We present
+the parameter selection strategy in Section 5. We finish with
+extensive experimental tests in Section 6.
+2. Preliminaries
+2.1. Notations
+We note scalars, vectors, and matrices in italic (i.e.
+x), lowercase bold (i.e. x), and uppercase bold (i.e. X),
+respectively.
+For n, q integer parameters, such that Xn + 1 is irre-
+ducible in Zq, we define Rq = Zq[X]
+Xn+1. We use the notation
+a ≫k for the arithmetic right shift of a by k bits. Finally,
+we note log the logarithm in base 2.
+2.2. Sets, functions and distributions
+Given an integer n
+∈
+N, we note [n] the set
+{0, 1, . . . , n −1}. We use the notation y := f(x) (resp.
+y ←f(x)) to indicate that the function f is deterministic
+(resp. randomized).
+Given a finite set S, we note x ←S to indicate that x
+is sampled uniformly at random in S. Finally, x ←state S
+indicates that the object state is used as a source of
+pseudorandomness in order to select x (pseudo-)uniformly
+in S. Concretely, state will be a SHAKE256 hash object
+initialized with an input string.
+2.3. Hardness assumptions
+Definition 1 (Module Learning With Errors, or MLWE).
+Let ℓ, k, q be integers and D be a probability distribu-
+tion over Rq. The Module Learning With Errors, noted
+MLWERq,ℓ,k,D, comes in two variants. For s ←Dℓ:
+• Decisional: distinguish between (A, A · s + e) and
+(A, b), where A ←Rk×ℓ
+q
+, e ←Dk and b ←Rk
+q.
+• Computational: recover s from (A, A · s + e), where
+A ←Rk×ℓ
+q
+and e ←Dk.
+In this work, we rely on a less used variant of MLWE called
+uniform secret MLWE (UMLWE). Its definition is identical
+to MLWE’s, except that s can be any vector in Rk′
+q instead
+of s ←Dk, with k′ = k + ℓ.
+There is a well known reduction from UMLWERq,ℓ,k+ℓ,χ
+to MLWERq,ℓ,k,χ given in Applebaum et al. [27], we are
+however concerned with the other direction since we want
+to rely on the well studied security of MLWE. We give the
+reduction from MLWE to UMLWE in Section A.1 as it is
+very close to the one of [27].
+The security reduction will be under a hybrid problem
+between MLWE and MLWR, which is at least as hard as
+the harder of the two problems. However, for concrete
+parameters we will consider the best known attacks for
+such a problem which will be to consider it as an MLWE
+problem with a larger distribution since the best known
+attacks against MLWR consist in solving a related MLWE
+instance.
+Definition 2. Hybrid problem MLWRE. Let ℓ, k, q, t, q′ =
+q ≫t be integers and D be a probability distribution over
+Rq′. The Module Learning With Rounding and Errors, noted
+MLWRERq,ℓ,k,t,D, comes in two variants. For s ←Rℓ
+q:
+• Decisional: distinguish between (A, ((A·s) ≫t)+e)
+and (A, b), where A ←Rk×ℓ
+q
+and e ←Dk and b ←
+Rk
+q′.
+• Computational: recover s from (A, ((A·s) ≫t)+e),
+where A ←Rk×ℓ
+q
+and e ←Dk.
+Definition 3. MSIS. Let ℓ, k, q be integers and β > 0 a real
+number. The Module Short Integer Solution MSISq,ℓ,k,β is
+as follows: Given A ←Rk×ℓ
+q
+, find s ∈Rℓsuch that
+∥s∥2 ≤β ∧A · s = 0
+mod q
+2.4. Rényi divergence
+The Rényi divergence [28] is a tool from informa-
+tion theory which has recently found many applications in
+lattice-based cryptography, see Bai et al. [29] and Prest [30].
+We use the “exponential form” of the Rényi divergence, as
+is common in lattice-based cryptography.
+Definition 4 (Rényi divergence). Let P, Q be two dis-
+crete distributions such that Supp P ⊆Supp Q, and α ∈
+(1; +∞). The Rényi divergence of order α is:
+Rα(P; Q) =
+ X
+x∈X
+P(x)α
+Q(x)α−1
+!
+1
+α−1
+Following
+Csiszár’s
+f-divergence
+framework
+[31],
+Rα−1
+α
+−1 is an f-divergence for f : x 7→xα −1. Lemma 1
+presents some properties of the Rényi divergence; proofs
+can be found in van Erven and Harremoës [32] or Bai et al.
+4
+1171
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+[29]. Note that (R1) is a generic property of f-divergences,
+and it implies (R2).
+Lemma 1. For two distributions P, Q and two finite families
+of distributions (Pi)i∈[n], (Qi)i∈[n], the Rényi divergence
+verifies these properties:
+(R1) Data processing inequality. For a (randomized) func-
+tion f,
+Rα(f(P); f(Q)) ≤Rα(P; Q).
+(R2) Probability preservation. For any event E ⊆Supp(Q):
+P(E) ≤(Q(E) · Rα(P; Q))
+α−1
+α
+≤Q(E)
+α−1
+α
+· Rα(P; Q),
+(R3) Multiplicativity. Rα(Q
+i Pi; Q
+i Qi) = Q
+i Rα(Pi; Qi).
+2.5. Masking
+In this paper, the masking will be of only one type:
+arithmetic masking. A d-shared variable (xi)0≤i≤d−1 will
+be denoted JxK for readability. In some parts of the paper,
+the number of shares may be d′ ̸= d, in that case, we will
+speficy it in the index as JxKd′.
+In other words, a sensitive variable x belonging in a
+finite abelian group is shared in JxK = (xi)i∈[d] follow-
+ing Eq. (1). Note that for a masking order t, there are
+d = t + 1 shares.
+Definition 5 (t-probing Security or ISW security). An al-
+gorithm is t-probing secure iff the joint distribution of any
+set of at most t internal intermediate values is independent
+of the secrets.
+Masking is one of the most deployed side-channel coun-
+termeasures. Indeed, the theoretical model reductions of Duc
+et al. [33] relates the t-probing security to side-channel
+security up to a certain level of noise. Moreover, it has been
+confirmed in practice: the number of measurements required
+to mount a successful side-channel attack usually increases
+exponentially in the masking order, see Chari et al. [22] and
+Duc et al. [23].
+Although the t-probing security seems straightforward
+on linear operations on Zq, proving it on non-linear oper-
+ations is much more complicated. The mixture of shares
+to compute the final result makes it often mandatory to
+introduce random variables and the bigger the algorithm is,
+the more dependencies to be considered. To resolve this
+problem, extra security properties that are slightly stronger
+than t-probing have been introduced in the literature. They
+are applied to small sub-algorithms called gadgets. More
+precisely, a gadget is a probabilistic algorithm that takes
+shared and un-shared inputs values and returns shared and
+un-shared values. These new security properties open the
+door for composing the security of gadgets, see Barthe et
+al. [34].
+Definition 6 (Non interference [34]). A gadget is:
+• t-non-interfering (t-NI) iff any set of at most t observa-
+tions can be perfectly simulated from at most t shares
+of each input.
+• t-strong non-interfering (t-SNI) iff any set of at most t
+observations whose tint observations on the internal
+data and tout observations on the outputs can be
+perfectly simulated from at most tint shares of each
+input.
+It is easy to check that t-SNI implies t-NI, which implies
+t-probing security. Also note that any linear gadget for Zq
+is immediately t-NI. An additional notion was introduced
+by Barthe et al. [8] to reason on the security of lattices-
+based schemes in which some intermediate variables may
+be revealed to the adversary.
+Definition 7. A gadget with public outputs X is t-non-
+interfering with public outputs (t-NIo) iff every set of at most
+t intermediate variables can be perfectly simulated with the
+public outputs X and at most t shares of each input.
+Definition 8. We introduce a Decode gadget that takes
+JxK = (xi)i∈[t+1] as input, refreshes it with Algorithm 4,
+then computes the sum x0 + · · · + xt mod q. It is identical
+to the FullAdd algorithm in [8, Alg. 16].
+Conversely, we define the Encode gadget that takes
+an unmasked value x as input and outputs the shares by
+generating the first t shares uniformly at random and fixing
+xt as x −x0 −· · · −xt−1 mod q.
+3. The Raccoon Signature Scheme
+3.1. Additional notations
+Let q ∈N and pt, pw < q be powers-of-two: pt = 2κt
+and pw = 2κw for κt, κw ∈N. We note qt = ⌊q/pt⌋and
+qw = ⌊q/pw⌋. Observe that q ≈qt · pt ≈qw · pw.
+For x ∈Zq, we also note ⌊x⌋q→qt = ⌊x/pt⌋, and
+similarly ⌊x⌋q→qw = ⌊x/pw⌋.
+3.2. Subroutines
+ApproxShift,
+OrderSwitch
+and
+Refresh
+We present three subroutines that are integral to the
+efficiency and provable security of Raccoon.
+ApproxShift. A first subroutine is ApproxShift (Algo-
+rithm 2), which performs the arithmetic right shift ≫on
+masked integers in an approximate manner. The subroutine
+is extremely simple to implement and prove secure. As it
+manipulates the inputs share by share without adding any
+randomness, ApproxShift is t −NI.
+Algorithm 2 ApproxShiftq→q′()
+Require: JxK = (xi)i∈[d] ∈Zd
+q, an integer q′ = q ≫k for
+k ∈N, a precomputed value δ = δ(q, d, k) ∈Zq
+Ensure: JyK ∈Zd
+q′
+1: for i ∈[d] do
+2:
+yi := (xi + δ) ≫k
+3: return JyK = (yi)i∈[d]
+5
+1172
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+Algorithm 2 requires one to precompute a value δ =
+δ(q, d, k). Lemma 2 shows how to set to set δ in a way that
+bounds the output error of Algorithm 2.
+Lemma
+2.
+Let
+JxK
+∈
+Zd
+q, q′
+=
+q
+≫
+k,
+JyK = ApproxShiftq→q′(JxK), x := Decode(JxK), y :=
+Decode(JyK) and y∗= x ≫k. If d | 2k−1 and δ =
+(d−1)2k−1
+d
+, it holds that:
+|y −y∗| ≤
+d + 1
+2
+
+.
+(3)
+The proof of Lemma 2 is elementary and is provided in
+Section A.2. In practice, the output error of Algorithm 2 is
+much better than predicted by Lemma 2. The average error
+observed in practice grows in O(
+√
+d), which is easily ex-
+plained by the fact that each individual share independently
+adds an error O(1) centered on zero.
+OrderSwitch. The OrderSwitch subroutine (Algorithm 3),
+converts a d1-encoding of a value x ∈Zq into a d2-encoding
+of the same value, for d2 ≥d1. The goal of this operation is
+to reduce the amount of information that an adversary learns
+by probing nprob < d1 values. In particular, it will become
+clear in Section 3.3 that combining Algorithms 2 and 3 pro-
+vides better security guarantees than applying Algorithm 2
+alone. We will show in Lemma 4 that OrderSwitch is t−SNI.
+In practice, we use d2 = 2d1.
+Algorithm 3 OrderSwitchd1→d2(JxKd1)
+Require: Two integers d1, d2 ∈N with d2 ≥d1, a d1-
+sharing of a value x ∈Zq, denoted JxKd1
+Ensure: a d2-sharing JxKd2 of the same value x ∈Zq
+1: JzKd2−d1 := (0)i∈[d2−d1]
+2: JxKd2 = (JxKd1∥JzKd2−d1)
+3: JxKd2 ←Refresh (JxKd2)
+4: return JxKd2
+Refresh.
+Finally, we require an efficient Refresh proce-
+dure as a subroutine of OrderSwitch (Algorithm 3) and
+Sign (Algorithm 7). This Refresh procedure is functionally
+equivalent to the identity function: the unmasked input value
+is equal to the unmasked output value. But, the shares are
+renewed in a way that the gadget enjoys the t-SNI property,
+which is necessary in the masking composition proofs.
+We use an evolution of a refresh gadget described by
+Battistelo et al. [35], which appears independently in works
+by Mathieu-Mahias [36] and Goudarzi et al. [37]. It was
+proven SNI in [36]. Its time and randomness complexity
+are O(d log d).
+Algorithm 4 Refresh()
+Require: A d-shared JxK of x ∈Zq
+Ensure: A fresh d-shared JxK of x
+1: JzK ←ZeroEncoding()
+2: return JxK = JxK + JzK
+Algorithm 5 ZeroEncoding()
+Require: A power-of-two integer d, a ring Zq
+Ensure: A d-shared JzK ∈Zd
+q of 0 ∈Zq
+1: if d = 1 then
+2:
+return Jz1K = (0)
+▷Masking order zero.
+3: Jz1Kd/2 ←ZeroEncoding(d/2)
+4: Jz2Kd/2 ←ZeroEncoding(d/2)
+5: JrKd/2 ←Zd/2
+q
+▷Uniform random vector.
+6: Jz1Kd/2 = Jz1Kd/2 + JrKd/2
+7: Jz2Kd/2 = Jz2Kd/2 −JrKd/2
+8: return JzKd =
+ Jz1Kd/2 ∥Jz2Kd/2
+
+▷Concatenate.
+3.3. Key generation
+Recall that we use the notation JxK to refer to a sharing
+of x. The number of shares is always d except if indicated
+otherwise.
+Algorithm 6 describes the key generation of Raccoon, in
+which sensitive variables are masked with (at least) d shares.
+Intuitively, one can think of Algorithm 6 as generating d
+independent UMLWR samples, briefly expanding them into
+2d shares, then collapsing them into a verification key.
+First, consider a simplified variant of Algorithm 6: (a)
+A public matrix A is uniformly generated, (b) d secret key
+shares si are generated in parallel, (c) d rounded products
+ti := (Asi + δ) ≫k are computed, and finally (d)
+the private key is defined as JsK and the public key is
+computed as (A, t = P
+i∈[d] ti). Note that each (A, ti) is
+an UMLWR sample and (A, t) is also such a sample with a
+larger noise. Intuitively, the optimal strategy for a t-probing
+adversary A wishing to infer a coefficient of A · s is to
+probe the corresponding coefficients of A · si and compute
+the corresponding coefficient of t −P
+i∈[t] A · si. As long
+as nprob < d, at least one share ti is pseudorandom under
+the UMLWR assumption.
+For proving such a key generation, one would need
+to assume that a t-probing adversary can decrease by a
+factor
+√
+d the error rate in the LWE/LWR problem and
+thus adapting the choice of parameters for preventing any
+attack. Adding a temporary increase of the number of shares
+in Line 4 prevents this degradation; in its presence, if an
+adversary probes nprob < d values, at least 2d−nprob shares
+ti remain pseudorandom under the LWR assumption, and
+the error rate is only decreased by a factor
+q
+2d
+2d−δ <
+√
+2.
+This gain of a factor O(
+√
+d) allows one to select more
+efficient parameters.
+3.4. Signing procedure
+The signing procedure follows the usual commit-
+challenge-response flow, and we are able to perform all
+2. Following the standard practice in MLWE/MLWR schemes [2], [38],
+A is actually generated in a pseudorandom manner from a public seed.
+This has no influence on security and, for simplicity, is omitted in our
+description.
+6
+1173
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+Algorithm 6 Keygen()
+Require: ∅
+Ensure: A signature keypair (JskK, vk), where JskK is an
+order-d sharing of sk
+1: A ←Rk×ℓ
+q
+▷See Footnote 2
+2: JsK ←(Rℓ
+q)d
+3: JuK := A · JsK
+4: JvK2d ←OrderSwitchd→2d(JuK)
+5: JtK2d := ApproxShiftq→qt(JvK2d)
+6: t := Decode(JtK2d)
+▷t ∈Rk
+qt
+7: return (JskK := JsK, vk := (A, t))
+sensitive operations in a masked fashion.
+Sensitive components. Let us first discuss which compo-
+nents need to be masked, and which don’t.
+• Operations involving r need to be masked. This in-
+volves computing the commitment w and the response
+z, although w and z are revealed as part of the signing
+procedure.
+• On the other hand, the challenge and its computation
+do not need to be masked. Note that for Fiat-Shamir
+with aborts schemes, this may require some additional
+assumptions due to the fact that some signatures are
+not supposed to be output, see Barthe et al. [8, Def.
+2 and Th. 1]. We do not require such an assumption;
+as explained in Remark 1, w can be recomputed from
+public information.
+Algorithm 7 Sign(JskK, vk, msg)
+Require: A masked signing key JskK, a message msg
+Ensure: A signature sig of msg under sk
+1: JrK ←(Rℓ
+q)d
+▷Masked ephemeral secret
+2: JuK := A · JrK
+3: JuK ←Refresh(JuK)
+▷Alg. 4
+4: JwK := ApproxShiftq→qw(JuK)
+▷Alg. 2
+5: w := Decode(JwK)
+▷Commitment, Def. 8
+6: chash := H(w, msg)
+▷Challenge hash
+7: cpoly := ChalPoly(chash)
+▷Challenge. Alg. 8
+8: JsK ←Refresh(JsK)
+▷Alg. 4
+9: JrK ←Refresh(JrK)
+▷Alg. 4
+10: JzK := cpoly · JsK + JrK
+11: z := Decode(JzK)
+▷Response, Def. 8
+12: y := A · z −pt · cpoly · t
+13: ytop := ⌊y⌋q→qw
+14: h := w −ytop
+▷Hint
+15: if (∥h∥2 > B2) or (∥h∥∞> B∞) then
+16:
+goto Line 1
+▷Check the hint’s norms
+17: return sig := (chash, z, h)
+Masking the signing algorithm. The signing procedure is
+presented in Algorithm 7. We explain the intuition of (a)
+how we can mask all relevant operations efficiently, and (b)
+why our scheme is secure. The full proofs will be detailed
+in Section 4.
+• Since the ephemeral randomness r is uniformly ran-
+dom, it is straightforward to generate in masked form
+(Line 1). Similarly, computing JuK is a linear operation
+(Line 2) and can be done with computational overhead
+O(d).
+• The commitment w needs to be computed in masked
+form. In Dilithium [2] and related schemes, this is done
+by rounding (or equivalently, shifting) the coefficients
+of u. With known techniques, masking this operation
+incurs an overhead at least O(d2), see Coron et al. [39,
+§5].
+Instead, we approximately shift the coefficients of u
+using ApproxShift (Line 4). This has the major advan-
+tage of incurring an overhead O(d). The drawback is
+that this adds a small error term to w, which breaks
+the correctness of the scheme. We discuss below how
+this is solved.
+The hint h.
+We repair correctness by computing a hint
+h (Line 14) which encodes the difference between the
+commitment w computed by the signer, and the commitment
+ytop the verifier initially computes. This hint h is output as
+part of the signature, and it allows the verifier to recompute
+w.
+However, if h is left unconstrained, then an adversary
+A could forge a signature by A first generating w and z
+randomly, then compute cpoly, ytop and h honestly.
+As in Dilithium, we prevent this type of attack by
+imposing bounds on the L2 and L∞norms of h, enabling a
+clean security reduction to MSIS and a variant of UMLWE.
+Number of queries. Compared to similar schemes like
+Dilithium [2] and qTESLA [40], Raccoon has no masked
+rejection sampling. This makes the implementation much
+simpler, but it also means that signatures can leak informa-
+tion about the private key. Indeed, if we note w = u + ew,
+ytop = y +ey and ptt = As+et, then one can check that:
+h = ew −ey −cpoly · et
+(4)
+There is therefore a correlation between h and the signing
+key s. In Section 4.1, we show via a Rényi divergence
+argument that as long as Qs is upper bounded by a function
+of Raccoon’s parameters, the leakage provoked by h does
+not weaken the security of Raccoon. In Section 5.3, we
+provide an explicit formula (with some heuristics) for setting
+Qs.
+Challenge computation.
+The challenge cpoly is selected
+uniformly in the subset C ⊊R of polynomials such that
+∥cpoly∥∞= 1 and ∥cpoly∥1 = ω. As in Dilithium [2], we
+separate the challenge computation in two parts:
+• The challenge hash chash is computing via a hash
+function H : {0, 1}∗→{0, 1}λTARGET;
+• The challenge polynomial cpoly is derived from chash
+through an unmasked function ChalPoly (Algorithm 8).
+Note that Algorithm 8 is not constant-time, but this is
+not an issue since it is always performed on public data.
+This two-step description is convenient from an im-
+plementation point of view, since the signing procedure
+7
+1174
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+Algorithm 8 ChalPoly(chash)
+Require: A hash digest chash ∈{0, 1}λ
+Ensure: A polynomial cpoly ∈C
+1: shake := SHAKE256.new()
+2: shake := SHAKE256.update(chash)
+3: c = (ci)i∈[n] := 0n
+4: while ∥c∥1 ≤ω do
+5:
+(i, b) ←shake [n] × {0, 1}
+6:
+if (ci = 0) then
+7:
+ci = (−1)b
+8: return cpoly = P
+i∈[n] cixn
+computes chash then cpoly, whereas the verification procedure
+computes cpoly then chash.
+3.5. Verification procedure
+Compared to the signing procedure, the verification pro-
+cedure (Algorithm 9) is straightforward since all operations
+are performed unmasked. As usual in Fiat-Shamir schemes,
+the verifier recomputes the challenge and checks it against
+the one in the signature, helped in our case by the hint h.
+In addition, the verifier checks the L2 and L∞norms of the
+hint.
+Algorithm 9 Verify(vk, msg, sig)
+Require: A verification key vk, a message msg, a signature
+sig = (chash, z, h)
+Ensure: accept or reject
+1: cpoly := ChalPoly(chash)
+2: y = A · z −pt · cpoly · t
+3: w′ = ⌊y⌋q→qw + h
+4: chash′ := H (w′, msg)
+5: if (∥h∥2 > B2) or (∥h∥∞> B∞) or (chash ̸= chash′)
+then
+6:
+reject
+7: accept
+4. Security Proof
+4.1. Security reduction
+In this section we prove the unforgeability of our sig-
+nature scheme. Given that we prove in Section 4.2 that the
+signing protocol is t-NI we can assume that the adversary
+is only given the output of the signing oracle (as the t-NI
+property guarantees that any set of at most t internal probes
+can be simulated with at most t shares of each input). For
+our proof, we introduce ApproxShift′
+q→q′, which replicates
+in unmasked form the functionality of ApproxShiftq→q′:
+ApproxShift′
+q→q′ = Decode◦ApproxShiftq→q ◦Encode (5)
+The security proof of Raccoon is given in Lemma 3.
+Lemma 3. Let A be a forger with advantage AdvSign
+A ,
+making Qs signing queries. Let AdvPK
+A be the advantage of
+an adversary in distinguishing the public key from uniform.
+Then:
+AdvSign
+A
+Qs
+≤2
+
+AdvHybrid6
+A
++ AdvPK
+A
+ RQs
+α (D4; D5)
+Qs
++ 1
+qℓn
+w
+,
+(6)
+where Di is the distribution of the quadruple (cpoly, z, h, w)
+output by Hybridi of Fig. 2, and α = −log2
+
+AdvHybrid5
+A
+
+.
+Proof. We use a series of hybrids as defined in Fig. 2, with
+Hybrid0 corresponding to the unforgeability security game.
+Hybrid0: This hybrid is the signing protocol
+AdvHybrid0
+A
+= AdvSign
+A
+Hybrid1: This hybrid is just a rewriting of the signing
+protocol where we assume the t-NI property. We also
+consider the security of the scheme in the random
+oracle model (ROM) and hence replace the challenge
+computation with a random oracle H. Observe that the
+output of this hybrid has the same distribution as the
+signing protocol.
+AdvHybrid1
+A
+= AdvHybrid0
+A
+Hybrid2: In this hybrid we replace the hash function with
+a random element and program the hash function to
+said element. The games are indistinguishable except
+if the signing algorithm has to program a value that was
+already queried by the adversary.Using the min-entropy
+of w we get:
+AdvHybrid2
+A
+−AdvHybrid1
+A
+ ≤Qs · 1
+qℓn
+w
+Hybrid3: One can check that y + z′ = Ar. Therefore this
+hybrid is simply a rewriting of the previous one.
+AdvHybrid3
+A
+= AdvHybrid2
+A
+Hybrid4: In this hybrid we sample z uniformly. Note that
+the distribution of z is unchanged since z = cpoly ·s+r
+and r is uniform.
+AdvHybrid4
+A
+= AdvHybrid3
+A
+Hybrid5: In this game we set z′ := 0. This part of the
+proof uses a Rényi divergence argument. For i ∈{4, 5},
+let ϵi = AdvHybridi
+A
+. It follows from Lemma 1 (more
+precisely, Item (R1) then Item (R3)) that:
+ϵ4 ≤ϵ
+α−1
+α
+5
+· RQs
+α (D4; D5),
+(7)
+We can set α = −log2(ϵ5), so that Eq. (7) implies:
+AdvHybrid4
+A
+≤2 · AdvHybrid5
+A
+· RQs
+α (D4; D5).
+(8)
+Hybrid6: In this hybrid we replace t with a uniform vector.
+Note that since the secret key is not used in the previous
+hybrid this does not change the signing algorithm.
+AdvHybrid6
+A
+−AdvHybrid5
+A
+ ≤AdvPK
+A
+8
+1175
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+Hybrid1
+1 :
+r ←Rℓ
+q
+2 :
+w := ApproxShift′
+q→qw(Ar)
+3 :
+cpoly = H(w, msg)
+4 :
+z := cpoly · s + r
+5 :
+y := A · z −pt · cpoly · t
+6 :
+h := w −⌊y⌋q→qw
+7 :
+if (∥h∥2 > B2) or (∥h∥∞> B∞)
+8 :
+then return ⊥
+9 :
+return (cpoly, z, h, w)
+Hybrid2
+1 :
+r ←Rℓ
+q
+2 :
+w := ApproxShift′
+q→qw(Ar)
+3 :
+cpoly ←C
+4 :
+z := cpoly · s + r
+5 :
+y := A · z −pt · cpoly · t
+6 :
+h := w −⌊y⌋q→qw
+7 :
+H(w, msg) := cpoly
+8 :
+if (∥h∥2 > B2) or (∥h∥∞> B∞)
+9 :
+then return ⊥
+10 :
+return (cpoly, z, h, w)
+Hybrid3
+1 :
+r ←Rℓ
+q
+2 :
+cpoly ←C
+3 :
+e := pt · t −A · s
+4 :
+z := cpoly · s + r
+5 :
+z′ := cpoly · e
+6 :
+y := A · z −pt · cpoly · t
+7 :
+w := ApproxShift′
+q→qw(y + z′)
+8 :
+h := w −⌊y⌋q→qw
+9 :
+H(w, msg) := cpoly
+10 :
+if (∥h∥2 > B2) or (∥h∥∞> B∞)
+11 :
+then return ⊥
+12 :
+return (cpoly, z, h, w)
+Hybrid4
+1 :
+cpoly ←C
+2 :
+e := pt · t −A · s
+3 :
+z ←Rℓ
+q
+4 :
+z′ := cpoly · e
+5 :
+y := A · z −pt · cpoly · t
+6 :
+w := ApproxShift′
+q→qw(y + z′)
+7 :
+h := w −⌊y⌋q→qw
+8 :
+H(w, msg) := cpoly
+9 :
+if (∥h∥2 > B2) or (∥h∥∞> B∞)
+10 :
+then return ⊥
+11 :
+return (cpoly, z, h, w)
+Hybrid5
+1 :
+cpoly ←C
+2 :
+z ←Rℓ
+q
+3 :
+z′ := 0
+4 :
+y := A · z −pt · cpoly · t
+5 :
+w := ApproxShift′
+q→qw(y + z′)
+6 :
+h := w −⌊y⌋q→qw
+7 :
+H(w, msg) := cpoly
+8 :
+if (∥h∥2 > B2) or (∥h∥∞> B∞)
+9 :
+then return ⊥
+10 :
+return (cpoly, z, h, w)
+Hybrid6
+1 :
+cpoly ←C
+2 :
+t ←Rk
+qt
+3 :
+z ←Rℓ
+q
+4 :
+z′ := 0
+5 :
+y := A · z −pt · cpoly · t
+6 :
+w := ApproxShift′
+q→qw(y + z′)
+7 :
+h := w −⌊y⌋q→qw
+8 :
+H(w, msg) := cpoly
+9 :
+if (∥h∥2 > B2) or (∥h∥∞> B∞)
+10 :
+then return ⊥
+11 :
+return (cpoly, z, h, w)
+Figure 2. The security hybrids in the proof of Lemma 3. Changes between each hybrid are highlighted in blue.
+An adversary breaking Hybrid6 can be used to solve
+MSIS. This is stated in Theorem 1, and proven in Sec-
+tion A.3.
+Theorem 1. Let A be a forger for Hybrid6 which is as
+defined above. Using A we construct an adversary for the
+MSISq,k−ℓ,BMSIS where BMSIS = 2pwB2+pw
+√
+kn+2pt
+√ω.
+Theorem 2. An adversary adversary who distinguishes the
+public key vk from uniform can break the MLWRE problem
+with the same advantage. I.e.
+AdvPK
+A ≤Adv
+MLWRERq′ ,ℓ,k,k,χ
+A
+Where χ is the Irwin-Hall distriubtion of degree d shifted
+by k bits.
+Proof. The proof is given in Section A.4.
+4.2. Masking Proof
+As the verification only uses public information, to
+achieve t-probing security, we need to prove the masking
+security of both the key generation scheme in Algorithm 6
+and the signature scheme in Algorithm 7. This scheme has
+been designed to be "masking friendly", so the proofs are
+quite standard. However, in Section 4.2.1, we deal with a
+technical issue in the key generation because an intermediate
+value is correlated to the secret in an unintuitive way.
+Let us first decompose both the Keygen and Sign algo-
+rithms into a sequence of elementary gadgets. We present
+the different gadgets and their security properties in Table 1.
+TABLE 1. SECURITY PROPERTIES OF THE KNOWN AND NEW GADGETS
+Name
+Property
+Reference
+Refresh
+t-SNI
+Section 3.2 [35], [36], [37]
+Decode
+t-NIo
+Elementary, see [8]
+Line 1
+t-NI
+Zq−linear
+×A
+t-NI
+Zq−linear
+Line 10
+t-NI
+Zq−linear
+ApproxShiftq→q′
+t-NI
+Zq−linear
+OrderSwitch
+t-SNI
+Lemma 4
+H and ChalPoly
+None
+Section 3.4
+Computing the hint h
+None
+Section 3.4
+9
+1176
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+The
+gadget
+represented
+in
+Line
+1
+and
+the
+ApproxShiftq→· gadget can both be easily proved secure
+in the t-probing model because of their linearity with the
+addition modulo q.
+Concerning OrderSwitch, note that even though the
+number of shares may increase inside this gadget, the tar-
+geted security is t −NI and not t′ −NI (where t′ = 2d −1).
+Indeed, this temporary mask increase is performed for
+achieving the general t −NIo security of the Keygen as
+will be presented in Section 4.2.1.
+Lemma 4. OrderSwitch (Algorithm 3) is t −SNI.
+Proof. This OrderSwitch gadget corresponds to a Zq−linear
+operation at Lines 1 to 3 and a Refresh (that is t′ −SNI and
+thus t −SNI because t′ ≥t). Hence, the t −SNI security is
+directly inherited from the Refresh gadget.
+Remark 1. For a signature (chash, z, h) generated with the
+secret key associated with the public key (A, t), the internal
+value w can be recomputed only with public information,
+w = h + ⌊Az −pt · cpoly · t⌋q→qw .
+Thus, w can be considered as available for any attacker
+and, for proof matters, it will be part of the public outputs
+of the Sign algorithm.
+4.2.1. Masking security of the signature algorithm. Let
+us now introduce the composition proofs of the signature
+scheme.
+Theorem 3. Sign (Algorithm 7) algorithm is t −NIo with
+public outputs (chash, z, h, w).
+Proof. The overall gadget decomposition of the algorithm is
+presented in Fig. 3. Let us assume that an attacker has access
+to nprob ≤t observations on the whole signature scheme.
+Then, we want to prove that all these nprob observations
+can be perfectly simulated with at most nprob shares of JsK
+and the public variables. With such a result, the signature
+scheme is then secure in the t-probing model since no set
+of at most t observations would give information on the
+secret values. To fix notations, let us consider the following
+distribution of the attacker’s nprob observations: nprob
+1
+on
+the last instance of Decode, nprob
+2
+on Line 10, nprob
+3
+on
+the first instance of Decode, nprob
+4
+on ApproxShiftq→qw,
+nprob
+5
+on the multiplication with A, nprob
+6
+on the randomness
+generation, and nprob
+7
+on the refresh algorithm. Some other
+observations can be made on the computation of the hash
+of the message and the computation of the hint h, their
+number will not matter during the proof. Finally, we have
+P7
+i=1 nprob
+i
+≤nprob.
+Now we build the proof from right to left as follows.
+As z is a public output and the last instance of Decode in
+t−NIo, all the observations performed during the execution
+of Decode and after can be perfectly simulated with at most
+nprob
+1
+shares of JzK and the public outputs (w, z, chash, h).
+The gadget in line Line 10 is t −NI. Thus, all the
+observations performed after Line 10, Decode and after can
+be perfectly simulated with at most nprob
+1
++ nprob
+2
+shares of
+JrK and JsK and the public outputs.
+We continue with the refresh gadget. As it is t−SNI, the
+observations performed in Refresh, MultAdd, Decode and
+after can be perfectly simulated with at most nprob
+1
++ nprob
+2
+shares of JsK, nprob
+7
+shares of JrK and the public outputs.
+The first Decode is t −NIo with public output w, thus,
+all the observations performed during the execution of the
+first Decode, of the Refresh, of Line 10, of the Decode and
+after can be perfectly simulated with at most nprob
+1
++ nprob
+2
+shares of JsK, nprob
+7
+shares of JrK, nprob
+3
+shares of JwK and
+the public outputs.
+Then, since both ApproxShiftq→qw and the multiplica-
+tion with A are t −NI, we propagate the observations :
+all the observations performed during the signature strictly
+after the randomness generation can be perfectly simulated
+with at most nprob
+1
++ nprob
+2
+shares of JsK, nprob
+7
++ (nprob
+3
++
+nprob
+5
++ nprob
+5
+) shares of JrK and the public outputs.
+Finally, the left randomness generation gadget is also t-
+NI secure and does require any input; thus, the observations
+cannot be propagated any more. We need to ensure that
+the number of reported observations does not exceed nprob.
+Finally, the simulation relies on nprob
+1
++ nprob
+2
+shares of
+JsK and the public outputs, which is sufficient to ensure the
+t −NIo security with public outputs (w, z, chash, h).
+4.2.2. Masking security of the key generation algorithm.
+We present here a technical overview of the challenge of
+proving the masking of the Keygen. The detailed proof can
+be found in Section A.4.
+Even though the gadget structure of the Keygen,
+presented
+in
+Fig.
+4,
+would
+enable
+a
+straightforward
+masking proof at first sight, the t-probing security of
+Keygen is actually unintuitively technical. Indeed, unlike
+usual key generations in Fiat–Shamir with aborts signatures
+schemes, the error of the MLWE instance defining the
+pseudorandomness of vk relies on noise induced by the
+approximate shift of the shares of JvK. Thus, if an attacker
+probes the shares of JvK, the MLWE instance of vk gets
+easier and sk can be recovered more easily.
+Hence, as highlighted in Lemma 6 in Section A.4, there
+exist a correlation between the joint distribution of (vk, (vi))
+and sk. This prevents from simulating all intermediate values
+of Algorithm 6 with random and public data. We resolve
+this problem by introducing a new masking proof relying
+on a MLWE hypothesis.
+The final result of Section A.4 is as follows. Let the
+discrete Irwin–Hall distribution be the distribution of the
+sum of a number of independent random variables, each
+having a uniform distribution.
+Theorem 4. Keygen (Algorithm 6) is t −NIo with public
+output vk under the MLWERq,ℓ,k−ℓ,χ hypothesis where χ
+is the discrete Irwin–Hall distribution of standard deviation
+pt
+p
+t/12 and center 0.
+To close up the masking security, Theorems 3 and 4
+allow concluding that Raccoon is EUF-CMA secure in the
+10
+1177
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+Line 1
+×A
+ApproxShift
+Decode
+H, ChalPoly
+Refresh
+Line 10
+Decode
+Compute h
+JsK
+msg
+h
+JrK
+JuK
+JwK
+w
+cpoly
+JzK
+z
+JsK
+JrK
+Figure 3. Structure of Sign (Algorithm 7). A gadgets proven t −NI (resp. t −SNI, resp. unmasked) is noted
+gadget
+(resp.
+gadget , resp.
+gadget ).
+Single arrows (
+) and double arrows (
+) represent plain and masked values, respectively. Triangular gadgets either start from a masked input and
+output an unmasked value, or the other way around.
+RandGen
+×A
+OrderSwitch
+ApproxShift
+Decode
+JskK
+vk
+The joint distribution of
+(vk, (vi)) is correlated to
+sk (Lemma 6)
+JsK
+JuK
+JvK
+JtK
+Figure 4. Structure of Keygen (Algorithm 6). Terminology as in Fig. 3.
+t-probing model if the secret key JsK is refreshed at each
+signature query. We refer to Barthe et al. [8, Def. 1] for
+more details about this masking security model.
+5. Parameter Selection
+We now discuss parameter selection for Raccoon. The
+overarching goal is to ensure that Lemma 3 guarantees
+a bit-security λTARGET. More precisely, individual terms in
+the right side of Eq. (6) should guarantee AdvSign
+A /Qs ≤
+2−λTARGET under well-defined, explicit assumptions.
+There are four important terms in Lemma 3, Eq. (6):
+A. AdvPK
+A is the advantage of A when distinguishing the
+verification key vk from a uniformly random vector.
+This is studied in Section 5.1.
+B. AdvHybrid6
+A
+is the advantage of A when forging a
+signature for a pseudorandom vk. This is studied in
+Section 5.2.
+C. RQs
+α (D4; D5)/Qs quantifies an upper bound on the se-
+curity loss that is entailed in the (Hybrid4 →Hybrid5)
+game hop. This bound can be expressed as a function
+of Qs. Conversely, this means we can set a number of
+queries Qs which guarantees a limited security loss.
+This is studied in Section 5.3.
+D. |C| quantifies the security loss in the game hop
+(Hybrid1 →Hybrid2). This is studied in Section 5.4.
+As illustrated by Table 2, each relevant term in Eq. (6)
+of Lemma 3 depends on the parameter set in a distinct way,
+which makes a global parameter selection slightly delicate.
+We start by studying each term separately, in Sections 5.1
+TABLE 2. CONSTRAINTS FOR PARAMETER SELECTION.
+TERMINOLOGY: ↗↗(RESP. ↗, ↘, ↘↘) INDICATES THAT INCREASING
+THIS PARAMETER HAS A VERY POSITIVE (RESP. POSITIVE, NEGATIVE,
+VERY NEGATIVE) IMPACT ON THE CONSIDERED SECURITY METRIC.
+Name
+Key-recovery
+Forgery
+Rényi div.
+Size of C
+Lemma 3
+AdvPK
+A
+AdvHybrid6
+A
+RQs
+α /Qs
+1/|C|
+In Sect.
+5.1
+5.2
+5.3
+5.4
+Qs
+↘
+q
+↘
+↗
+pt
+↗↗
+↘↘
+pw
+↘↘
+↗↗
+n
+↗↗
+↗↗
+↘
+↗
+k
+↘
+↗↗
+↘
+ℓ
+↗↗
+↘
+ω
+↘
+↗↗
+d
+↗
+to 5.4. We also briefly discuss the bounds B2 and B∞
+in Section 5.5. Finally, we propose parameter sets in Sec-
+tion 5.7.
+5.1. Pseudorandomness of vk
+We model the sum of d UMLWR samples with implicit
+error rate α as being hard to distinguish from a rounded sam-
+ple of identical dimensions and error rate α
+√
+d. Following
+the security reduction of Section A.1, an adversary solving
+UMLWERq,ℓ,k,χ can be used to solve the MLWERq,ℓ,k−ℓ,χ
+problem, where χ is the distribution induced by the summa-
+tion of d roundings. We use the lattice estimator by Albrecht
+et al. [41] to estimate the hardness of this problem. As is
+usual, we ignore the ring structure and model χ as a discrete
+Gaussian of standard deviation pt
+q
+d
+12.
+Let us note Hardness the function which takes as input
+an MLWE instance, computes its Core-SVP hardness using
+the lattice estimator [41], and applies the dimensions-for-
+free optimization by Ducas [42]. The best known attacks
+according to the lattice estimator are the primal uSVP attack
+by by Alkim et al. [43] and the dual/hybrid attack by
+by Espitau et al. [44]. The key-only bit-security λKO-KR of
+Raccoon against a key-recovery attack is:
+λKO-KR = Hardness(MLWERq,ℓ,k−ℓ,χ)
+(9)
+11
+1178
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+In practice, the number of MLWE samples (k −ℓ) has a
+negligible influence on the hardness of Eq. (9). The concrete
+evolution of AdvPK
+A
+as a function of the most influential
+parameters is given in Fig. 5.
+22
+24
+26
+28
+210
+0
+128
+256
+pt = ⌊q/qt⌉
+Bit-security
+ −log AdvPK
+A
+
+ℓ
+7
+6
+5
+4
+3
+2
+1
+Figure 5. Key-only bit-security of key-recovery as a function of pt =
+⌊q/qt⌉and ℓ, using Eq. (9) with q = 249 −218 + 1, n = 512, d = 32,
+k = ∞.
+5.2. Forgery
+The second important step is to bound AdvHybrid6
+A
+, which
+corresponds to forging a signature for a pseudorandom
+verification key vk. While Theorem 1 provides a reduction
+to the MSIS problem, we consider directly the hardness of
+finding (cpoly, z, h) with small h such that:
+H (A · z −pt · cpoly · t + h, msg) = chash
+(10)
+This choice of considering the direct forgery problem mir-
+rors what is done in Dilithium [2]. The similarity doesn’t
+end there: the problem underlying Eq. (10) is a variant of
+SelfTargetMSIS problem [2], and many of the observations
+made in [2] are applicable here. The best known ways to
+solve Eq. (10) are to either break the hash function H or,
+using the same transformation as in the proof of Theorem 1,
+to find v ∈Rk
+q such that:
+B · v = w′,
+where
+(
+w′ = B (w + pt · cpoly · t) ,
+v = δ + pw · h,
+(11)
+and B ∈R(k−ℓ)×k
+q
+and δ are defined in the proof of
+Theorem 1. The best known way to solve Eq. (11) is by solv-
+ing the inhomogenous MSIS problem IMSISRq,k−ℓ,k,BIMSIS,
+where:
+BIMSIS = pw
+ 
+B2 +
+√
+kn
+2
+!
+.
+The best known strategy for solving IMSIS is outlined by
+Chuengsatiansup et al. [45, §4.2]. Following their analysis,
+Raccoon is secure against a direct forgery attack using BKZ
+with blocksize β as long as:
+BIMSIS ≤
+min
+ℓn≤m≤kn
+
+q
+(k−ℓ)n
+m
+· δm
+β
+
+,
+(12)
+where δβ =
+(πβ)1/β · β
+2πe
+1/(2(β−1))
+.
+(13)
+Following the Core-SVP methodology and the dimensions-
+for-free optimization [42], the key-only bit-security of
+Raccoon against forgery,
+
+−log AdvHybrid6
+A
+
+, is a non-
+decreasing function of the highest BKZ blocksize β for
+which Eq. (12) is satisfied.
+22
+24
+26
+28
+210
+0
+128
+256
+qw
+Bit-security
+
+−log AdvHybrid6
+A
+
+k
+11
+10
+9
+8
+7
+6
+5
+Figure 6. Key-only bit-security of forgery as a function of qw and k, using
+Eq. (12) with q = 249 −218 + 1, n = 512, d = 32, ℓ= 3, B∞=
+8. We rule out ( gray area ) parameter sets for which 2B∞≥qw (see
+Section 5.5).
+Fig. 6 provides security estimates for a forgery attack
+based on our analysis. We note that we only studied whether
+a forgery attempt is successful with respect to the L2 bound
+B2. A security analysis with respect to the L∞bound B∞
+may lead to different conclusions. Of course, since our
+scheme relies on both metrics, it remains secure as long
+as the IMSIS problem is secure for either the L2 or L∞
+norms.
+5.3. Number of queries Qs
+We now bound RQs
+α (D4; D5)/Qs. As a function of
+Qs, this term asymptotically grows to infinity since
+Rα(D4; D5) > 1. Therefore, in order to make Lemma 3
+non-vacuous, we impose an upper bound on Qs. In this
+section, we show that under mild heuristic assumptions, Qs
+can be set to be concretely large with little to no impact on
+the security of Raccoon.
+We recall that D4 and D5 are the distribution of the
+outputs (chash, z, h, w) of Hybrid4 and Hybrid5, respec-
+tively. We note that in both hybrids, the distributions of
+chash and z are identical, and h = f(chash, z, w) for a
+randomized function f that is exactly the same in both
+hybrids. By the data processing inequality of the Rényi
+divergence (Lemma 1, Item (R1)):
+Rα(D4; D5) ≤max
+{cpoly,z} Rα(P4; P5),
+(14)
+12
+1179
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+where Pi is the distribution of w in Hybridi conditioned on
+(cpoly, z) being fixed to the same values in both hybrids.
+As a stepping stone, we rely on Conjecture 1, which
+bounds the Rényi divergence between the individual integer
+coefficients of w in Hybrid4 and Hybrid5. This numerical
+conjecture is supported by experiments available from the
+public repository. We expect a formal proof to be extremely
+tedious but feasible to obtain.
+Conjecture 1. Let q = pwqw, let u1, u2 ∈Zq such that
+|u1 −u2|2 ≤ϵ2p2
+w, and Pi = ApproxShift′
+q→qw(ui). With
+probability at least 1 −pw−(d−1), it holds that:
+log Rα(P1; P2) ≤Cαϵ2
+d
+,
+(15)
+for a constant C ≈6.
+The next step is to bound a value related to ϵ in Conjec-
+ture 1. Note that the inputs of ApproxShift′ in Hybrid4 and
+Hybrid5 differ by an additive term z′ = cpoly · et, which
+is easily characterized under mild heuristics. Recall that
+the verification key can be written as pt · t = As + et.
+Heuristically, each integer coefficient of et can be modeled
+as the sum of 2d errors in {−pt/2, . . . , pt/2}. From there,
+we derive a heuristic formula for the expected L2 norm of
+et · cpoly:
+E[∥et · cpoly∥2
+2] ≈nkdωp2
+t
+6
+(16)
+In Eq. (16), the factor nk corresponds to the number of
+integer coefficients, and the factor dωp2
+t
+6
+corresponds to the
+fact that each integer coefficient is the sum of 2dω errors in
+{−pt/2, . . . , pt/2}.
+We can now establish a bound on Qs. Let λKO =
+log
+
+AdvHybrid6
+A
++ AdvPK
+A
+
+. Note that AdvHybrid5
+A
+≤2−λKO.
+Since the Rényi divergence Rα is non-decreasing in its
+parameter α, in order to bound Eq. (6) it suffices to have:
+2−λKO+1 · RQs
+λKO(P4; P5)
+Qs
+≤2−λTARGET
+(17)
+We now estimate RλKO(P4; P5). Combining Conjecture 1,
+the multiplicativity property of the Rényi divergence (R3),
+and Eq. (16), provides this approximation:
+log RλKO(P4; P5) ≲CλKOϵ2
+d
+, with ϵ2 = nkdωp2
+t
+6p2w
+.
+(18)
+We can combine Eq. (17) and Eq. (18), which provides the
+following (heuristic) sufficient condition on Qs:
+Qs
+CλKOnkω
+6
+ pt
+pw
+2
+−log Qs ≤λKO −λTARGET −1 (19)
+5.4. Challenge space
+It is clear from Eq. (6) that we need |C| ≥2λTARGET. This
+translates to the condition Eq. (20).
+n
+ω
+
+2ω ≥2λTARGET.
+(20)
+5.5. Bounds B2 and B∞on the norms of the hint
+Setting B2
+2 = d2kn
+4
+and B∞= d
+2 guarantees that Line 15
+of Algorithm 7 returns true with probability 1. In practice,
+setting B2 and B∞lower maintains this probability to 1 −
+o(1) while making forgery harder.
+For B∞to be non-vacuous, we also require 2B∞< qw.
+5.6. Masking Order
+Unlike other security parameters, choosing the masking
+order t and the number of shares d = t + 1 depends on the
+use case and the physical characteristics of the implemen-
+tation platform. As reported by Chari et al. [22] or Duc et
+al. [23], there is an exponential relationship between d and
+a lower bound on the number of observations required for
+an attack. In practice, the number of shares depends on the
+use case and needs to be determined experimentally.
+The safety margin for d selection should account for
+inadvertent mixing of (share) signals in the data paths of
+the implementation and developments in the efficiency of
+analysis (e.g., machine learning.) For some low-security
+applications running in high-noise environments, even d = 2
+may be sufficient. However, due to its quasilinear masking
+complexity, Raccoon can have a substantial security margin
+to prepare for advances in physical attacks (such as Laser
+Logic State Imaging [46]). We conjecture that d = 32 is
+sufficient for the foreseeable future (if implemented dili-
+gently), and propose it as the default value for Raccoon. As
+the software and low-end FPGA experiments (Section 6)
+demonstrate, d = 32 can be supported in applications such
+as HSMs, secure elements, and smart cards.
+5.7. Parameter sets
+Based on this section’s analysis, we propose three pa-
+rameter sets in Table 3. They correspond to at least 128,
+192 and 256 bits of security, respectively.
+TABLE 3. PARAMETER SETS FOR RACCOON. THE SYMBOL "-"
+INDICATES THAT THE VALUE IS IDENTICAL ACROSS ALL PARAMETER
+SETS. THE SIZES |vk| AND |sig| ARE PROVIDED IN BYTES.
+Name
+Raccoon-128
+Raccoon-192
+Raccoon-256
+λTARGET
+128
+192
+256
+Qs
+248
+248
+249
+d
+32
+-
+-
+log q
+49†
+-
+-
+log pt
+10
+6
+7
+log pw
+43
+40
+42
+n
+512
+-
+-
+k
+8
+11
+14
+ℓ
+3
+5
+6
+ω
+19
+31
+44
+B2
+2
+214
+214
+215
+B∞
+8
+-
+-
+|vk|
+19 968
+30 272
+37 632
+|sig|
+12 000
+19 232
+23 328
+†Across all parameter sets, we set q = (225 −218 + 1) · (224 −218 + 1).
+See Section 6 for a detailed discussion.
+13
+1180
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+6. Implementation Characteristics
+Raccoon has been designed not to require masked sym-
+metric cryptography primitives. Unlike Dilithium, a stan-
+dard, unmasked version of SHA3/SHAKE can be used
+in Raccoon without negatively affecting the side-channel
+security of the construction.
+6.1. Portable C Implementation: CRACCOON
+This reference implementation3 is written in ANSI C for
+portability. The purpose of CRACCOON is to evaluate the
+relative performance characteristics of Raccoon. Note that
+for actual security one would require d-probing secure ran-
+dom number generators. Simple non-cryptographic masking
+generators are used in CRACCOON for testing purposes.
+Table 4 summarizes the performance characteristics of
+the CRACCOON in relation to an unmasked C reference
+implementation of Dilithium.
+TABLE 4. LATENCY (MILLISECONDS AND MILLIONS OF CYCLES) OF C
+REFERENCE CODE OF DILITHIUM, FALCON, AND MASKED RACCOON.
+Keygen()
+Sign()
+Verify()
+Algorithm
+d
+ms
+Mc
+ms
+Mc
+ms
+Mc
+Raccoon-128
+2
+0.624
+1.308
+0.731
+1.532
+0.559
+1.171
+Raccoon-128
+4
+0.970
+2.034
+1.020
+2.139
+0.564
+1.182
+Raccoon-128
+8
+1.718
+3.600
+1.673
+3.506
+0.583
+1.222
+Raccoon-128
+16
+3.426
+7.181
+3.098
+6.494
+0.584
+1.224
+Raccoon-128
+32
+7.127
+14.93
+6.201
+12.99
+0.584
+1.224
+Raccoon-192
+32
+11.08
+23.23
+10.30
+21.60
+1.187
+2.487
+Raccoon-256
+32
+14.96
+31.37
+13.78
+28.89
+1.752
+3.672
+Dilithium2
+1
+0.098
+0.205
+0.382
+0.801
+0.109
+0.229
+Dilithium3
+1
+0.179
+0.375
+0.416
+0.872
+0.174
+0.365
+Dilithium5
+1
+0.269
+0.564
+1.343
+2.814
+0.283
+0.593
+Falcon-512
+1
+15.86
+33.25
+4.578
+9.596
+0.043
+0.090
+Falcon-1024
+1
+44.03
+92.31
+10.00
+20.97
+0.089
+0.186
+Notes: AMD Ryzen 5 PRO 3500U, gcc 11.3.0, flags -O3. Dilithium v3.1
+and Falcon v1.2 implementations are “clean” versions from https://github.
+com/PQClean/PQClean. The benchmarked Falcon code uses floating point
+emulation, making key generation and signing several times slower, but
+also more likely to be resistant to timing attacks (“constant-time”.)
+6.2. Experimental Hardware Validation: t-PANDA
+t-PANDA is a further application of an architecture that
+has been used in a commercial side-channel secure (ASIC)
+PQC unit. Hence t-PANDA is also able to run first-order
+masked Dilithium (and Kyber); See Table 5.
+On a XC7A100T (Xilinx Artix 7) FPGA target, this
+size-optimized design (including the simplified control Core,
+Keccak unit, lattice coprocessor, masking random number
+generator, and communication peripherals) was 10,638 Slice
+LUTs (16.78%), 4,140 Slice registers / Flip Flops, (3.26%)
+and 3 DSPs. The design was rated for 78.3 MHz.
+One may compare these results with the Dilithium im-
+plementation in [47], which is faster, but also twice the size
+3. CRACCOON artefact: https://github.com/masksign/sp23-craccoon
+of our implementation on the same Artix 7 target. However,
+this architecture lacks the features to achieve side-channel
+security. The side-channel secure Dilithium implementation
+reported in [24] requires almost three times more (6.757M /
+0.19) cycles for a successful signature with Level 3 / d = 2
+parameters.
+TABLE 5. FPGA / t-PANDA CYCLE COUNTS AT VARIOUS
+SIDE-CHANNEL SECURITY LEVELS. THE DEVICE ALSO SUPPORTS
+TWO-SHARE DILITHIUM.
+Algorithm
+Shares
+Keygen()
+Sign()
+Verify()
+Raccoon-128
+d = 2
+1,366,000
+2,402,000
+1,438,000
+Raccoon-128
+d = 4
+2,945,000
+3,714,230
+1,433,034
+Raccoon-128
+d = 8
+6,100,000
+6,345,000
+1,389,000
+Raccoon-128
+d = 16
+12,413,000
+11,605,000
+1,389,000
+Raccoon-128
+d = 32
+25,073,000
+22,160,000
+1,393,000
+Dilithium2
+d = 1
+572,000
+3,102,000
+510,000
+Dilithium3
+d = 1
+886,000
+5,010,000
+725,000
+Dilithium5
+d = 1
+1,399,000
+5,889,000
+1,174,000
+Dilithium2
+d = 2
+1,633,000
+7,866,000
+510,000
+Dilithium3
+d = 2
+2,538,000
+12,326,000
+725,000
+Dilithium5
+d = 2
+3,389,000
+13,489,000
+1,174,000
+6.3. Leakage Assessment
+We performed a leakage assessment on the FPGA im-
+plementation, following the general test procedure of ISO
+17825:2022 [48]. This “TVLA” type random-vs-fixed test
+was adapted to detect leakage from JsK in the signature
+generation function.
+Power signal was acquired from connectors on the
+CW305 board [49, Sect. C.3] with a PicoScope 2208B
+oscilloscope. The test was run with a 32ns (31.25 MHz)
+clock cycle. Power samples were gathered at the same rate.
+The ISO 17825 testing procedure is generally limited to
+first-order leakage, and hence a d = 2 version of Raccoon
+was used. At N = 200, 000 traces, the maximum t-value
+was 4.89 (Fig. 7). No leakage was detected.
+0.0M
+0.5M
+1.0M
+1.5M
+2.0M
+2.5M
+-6
+-4
+-2
+0
++2
++4
++6
+Figure 7. No secret key leakage was detected in a 200, 000-trace leakage
+assessment of Raccoon-128 (d = 2) signature function. Each trace had
+2.59 × 106 time points (one for each cycle – horizontal axis); a total of
+518 billion measurements. The vertical axis has the t-statistic, which was
+bound by |t| < 4.89. This is well under the critical value (C = 6.94).
+14
+1181
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+7. Conclusion
+In this paper, we propose the first lattice-based signature
+scheme that can be masked at high order with a quasilinear
+overhead. We achieved that by proposing new algorithmic
+techniques, as well as new proof techniques. We prove the
+security of our design under variants of standard lattice
+assumptions (MLWE and MSIS) and in the well-known SNI
+proof framework. Finally, we implemented our signature
+scheme and measure efficiency and security metrics; both
+the performance and concrete leakage profile are consistent
+with our theoretical analyses.
+Since our design is rather simple and generic, we hope
+to see more efficient instantiations and more applications of
+it in the future.
+References
+[1]
+G. Alagic, D. Apon, D. Cooper, Q. Dang, T. Dang, J. Kelsey,
+J. Lichtinger, Y.-K. Liu, C. Miller, D. Moody, R. Peralta, R. Perlner,
+A. Robinson, and D. Smith-Tone, “Status report on the third round
+of the NIST post-quantum cryptography standardization process,”
+NISTIR 8413-upd1, National Institute of Standards and Technology,
+Interagency or Internal Report, September 2022. [Online]. Available:
+https://csrc.nist.gov/publications/detail/nistir/8413/final
+[2]
+V. Lyubashevsky, L. Ducas, E. Kiltz, T. Lepoint, P. Schwabe,
+G. Seiler, D. Stehlé, and S. Bai, “CRYSTALS-DILITHIUM,” Na-
+tional Institute of Standards and Technology, Tech. Rep., 2020,
+available at https://csrc.nist.gov/projects/post-quantum-cryptography/
+round-3-submissions.
+[3]
+T. Prest, P.-A. Fouque, J. Hoffstein, P. Kirchner, V. Lyuba-
+shevsky,
+T.
+Pornin,
+T.
+Ricosset,
+G.
+Seiler,
+W.
+Whyte,
+and
+Z. Zhang, “FALCON,” National Institute of Standards and Tech-
+nology, Tech. Rep., 2020, available at https://csrc.nist.gov/projects/
+post-quantum-cryptography/round-3-submissions.
+[4]
+E. Karabulut and A. Aysu, “FALCON down: Breaking FALCON
+post-quantum signature scheme through side-channel attacks,” in
+58th ACM/IEEE Design Automation Conference, DAC 2021, San
+Francisco, CA, USA, December 5-9, 2021.
+IEEE, 2021, pp. 691–
+696. [Online]. Available: https://doi.org/10.1109/DAC18074.2021.
+9586131
+[5]
+M. Guerreau, A. Martinelli, T. Ricosset, and M. Rossi, “The hidden
+parallelepiped is back again: Power analysis attacks on falcon,” IACR
+Transactions on Cryptographic Hardware and Embedded Systems,
+vol. 2022, no. 3, p. 141–164, Jun. 2022. [Online]. Available:
+https://tches.iacr.org/index.php/TCHES/article/view/9697
+[6]
+P. Ravi, M. P. Jhanwar, J. Howe, A. Chattopadhyay, and S. Bhasin,
+“Side-channel assisted existential forgery attack on Dilithium - A
+NIST PQC candidate,” Cryptology ePrint Archive, Report 2018/821,
+2018, https://eprint.iacr.org/2018/821.
+[7]
+S. Marzougui, V. Ulitzsch, M. Tibouchi, and J.-P. Seifert, “Profiling
+side-channel attacks on Dilithium: A small bit-fiddling leak breaks
+it all,” Cryptology ePrint Archive, Report 2022/106, 2022, https://
+eprint.iacr.org/2022/106.
+[8]
+G. Barthe, S. Belaïd, T. Espitau, P.-A. Fouque, B. Grégoire, M. Rossi,
+and M. Tibouchi, “Masking the GLP lattice-based signature scheme
+at any order,” in EUROCRYPT 2018, Part II, ser. LNCS, J. B. Nielsen
+and V. Rijmen, Eds., vol. 10821.
+Springer, Heidelberg, Apr. / May
+2018, pp. 354–384.
+[9]
+F. Gérard and M. Rossi, “An efficient and provable masked
+implementation of qtesla,” in Smart Card Research and Advanced
+Applications - 18th International Conference, CARDIS 2019, Prague,
+Czech Republic, November 11-13, 2019, Revised Selected Papers,
+ser. Lecture Notes in Computer Science, S. Belaïd and T. Güneysu,
+Eds., vol. 11833.
+Springer, 2019, pp. 74–91. [Online]. Available:
+https://doi.org/10.1007/978-3-030-42068-0_5
+[10] G. Barthe, S. Belaïd, T. Espitau, P.-A. Fouque, M. Rossi, and M. Ti-
+bouchi, “GALACTICS: Gaussian sampling for lattice-based constant-
+time implementation of cryptographic signatures, revisited,” in ACM
+CCS 2019, L. Cavallaro, J. Kinder, X. Wang, and J. Katz, Eds. ACM
+Press, Nov. 2019, pp. 2147–2164.
+[11] T. Güneysu, V. Lyubashevsky, and T. Pöppelmann, “Practical lattice-
+based cryptography: A signature scheme for embedded systems,” in
+CHES 2012, ser. LNCS, E. Prouff and P. Schaumont, Eds., vol. 7428.
+Springer, Heidelberg, Sep. 2012, pp. 530–547.
+[12] N. Bindel, S. Akleylek, E. Alkim, P. S. L. M. Barreto, J. Buchmann,
+E. Eaton, G. Gutoski, J. Kramer, P. Longa, H. Polat, J. E. Ricardini,
+and G. Zanon, “qTESLA,” National Institute of Standards and Tech-
+nology, Tech. Rep., 2019, available at https://csrc.nist.gov/projects/
+post-quantum-cryptography/round-2-submissions.
+[13] V. Migliore, B. Gérard, M. Tibouchi, and P.-A. Fouque, “Masking
+Dilithium - efficient implementation and side-channel evaluation,” in
+ACNS 19, ser. LNCS, R. H. Deng, V. Gauthier-Umaña, M. Ochoa,
+and M. Yung, Eds., vol. 11464.
+Springer, Heidelberg, Jun. 2019, pp.
+344–362.
+[14] T. Espitau, P.-A. Fouque, F. Gérard, M. Rossi, A. Takahashi, M. Ti-
+bouchi, A. Wallet, and Y. Yu, “Mitaka: A simpler, parallelizable,
+maskable variant of falcon,” in EUROCRYPT 2022, Part III, ser.
+LNCS, O. Dunkelman and S. Dziembowski, Eds., vol. 13277.
+Springer, Heidelberg, May / Jun. 2022, pp. 222–253.
+[15] V. Lyubashevsky, “Fiat-Shamir with aborts: Applications to lattice
+and factoring-based signatures,” in ASIACRYPT 2009, ser. LNCS,
+M. Matsui, Ed., vol. 5912.
+Springer, Heidelberg, Dec. 2009, pp.
+598–616.
+[16] ——, “Lattice signatures without trapdoors,” in EUROCRYPT 2012,
+ser. LNCS, D. Pointcheval and T. Johansson, Eds., vol. 7237.
+Springer, Heidelberg, Apr. 2012, pp. 738–755.
+[17] S. Bai and S. D. Galbraith, “An improved compression technique
+for signatures based on learning with errors,” in CT-RSA 2014, ser.
+LNCS, J. Benaloh, Ed., vol. 8366.
+Springer, Heidelberg, Feb. 2014,
+pp. 28–47.
+[18] J.-S. Coron, J. Großschädl, and P. K. Vadnala, “Secure conversion be-
+tween Boolean and arithmetic masking of any order,” in CHES 2014,
+ser. LNCS, L. Batina and M. Robshaw, Eds., vol. 8731.
+Springer,
+Heidelberg, Sep. 2014, pp. 188–205.
+[19] M. Hutter and M. Tunstall, “Constant-time higher-order Boolean-to-
+arithmetic masking,” Journal of Cryptographic Engineering, vol. 9,
+no. 2, pp. 173–184, Jun. 2019.
+[20] J.-S. Coron, J. Großschädl, M. Tibouchi, and P. K. Vadnala, “Conver-
+sion from arithmetic to Boolean masking with logarithmic complex-
+ity,” in FSE 2015, ser. LNCS, G. Leander, Ed., vol. 9054.
+Springer,
+Heidelberg, Mar. 2015, pp. 130–149.
+[21] Y. Ishai, A. Sahai, and D. Wagner, “Private circuits: Securing
+hardware against probing attacks,” in CRYPTO 2003, ser. LNCS,
+D. Boneh, Ed., vol. 2729.
+Springer, Heidelberg, Aug. 2003, pp.
+463–481.
+[22] S. Chari, C. S. Jutla, J. R. Rao, and P. Rohatgi, “Towards sound
+approaches to counteract power-analysis attacks,” in CRYPTO’99, ser.
+LNCS, M. J. Wiener, Ed., vol. 1666.
+Springer, Heidelberg, Aug.
+1999, pp. 398–412.
+[23] A. Duc, S. Faust, and F.-X. Standaert, “Making masking security
+proofs concrete (or how to evaluate the security of any leaking
+device), extended version,” Journal of Cryptology, vol. 32, no. 4,
+pp. 1263–1297, Oct. 2019.
+[24] M.
+Azouaoui,
+O.
+Bronchain,
+G.
+Cassiers,
+C.
+Hoffmann,
+Y. Kuzovkova, J. Renes, M. Schönauer, T. Schneider, F.-X. Standaert,
+and C. van Vredendaal, “Leveling Dilithium against leakage:
+Revisited
+sensitivity
+analysis
+and
+improved
+implementations,”
+Cryptology ePrint Archive, Paper 2022/1406, 2022, fourth PQC
+Standardization Conference, NIST (Virtual) 29 Nov – 1 Dec 2022.
+[Online]. Available: https://eprint.iacr.org/2022/1406
+15
+1182
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+[25] E. Kiltz, V. Lyubashevsky, and C. Schaffner, “A concrete treatment
+of Fiat-Shamir signatures in the quantum random-oracle model,” in
+EUROCRYPT 2018, Part III, ser. LNCS, J. B. Nielsen and V. Rijmen,
+Eds., vol. 10822.
+Springer, Heidelberg, Apr. / May 2018, pp. 552–
+586.
+[26] “IEEE standard for floating-point arithmetic,” IEEE Std 754-2019
+(Revision of IEEE Std 754-2008), p. 84, June 2019.
+[27] B. Applebaum, D. Cash, C. Peikert, and A. Sahai, “Fast cryptographic
+primitives and circular-secure encryption based on hard learning
+problems,” in CRYPTO 2009, ser. LNCS, S. Halevi, Ed., vol. 5677.
+Springer, Heidelberg, Aug. 2009, pp. 595–618.
+[28] A. Rényi, “On measures of entropy and information,” in Proceedings
+of the Fourth Berkeley Symposium on Mathematical Statistics
+and
+Probability,
+Volume
+1:
+Contributions
+to
+the
+Theory
+of
+Statistics.
+Berkeley, Calif.: University of California Press, 1961, pp.
+547–561. [Online]. Available: http://projecteuclid.org/euclid.bsmsp/
+1200512181
+[29] S. Bai, A. Langlois, T. Lepoint, D. Stehlé, and R. Steinfeld, “Im-
+proved security proofs in lattice-based cryptography: Using the Rényi
+divergence rather than the statistical distance,” in ASIACRYPT 2015,
+Part I, ser. LNCS, T. Iwata and J. H. Cheon, Eds., vol. 9452.
+Springer, Heidelberg, Nov. / Dec. 2015, pp. 3–24.
+[30] T. Prest, “Sharper bounds in lattice-based cryptography using the
+Rényi divergence,” in ASIACRYPT 2017, Part I, ser. LNCS, T. Takagi
+and T. Peyrin, Eds., vol. 10624.
+Springer, Heidelberg, Dec. 2017,
+pp. 347–374.
+[31] I. Csiszár, “Eine informationstheoretische ungleichung und ihre an-
+wendung auf den beweis der ergodizitat von markoffschen ketten,”
+Magyar. Tud. Akad. Mat. Kutató Int. Közl, vol. 8, pp. 85–108, 1963.
+[32] T. van Erven and P. Harremoës, “Rényi divergence and kullback-
+leibler divergence,” IEEE Trans. Information Theory, vol. 60, no. 7,
+pp. 3797–3820, 2014. [Online]. Available: http://dx.doi.org/10.1109/
+TIT.2014.2320500
+[33] A. Duc, S. Dziembowski, and S. Faust, “Unifying leakage models:
+From probing attacks to noisy leakage,” in EUROCRYPT 2014, ser.
+LNCS, P. Q. Nguyen and E. Oswald, Eds., vol. 8441.
+Springer,
+Heidelberg, May 2014, pp. 423–440.
+[34] G. Barthe, S. Belaïd, F. Dupressoir, P.-A. Fouque, B. Grégoire,
+P.-Y. Strub, and R. Zucchini, “Strong non-interference and type-
+directed higher-order masking,” in ACM CCS 2016, E. R. Weippl,
+S. Katzenbeisser, C. Kruegel, A. C. Myers, and S. Halevi, Eds. ACM
+Press, Oct. 2016, pp. 116–129.
+[35] A. Battistello, J.-S. Coron, E. Prouff, and R. Zeitoun, “Horizon-
+tal side-channel attacks and countermeasures on the ISW mask-
+ing scheme,” in CHES 2016, ser. LNCS, B. Gierlichs and A. Y.
+Poschmann, Eds., vol. 9813.
+Springer, Heidelberg, Aug. 2016, pp.
+23–39.
+[36] A.
+Mathieu-Mahias,
+“Securisation
+of
+implementations
+of
+cryptographic algorithms in the context of embedded systems.
+(sécurisation des implémentations d’algorithmes cryptographiques
+pour
+les
+systèmes
+embarqués),”
+Ph.D.
+dissertation,
+Uni-
+versity
+of
+Paris-Saclay,
+France,
+2021.
+[Online].
+Available:
+https://tel.archives-ouvertes.fr/tel-03537322
+[37] D. Goudarzi, T. Prest, M. Rivain, and D. Vergnaud, “Probing security
+through input-output separation and revisited quasilinear masking,”
+Cryptology ePrint Archive, Report 2022/045, 2022, https://eprint.iacr.
+org/2022/045.
+[38] P. Schwabe, R. Avanzi, J. Bos, L. Ducas, E. Kiltz, T. Lep-
+oint, V. Lyubashevsky, J. M. Schanck, G. Seiler, and D. Stehlé,
+“CRYSTALS-KYBER,” National Institute of Standards and Tech-
+nology, Tech. Rep., 2020, available at https://csrc.nist.gov/projects/
+post-quantum-cryptography/round-3-submissions.
+[39] J.-S. Coron, F. Gérard, S. Montoya, and R. Zeitoun, “High-
+order table-based conversion algorithms and masking lattice-based
+encryption,” IACR Transactions on Cryptographic Hardware and
+Embedded Systems, vol. 2022, no. 2, p. 1–40, Feb. 2022. [Online].
+Available: https://tches.iacr.org/index.php/TCHES/article/view/9479
+[40] N. Bindel, S. Akleylek, E. Alkim, P. S. L. M. Barreto, J. Buchmann,
+E. Eaton, G. Gutoski, J. Kramer, P. Longa, H. Polat, J. E. Ricardini,
+and G. Zanon, “qTESLA,” National Institute of Standards and Tech-
+nology, Tech. Rep., 2017, available at https://csrc.nist.gov/projects/
+post-quantum-cryptography/round-1-submissions.
+[41] M. R. Albrecht, R. Player, and S. Scott, “On the concrete
+hardness
+of
+learning
+with
+errors,”
+Journal
+of
+Mathematical
+Cryptology, vol. 9, no. 3, pp. 169–203, 2015. [Online]. Available:
+https://doi.org/10.1515/jmc-2015-0016
+[42] L. Ducas, “Shortest vector from lattice sieving: A few dimensions
+for free,” in EUROCRYPT 2018, Part I, ser. LNCS, J. B. Nielsen and
+V. Rijmen, Eds., vol. 10820. Springer, Heidelberg, Apr. / May 2018,
+pp. 125–145.
+[43] E. Alkim, L. Ducas, T. Pöppelmann, and P. Schwabe, “Post-quantum
+key exchange - A new hope,” in USENIX Security 2016, T. Holz and
+S. Savage, Eds.
+USENIX Association, Aug. 2016, pp. 327–343.
+[44] T. Espitau, A. Joux, and N. Kharchenko, “On a dual/hybrid approach
+to small secret LWE - A dual/enumeration technique for learning
+with errors and application to security estimates of FHE schemes,”
+in INDOCRYPT 2020, ser. LNCS, K. Bhargavan, E. Oswald, and
+M. Prabhakaran, Eds., vol. 12578.
+Springer, Heidelberg, Dec. 2020,
+pp. 440–462.
+[45] C. Chuengsatiansup, T. Prest, D. Stehlé, A. Wallet, and K. Xagawa,
+“ModFalcon: Compact signatures based on module-NTRU lattices,”
+in ASIACCS 20, H.-M. Sun, S.-P. Shieh, G. Gu, and G. Ateniese, Eds.
+ACM Press, Oct. 2020, pp. 853–866.
+[46] T. Krachenfels, F. Ganji, A. Moradi, S. Tajik, and J.-P. Seifert,
+“Real-world snapshots vs. theory: Questioning the t-probing security
+model,” in 2021 IEEE Symposium on Security and Privacy.
+IEEE
+Computer Society Press, May 2021, pp. 1955–1971.
+[47] G. Land, P. Sasdrich, and T. Güneysu, “A hard crystal - implementing
+Dilithium on reconfigurable hardware,” in Smart Card Research and
+Advanced Applications - 20th International Conference, CARDIS
+2021, Lübeck, Germany, November 11-12, 2021, Revised Selected
+Papers, ser. Lecture Notes in Computer Science, V. Grosso and
+T. Pöppelmann, Eds., vol. 13173.
+Springer, 2021, pp. 210–230.
+[48] ISO, “Information technology – security techniques – testing methods
+for the mitigation of non-invasive attack classes against cryptographic
+modules,” International Organization for Standardization, Draft Inter-
+national Standard ISO/IEC DIS 17825:2022(E), 2023.
+[49] ——, “IT security techniques – test tool requirements and test
+tool calibration methods for use in testing non-invasive attack
+mitigation techniques in cryptographic modules – part 2: Test
+calibration methods and apparatus,” International Organization for
+Standardization, Standard ISO/IEC 20085-2:2020(E), 2020. [Online].
+Available: https://www.iso.org/standard/70082.html
+Appendix A.
+Omitted Proofs
+A.1. Reduction from MLWE to UMLWE
+Lemma 5. For any integers ℓ, k, UMLWERq,ℓ,k+ℓ,χ is at
+least as hard as MLWERq,ℓ,k,χ.
+Proof. We give a transformation that maps any (A, b) ∈
+Rk×ℓ
+q
+to (A′, b′)
+∈
+R(k+ℓ)×ℓ
+q
+. Where if (A, b) is
+an
+MLWERq,ℓ,k,χ
+instance
+then
+(A′, b′)
+will
+be
+an
+UMLWERq,ℓ,k+ℓ,χ instance; and if (A, b) is uniform then
+(A′, b′) will be uniform.
+For an instance (A; b) we sample A′
+1 ←Rℓ×ℓ
+q
+, b′
+1 ←Rℓ
+q,
+and set
+A′ =
+
+A′
+1
+AA′
+1
+
+; b′ =
+
+b′
+1
+b −Ab′
+1
+
+.
+16
+1183
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+It is clear that if (A, b) is uniform then (A′, b′) is
+uniform. If b = As + e with s, e ←χℓ× χk, then we can
+fix s′ = A′
+1
+−1(b1 +s) (we can assume that A′
+1 is invertible
+as the reduction can simply sample another matrix if it is
+not true) and e′ =
+
+−s
+e
+
+. It is then easily checked that
+A′s′ + e′ = b′, with s′ ∈Rℓ
+q and e′ ←χk+ℓ.
+A.2. Proof of Lemma 2
+Proof. On one hand:
+y =
+X
+i∈[d]
+xi + δ
+2k
+
+≤
+X
+i∈[d]
+xi + δ
+2k
+
+≤
+
+
+X
+i∈[d]
+xi
+2k
+
+
++
+dδ
+2k
+
+≤y∗+ 1 +
+dδ
+2k
+
+(21)
+On the other hand:
+y ≥
+X
+i∈[d]
+xi + δ
+2k
+
+−d
+≥
+
+
+X
+i∈[d]
+xi + δ
+2k
+
+
+−d ≥y∗+
+dδ
+2k
+
+−d
+(22)
+Setting δ = (d−1)2k−1
+d
+in Eq. (21) and Eq. (22) gives Eq. (3).
+A.3. Proof of Theorem 1
+Proof. Let M be the random matrix given in the MSIS
+instance. W.l.o.g we assume M is of the form
+M′ | −I | v
+,
+with M′ ∈R(k−ℓ)×ℓ
+q
+. We sample (A1, t1) ←Rℓ×ℓ
+q
+× Rl
+q,
+and set:
+A :=
+
+A1
+A2
+
+=
+
+A1
+M′ · A1
+
+,
+t :=
+
+t1
+v −M′ · t1
+
+.
+Note that both A and t are uniform, and give them to the
+adversary A. When A outputs a forgery (cpoly, z, h), we can
+assume w.l.o.g that H(⌊A · z −pt · cpoly · t⌋q→qw +h, msg)
+was queried by A. When receiving a forgery we rewind the
+adversary to obtain a new forgery (cpoly, z′, h′) such that
+⌊A · z −pt · cpoly · t⌋q→qw + h
+= ⌊A · z′ −pt · cpoly
+′ · t⌋q→qw + h′
+Which can be rewritten as:
+A · z −pt · cpoly · t + δ + pw · h
+= A · z′ −pt · cpoly
+′ · t + δ′ + pw · h′,
+where δ and δ′ are the errors entailed by the modulus
+shiftings ⌊·⌋q→qw. Which is equivalent to
+A·˜z+˜e = pt·˜cpoly·t, where
+
+
+
+
+
+˜z = z −z′,
+˜e = δ + pw · h −δ′ −pw · h′,
+˜cpoly = cpoly −cpoly′.
+If we note B :=
+
+A2 · A−1
+1
+| −I
+
+, then BA = 0 and:
+B · ˜e = pt · ˜cpoly · B · t,
+Since M =
+B | v
+and by definition of t, this implies:
+M ·
+
+˜e
+pt · cpoly
+
+= 0,
+which concludes the proof.
+A.4. Masking security of the key generation algo-
+rithm
+In this section, we introduce all the technical details
+for proving the t-probing security of Raccoon Keygen
+algorithm.
+Note that we will ignore the shift δ used in the
+ApproxShiftq→qt algorithm as this makes proofs a lot more
+readable, its purpose is to add a static shift to the key so
+that its error is centered on 0, as such it does not affect the
+masking security.
+We first introduce a lemma highlighting the technical
+issue of the correlation between an intermediate value and
+the secret through a MLWRE equation.
+Lemma 6. For JvK the output of OrderSwitch in Fig. 4, let
+t be the output of Decode ◦ApproxShiftq→qt in Fig. 4, we
+have:
+t = (v ≫k) −
+
+
+
+
+
+
+ 2t
+X
+i=0
+(vi mod 2k)
+!
+|
+{z
+}
+∈[0,2t(2k−1)]
+≫k
+
+
+
+
+
+
+Proof. By definition of ApproxShiftq→qt, t =
+2t
+P
+0
+(vi ≫k).
+We can also rewrite vi as:
+vi = (vi ≫k) · 2k + (vi mod 2k)
+By summing, we obtain:
+v =
+2t
+X
+0
+vi =
+ 2t
+X
+0
+vi ≫k
+!
+· 2k +
+2t
+X
+0
+ vi mod 2k
+Note that:
+ 2t
+X
+0
+(vi mod 2k)
+!
+mod 2k =
+ 2t
+X
+0
+vi
+!
+mod 2k = 0
+From which we get the result.
+Lemma 6 underlines a particular link between the shares
+of an intermediate value v and the secret key s via a
+17
+1184
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+
+MLWRE equation involving the public key. We can rewrite
+the equation of Lemma 6 as
+t
+|{z}
+∈vk
+= ⌊As⌋q→qw −
+ 2t
+X
+i=0
+(vi mod 2k)
+!
+≫k
+|
+{z
+}
+Extra error
+.
+We see that the first term corresponds to the rounding and
+the second term adds some extra error. The knowledge of
+a subset of shares vi implies a reduction of the error and a
+potential easier MLWRE problem. However, we will prove
+in the sequel (Theorem 6) that the parameters are set up
+such that the MLWRE instance stays hard even if the extra
+error is a sum of t terms. In other words, even if the attacker
+has the exact value of t shares of v, the MLWRE instance
+stays hard. Let us first introduce a masking result.
+Theorem 5. Assume that an attacker has access to nprob ≤
+t observations on the whole key generation scheme (Algo-
+rithm 6). All these observations can be perfectly simulated
+with the public information (vk and the parameters) and at
+most t shares of JvK.
+Proof. The overall gadget decomposition of the algorithm
+is in Fig. 4.
+This proof is not a usual composition proof because the
+joint distribution of v and vk is correlated to the secret
+(see Lemma 6).
+We will then divide the proof in two parts: simulation
+before OrderSwitchd→d′ and one simulation after. First of
+all, as in hypothesis, let us assume that an attacker has access
+to nprob ≤t observations on the whole key generation
+scheme. Let us consider the following distribution of the
+attacker’s nprob observations: nprob
+1
+on Decode, nprob
+2
+on
+ApproxShiftq→qw, nprob
+3
+on OrderSwitchd→d′, nprob
+4
+on the
+multiplication with A, nprob
+5
+on the randomness generation.
+Some other observations can be made on the computation of
+the matrix A, but we do not fix a notation for this number.
+Finally, we have P5
+i=1 nprob
+i
+≤nprob.
+Similarly to the proof of Theorem 3, we can prove that
+all the observations strictly after OrderSwitchd→d′ can be
+perfectly simulated with at most nprob
+1
++ nprob
+2
+≤nprob
+shares of JvK.
+Next, we continue the proof. Due to the t-SNI prop-
+erty of OrderSwitchd→d′, all the observations performed
+strictly after OrderSwitchd→d′ are not propagated but due
+to Lemma 6 they are not discarded. Due to the t-SNI
+property of OrderSwitchd→d′ and the t-NI property of
+the multiplication with A, all the observations performed
+strictly after the randomness generation and before the end
+of ApproxShiftq→qw can be perfectly simulated with at most
+nprob
+3
++nprob
+4
+≤nprob shares of JsK. Finally, the left random-
+ness generation gadget is also t-NI secure and does require
+any input; thus, these observations are not propagated.
+Let us summarize:
+• all the observations performed during the key gen-
+eration before the end of ApproxShiftq→qw can be
+perfectly simulated from public parameters.
+• all the observations performed during the key gener-
+ation strictly after OrderSwitchd→d′ can be perfectly
+simulated with at most nprob
+1
++ nprob
+2
+≤nprob ≤t
+shares of JvK and public parameters.
+Theorem 6. Under MLWRE, an adversary with at most d
+shares of JvK cannot distinguish vk from uniform.
+Proof. As per Lemma 6, the output (A, t) of Keygen is
+such that
+t = v ≫k −
+ 2t
+X
+i=0
+(vi mod 2k)
+!
+≫k.
+Where JvK is a fresh masking of As of order 2t. Hence v =
+As, and given any subset I ⊂[2t] of size at most d, after
+fixing the value of (vi)i∈I, the distribution of the remaining
+(vi)i/∈I is uniform. By decomposing P
+i∈I(vi mod 2k) as
+X
+i∈I
+(vi mod 2k) = a · 2k + b
+we can write
+ 2t
+X
+i=0
+(vi mod 2k)
+!
+≫k = a +
+ 
+b +
+X
+i/∈I
+(vi mod 2k)
+!
+≫k
+= a + e
+where e follows a discrete Irwin–Hall distribution, denoted
+as χ, of standard deviation pt
+p
+t/12 and center 0.
+Let us rewrite the MLWRE instance:
+t + a = ⌊As⌋q→qw −e.
+By Definition 2 the vector t is indistinguishable from uni-
+form over Rqt under the MLWRERq,ℓ,k,χ which is at least
+as hard as MLWERq,ℓ,k−ℓ,χ.
+18
+1185
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:44:58 UTC from IEEE Xplore.  Restrictions apply. 
+

@@ -1,0 +1,3039 @@
+This paper is included in the Proceedings of the 
+32nd USENIX Security Symposium.
+August 9–11, 2023 • Anaheim, CA, USA
+978-1-939133-37-3
+Open access to the Proceedings of the 
+32nd USENIX Security Symposium 
+is sponsored by USENIX.
+Duoram: A Bandwidth-Efficient Distributed ORAM 
+for 2- and 3-Party Computation
+Adithya Vadapalli, University of Waterloo; Ryan Henry, University of Calgary; 
+Ian Goldberg, University of Waterloo
+https://www.usenix.org/conference/usenixsecurity23/presentation/vadapalli
+
+DUORAM: A Bandwidth-Efﬁcient Distributed ORAM
+for 2- and 3-Party Computation∗
+Adithya Vadapalli
+avadapal@uwaterloo.ca
+University of Waterloo
+Ryan Henry
+ryan.henry@ucalgary.ca
+University of Calgary
+Ian Goldberg
+iang@uwaterloo.ca
+University of Waterloo
+Abstract
+We design, analyze, and implement DUORAM, a fast and
+bandwidth-efﬁcient distributed ORAM protocol suitable for
+secure 2- and 3-party computation settings. Following Do-
+erner and shelat’s FLORAM construction (CCS 2017), DUO-
+RAM leverages (2,2)-distributed point functions (DPFs) to
+represent PIR and PIR-writing queries compactly—but with a
+host of innovations that yield massive asymptotic reductions
+in communication cost and notable speedups in practice, even
+for modestly sized instances. Speciﬁcally, DUORAM intro-
+duces a novel method for evaluating dot products of certain
+secret-shared vectors using communication that is only loga-
+rithmic in the vector length. As a result, for memories with n
+addressable locations, DUORAM can perform a sequence of
+m arbitrarily interleaved reads and writes using just O(mlgn)
+words of communication, compared with FLORAM’s O(m√n)
+words. Moreover, most of this work can occur during a data-
+independent preprocessing phase, leaving just O(m) words of
+online communication cost for the sequence—i.e., a constant
+online communication cost per memory access.
+1
+Introduction
+Oblivious RAM (ORAM) allows a client to outsource data
+storage to one or more untrusted servers. The client can then
+read from or write to the outsourced storage (called a database
+or a memory) without revealing to the servers anything about
+its access patterns (i.e., which memory addresses it accesses or
+whether those accesses are reads or writes). Although initially
+proposed as a general software security tool [14], the past
+few years have seen increased attention on distributed ORAM
+(DORAM) constructions [5,8,10,17–19,21,22] optimized
+for data-dependent yet oblivious memory accesses in secure
+multiparty computation (MPC) settings. Note that in such
+MPC settings, all parties typically know the algorithm being
+executed, and so the requirement that reads and writes be
+indistinguishable from each other is relaxed.
+∗An extended version of this paper is available [28].
+This paper presents DUORAM, a DORAM protocol with
+instantiations in either 2- or 3-party settings tolerating a sin-
+gle passive corruption. DUORAM follows a similar design to
+Doerner and shelat’s DPF-based FLORAM construction [8];
+however, despite their shared lineage and structural similar-
+ities, DUORAM offers several substantial—and, we argue,
+surprising—theoretical and practical advantages relative to
+FLORAM. Most notably, DUORAM exploits a subtle observa-
+tion to support sequences of arbitrarily interleaved, oblivious
+reads and writes with online communication independent of
+the memory size for realistically sized memories.1 Indeed,
+even the total (i.e., preprocessing plus online) communication
+cost scales logarithmically in the memory size.
+1.1
+Overview of State of the Art
+The state-of-the-art DORAM construction from prior work
+is Doerner and shelat’s FLORAM [8], a 2-party construction
+built from garbled circuits and (2,2)-distributed point func-
+tions (DPFs). We defer an in-depth description of DPFs to
+Section 2.1; for now, it sufﬁces to regard DPFs as concise,
+secret-shared representations of standard basis vectors (i.e.,
+of vectors ei comprising all 0s except for a single 1 appearing
+in coordinate i). FLORAM uses DPFs to implement both
+private information retrieval (PIR) and PIR-writing, a pair
+of cryptographic primitives that respectively allow remote
+users to download items from and write items to databases
+held by remote and untrusted servers. In both instances, the
+security goal is to hide the address accessed (and contents of
+that address) from the servers.
+Throughout our description of FLORAM, we consider mem-
+1Speciﬁcally, computation parties in DUORAM exchange a constant num-
+ber of secret shares per memory access. Some of these shares encode memory
+addresses i ∈[0..n) while others encode w-bit words of data (such as those
+stored at the addressed memory); thus, strictly speaking, DUORAM’s per-
+access online communication complexity is logarithmic in n and linear in
+w. Our implementation ﬁxes w = 64 and bounds lgn ≤64 and therefore
+supports up to n = 264 memory locations, each holding a 64-bit word of data,
+for a theoretical limit of 128 EiB of memory while using a constant number
+of online communication words per access.
+USENIX Association
+32nd USENIX Security Symposium    3907
+
+Table 1: Comparing computation, bandwidth, and the number of rounds of DUORAM with previous work. The gray color
+represents the preprocessing cost. We note that Kushilevitz and Mour’s work [21] is a 4-party protocol; if we turn DUORAM
+into a 4-party or (3 + 1)-party protocol, then the Rounds will reduce to 1 + 1 and the Computation to O(lgn) +O(n). The
+improvement is because we will no longer require an MPC to generate the DPFs; the fourth party can act as a dealer to create
+and distribute the DPFs.
+# Parties
+Rounds
+Bandwidth
+Computation
+FLORAM [8]
+2
+O(lgn)
+O(√n)
+O(n)
+Hamlin and Varia [18]
+2
+O(1)
+O(√nlgn)
+O(√nlgn)
+Jarecki and Wei [19]
+3
+O(lgn)
+O(lg3 n)
+O(lg3 n)
+Bunn et al. [5]
+3
+O(√n)
+O(√n)
+O(n)
+Kushilevitz and Mour [21]
+4
+O(1)
+O(lgn)
+O(n)
+DUORAM
+2 or 3
+O(lgn)+1
+O(lgn)+O(1)
+O(n)+O(n)
+ory D ∈{0,1}n×w consisting of n words that are each w bits
+long. We denote the word at memory address i in D by
+D[i] ∈{0,1}w. Depending on the type of memory access
+being performed, the computation parties hold either an en-
+crypted copy of D (when reading) or a secret shared copy of
+D (when writing); a “refresh” operation converts D from its
+secret-shared representation to its encrypted one. FLORAM
+also makes use of a “stash” (the details of which we gloss
+over) to reduce the frequency with which the computation par-
+ties must invoke the (rather costly) refresh operation, resulting
+in a lower amortized cost per memory access.
+Oblivious reads in FLORAM.
+Computation parties P0 and
+P1 hold symmetric keys k0 and k1 respectively alongside the
+memory D blinded using a pseudorandom function F; i.e., P0
+and P1 hold in common blinded memory D ∈{0,1}n×w such
+that D[i] ←D[i]⊕F(k0,i)⊕F(k1,i) for each i ∈[0..n).
+Given shares of a target address i∗∈[0..n), they obtain
+shares of the corresponding word D[i∗] using simple PIR
+followed by an oblivious unblinding step, as follows:
+1. P0 and P1 collaboratively sample a DPF representation
+of ei∗using 2-MPC;
+2. each Pb locally expands its DPF share into a bit vector
+tb ∈{0,1}n and then it computes RΣ
+b ←L
+(tb[i]=1) D[i];
+and, ﬁnally,
+3. P0 and P1 run another 2-MPC to evaluate F at the (un-
+known to either party) input i∗to produce shares of
+D[i∗] = RΣ
+0 ⊕RΣ
+1 ⊕F(k0,i∗)⊕F(k1,i∗).
+Oblivious writes in FLORAM.
+Computation parties P0 and
+P1 hold XOR-shares D0 and D1 of the memory D.
+Given shares of a target index–value pair (i∗,M), they
+replace D[i∗] with D[i∗]⊕M using PIR-writing, as follows:
+1. P0 and P1 collaboratively sample a DPF representation
+of v = M·ei∗using 2-MPC; and
+2. each Pb locally expands its DPF share into an n-element
+vector vb ∈({0,1}w)n and then it computes D′
+b ←Db ⊕
+vb.
+Of course, the parties can write an arbitrary value of their
+choosing ﬁrst using i∗to read shares of D[i∗], and then in-
+voking the above procedure for the target index–value pair
+(i∗,M⊕D[i∗]).
+Refreshing the FLORAM database.
+Recall that FLORAM
+requires an encrypted copy of D for reading and an XOR-
+shared copy of D for writing. The refresh operation transforms
+XOR-shared memory (suitable for writing) into encrypted
+memory (suitable for reading). Given shares D0 and D1 of D,
+they compute the encrypted memory as follows:
+1. For every refresh, P0 and P1 pick fresh keys k0 and k1
+respectively, and mask their local copy of the database;
+i.e, for all i, P0 and P1 compute R[i]′ ←D0[i]⊕F(k0,i)
+and R[i]′′ ←D1[i]⊕F(k1,i) respectively.
+2. For all i, P0 and P1 exchange R[i]′ and R[i]′′ to com-
+pute eR[i] ←R[i]′ ⊕R[i]′′, resulting a communication
+complexity of O(n) words.
+The doubly-masked memory serves as the “read only” mem-
+ory. FLORAM uses this refresh operation to initialize their
+ORAM with the two versions of the database, thus incurring a
+O(n) communication cost to begin any access to the ORAM.
+A read operation following a write operation would require
+FLORAM to do another linear-cost refresh operation, to get
+a new version of the masked database. However, FLORAM
+uses a O(√n)-sized stash to reduce the communication cost
+from O(n) to O(√n).
+While we compare our work mainly against FLORAM (be-
+cause it is the most closely related to our work and has a
+shared lineage), there have been several other works in the
+3-party and 4-party DORAM setting. Table 1 compares DUO-
+RAM with some of the prominent recent work to do one access
+in a database holding n constant-sized words. DUORAM’s crit-
+ical insight is that reducing latency and increasing bandwidth
+3908    32nd USENIX Security Symposium
+USENIX Association
+
+between parties is much more challenging than increasing
+local computational power, and so it focuses on reducing the
+round complexity and bandwidth usage. Memory accesses in
+DUORAM require only two messages (one round) of commu-
+nication.
+1.2
+Our Contributions
+FLORAM proposed an ORAM with O(n) local computation
+but a communication complexity of only O(√n), and which
+in practice beats prior polylog schemes. This paper presents
+a novel DORAM scheme, called DUORAM, which takes it
+a step further—we maintain the computation complexity of
+O(n), but substantially reduce the concrete costs, while reduc-
+ing the communication complexity to O(lgn) and ofﬂoading
+almost the entire communication to a preprocessing phase.
+The main contributions of our work are as follows:
+1. A new preprocessing strategy that enables the compu-
+tation parties to generate and (partially) evaluate DPFs
+ahead of time, before any target indices or values are
+known;
+2. novel 3-party read and 3-party write procedures, both
+of which (i) operate directly on secret-shared memory,
+(ii) use only a single round of interaction, and (iii) incur
+online communication cost independent of the memory
+size; and
+3. 2-party variants of the above 3-party protocols that elim-
+inate one of the three servers using a single-server Sym-
+metric PIR-based protocol.
+The second contribution listed above eliminates the need
+for an explicit refresh operation or a stash (it also makes initial-
+izing memory free of any communication cost, compared with
+FLORAM’s O(n) communication for initialization), yielding
+a very efﬁcient 3-party DORAM protocol. The third contribu-
+tion yields a 2-party protocol with far lower asymptotic and
+concrete communication than FLORAM, albeit with a higher
+constant for the linear local computation.
+Some of the salient features of DUORAM’s online phase
+are: (i) online communication complexity of O(1) for reading
+and writing, (ii) doing k reads in parallel takes one round
+of communication, (iii) doing k updates in parallel requires
+one message being exchanged, and (iv) doing k dependent
+reads (addresses to read depend on the outcome of previous
+reads) takes k rounds of communication. Some features of
+DUORAM’s preprocessing phase are: (i) the communication
+complexity is O(mlgn) for m accesses on memory of size n,
+(ii) the computation complexity is O(n) cheap operations per
+ORAM access for memory of size n, and (iii) round complex-
+ity is O(lgn), independent of the number of accesses. The
+concrete advantages of DUORAM are borne out in our experi-
+ments, where we observe that even throttling throughput to
+as little as 1 Mbit/s has only a nominal impact on DUORAM’s
+performance for a database of size 225. This is in contrast to
+FLORAM, which did not complete the computations for the
+same database size of 225 even after more than ten hours.
+1.3
+System Overview
+DUORAM can be instantiated either as a 2-party or a 3-party
+protocol. The DUORAM protocol at a very high level works
+as follows. The database is (additively) secret shared among
+two parties, namely, P0 and P1. The two parties also hold
+the additive shares of a target index in the database that they
+want to access.2 If they wish to perform a write (or an update)
+operation, the two parties also hold the shares of the value
+they wish to write at the target index. Three-party DUORAM
+(3P-DUORAM) has a (stateful) auxiliary party, namely P2.
+The auxiliary party does not hold the database or index shares
+and merely facilitates the secure multiparty computation. Our
+2-party DUORAM (2P-DUORAM) replaces the third party with
+a Computational Symmetric PIR (CSPIR) protocol. Figure 1
+describes the DUORAM system. The party with reduced opac-
+ity is the auxiliary party that does not hold either the database
+shares or the shares of the database index.
+Organization.
+This paper is organized as follows. In Sec-
+tion 2 we discuss the background needed for DUORAM. Sec-
+tion 3 describes the various DUORAM subprotocols; detailed
+discussions of the 3P-DUORAM and 2P-DUORAM protocols
+follow in Sections 4 and 5. We experimentally evaluate the
+protocols in Section 6. Section 7 describes related work, and
+Section 8 concludes.
+2
+Background
+2.1
+Distributed Point Functions (DPFs)
+In the most simple terms, Distributed Point Functions (DPFs)
+are a concise way to share a standard basis vector (or more
+generally a 1-hot vector, which is a scaled standard basis
+vector) among multiple parties. Gilboa and Ishai [12] were
+the ﬁrst to introduce DPFs. Boyle, Gilboa, and Ishai [3,
+4] improved upon the original DPF construction. In this
+paper, we will concern ourselves with the most compact DPF
+construction, which appears in Boyle, Gilboa, and Ishai’s
+follow-up paper [4].
+We will begin the discussion of DPFs by ﬁrst describing a
+point function. A point function is a function that evaluates
+to 0 at every value in its domain, except at one special point
+(called the “target point”), where it evaluates to a non-zero
+2Storing the target indices as additive shares rather than XOR shares
+makes DUORAM more efﬁcient. However, the database can either be additive
+or XOR shares. We choose to keep them as additive shares purely for
+consistency.
+USENIX Association
+32nd USENIX Security Symposium    3909
+
+ò
+D0
+ò
+D1
+
+(P0 : i∗
+0,M0)
+Output: read0,D′
+0
+
+(P1 : i∗
+1,M1)
+Output: read1,D′
+1
+
+P2
+Figure 1: DUORAM System. P0 and P1 hold shares D0 and D1 of the database D, shares i∗
+0 and i∗
+1 of the index i∗they wish to
+access, and shares M0 and M1 of the update value M. All shares are additive, so that i∗
+0 +i∗
+1 = i∗and similar. The outputs of
+the read operation are read0 and read1, with the property that read0 +read1 = D[i∗]. D′
+0 and D′
+1 are the outputs of the write
+operation, with D′
+0[i]+D′
+1[i] = D[i] for i ̸= i∗, and D′
+0[i∗]+D′
+1[i∗] = D[i∗]+M.
+value (called the “target value”). In the deﬁnition below
+(Deﬁnition 1), i∗is the “target point” and M is the “target
+value”.
+Deﬁnition 1. A point function is a function pi∗,M : [0,n) →
+{0,1}∗such that pi∗,M(i∗) = M and pi∗,M(i) = 0 otherwise.
+Observe that we can represent a point function as a binary
+tree (see Figure 2). Distributed Point Functions are a concise
+way to share a point function among two or more parties.
+An (m,t)-DPF distributes a point function among m parties,
+such that no coalition of fewer than t parties can learn the
+target point or the target value. This paper deals speciﬁcally
+with (2,2)-DPFs, where the goal is to share a point function
+among two parties succinctly. Deﬁnition 2 (a restatement
+of Deﬁnition 4 from Vadapalli, Storrier, and Henry [29])
+formally deﬁnes (2,2)-DPFs.
+Deﬁnition 2. A (2,2)-distributed point function, or (2,2)-
+DPF, is a pair of PPT algorithms (GEN,EVAL) deﬁning
+secret-shared representations of point functions; that is, given
+(i) a security parameter λ ∈N, (ii) a target point i∗, and (iii) a
+target value M, we have
+1. Correctness: If (k0,k1) ←GEN(1λ,i∗,M), then, for all
+i ∈[0,n),
+EVAL(k0,i)+ EVAL(k1,i) =
+(
+M if i = i∗, and
+0
+otherwise.
+2. Simulatability: There exists a PPT simulator S such that,
+for a tuple of target index and target value, (i∗,M), and
+bit b ∈{0,1}, the distribution ensembles
+S(1λ,b)
+	
+λ∈N
+and
+
+kb
+ (k0,k1) ←GEN(1λ,i∗,M)
+	
+λ∈N are computa-
+tionally indistinguishable.
+The kb output by GEN are called (2,2)-DPF keys.
+2.1.1
+DPF Construction
+We will now describe the most compact construction of DPFs
+due to Boyle, Gilboa, and Ishai [4]. The key ingredient used
+ø
+0
+000
+ø
+0
+001
+00
+ø
+0
+010
+ø
+0
+011
+01
+0
+ø
+0
+100
+ø
+M
+101
+10
+ø
+0
+110
+ø
+0
+111
+11
+1
+Figure 2: The point function binary tree with target value M
+at target index i∗= 0b101 = 5.
+in their construction is the so-called length-doubling PRG,
+which we represent by G2×, to construct Goldreich, Gold-
+wasser, Micali styled PRFs [13]. We denote the left and
+right halves of the outputs of G2×(·) as GL(·) and GR(·)
+respectively. Boyle, Gilboa, and Ishai’s construction fol-
+lows from the following observation: GL(s0) = GL(s1) and
+GR(s0) = GR(s1) if and (essentially) only if s0 = s1. The
+GEN algorithm (for a DPF tree with height h) begins with se-
+lecting two random seeds, namely, s
+()
+0 and s
+()
+1 . The main idea
+is to use a length-doubling PRG recursively on the two seeds
+to construct a pair of binary trees. In our notation (which we
+borrow from Vadapalli et al. [29]), the nodes in the binary
+tree generated by recursively applying the length-doubling
+PRG have as a subscript the bit indicating which party’s tree
+the node belongs to, and as a superscript the binary string
+indicating the path from the root to the node (the tree’s root
+is s
+()
+b ). For any node s
+(i)
+b , where i is a binary string, the out-
+puts of the length-doubling PRG are (s
+(i∥0)
+b
+,s
+(i∥1)
+b
+). We call
+two nodes with the same superscript but different subscripts
+a node pair. The main idea is to use the length-doubling
+PRG recursively on the two seeds to construct a pair of bi-
+nary trees that are equal everywhere except on the path to
+leaf i∗, and that the node pair for leaf i∗XOR to M. Of
+course, the trees generated by the length-doubling PRG will
+not have this form. Therefore, there are two other ingredients
+associated with DPFs, which allow us to ﬁx these random
+trees, namely, (i) correction words, and (ii) ﬂag bits. There
+3910    32nd USENIX Security Symposium
+USENIX Association
+
+s
+()
+0
+s
+(0)
+0
+s
+(00)
+0
+ø
+ø
+R′
+0
+R0
+000
+ø
+ø
+R′
+1
+R1
+001
+00
+s
+(01)
+0
+ø
+ø
+R′
+2
+R2
+010
+ø
+ø
+R′
+3
+R3
+011
+01
+0
+s
+(1)
+0
+s
+(11)
+0
+ø
+ø
+R′
+4
+R4
+100
+ø
+ø
+M0
+R5
+101
+10
+s
+(11)
+0
+ø
+ø
+R′
+6
+R6
+110
+ø
+ø
+R′
+7
+R7
+111
+11
+1
+cw
+(1) ←GL(s
+()
+0 )⊕GL(s
+()
+1 )
+cw
+(2) ←GR(s
+(1)
+0 )⊕GR(s
+(1)
+1 )
+cw
+(3) ←GL(s
+(10)
+0 )⊕GL(s
+(10)
+1 )
+F ←M⊕R5 ⊕~R5
+s
+()
+1
+s
+(0)
+1
+s
+(00)
+1
+ø
+ø
+R′
+0
+R0
+000
+ø
+ø
+R′
+1
+R1
+001
+00
+s
+(01)
+1
+ø
+ø
+R′
+2
+R2
+010
+ø
+ø
+R′
+3
+R3
+011
+01
+0
+s
+(1)
+1
+s
+(11)
+1
+ø
+ø
+R′
+4
+R4
+100
+ø
+ø
+M1
+~R5
+101
+10
+s
+(11)
+1
+ø
+ø
+R′
+6
+R6
+110
+ø
+ø
+R′
+7
+R7
+111
+11
+Figure 3: The yellow-colored nodes are unequal pairs and the white colored nodes are equal pairs. The green colored circles
+represent the correction words and the blue colored square is the ﬁnal correction word. A red-colored double edge indicates that
+the correction associated with that level is XOR-ed into the PRG output. In other words, it also indicates that red color edges
+emanating from a parent indicate that the ﬂag bit associated with the parent is set to 1, and black edges indicate that the ﬂag bit is
+set to 0. For instance, in the root layer, we have s
+(0)
+0 ←GL(s
+()
+0 )⊕cw
+(1);s
+(1)
+0 ←GR(s
+()
+0 )⊕cw
+(1); s
+(0)
+1 ←GL(s
+()
+1 );s
+(1)
+1 ←GR(s
+()
+1 )
+is a “correction word” associated with each binary tree level
+and a ﬂag bit associated with each node. For tree pairs of
+height h, suppose that (cw
+(1),...,cw
+(h)) represent the correc-
+tion words. In the ﬁrst step, the two root seeds are expanded
+to get (s
+(0)
+0 ,s
+(1)
+0 ) ←G2×(s
+()
+0 ) and (s
+(0)
+1 ,s
+(1)
+1 ) ←G2×(s
+()
+1 ). Next,
+exactly one pair of children (s
+(0)
+b ,s
+(1)
+b ) is transformed such that,
+s
+(0)
+b ←s
+(0)
+b ⊕cw
+(1) and s
+(1)
+b ←s
+(1)
+b ⊕cw
+(1), while the other pair
+of children (s
+(0)
+1−b,s
+(1)
+1−b) remains the same. In other words,
+for exactly one of the seeds, the “correction word” associated
+with level 1 is XOR-ed into the children. The ﬂag bit associ-
+ated with the seed determines if a party XORs the correction
+word into its children. Naturally, the ﬂag associated with one
+of the seeds is set to 1, while the other is 0. In general, the
+ﬂag bits will be the same for the two nodes in each node pair,
+except on the path from the root to leaf i∗, where they will
+be different. The correction words are designed so that after
+the transformation, we have the property that either s
+(0)
+0 = s
+(0)
+1
+(if i∗starts with a 1 bit) or s
+(1)
+0 = s
+(1)
+1 (if i∗starts with a 0
+bit). Notice that there are two types of node pairs, (i) equal,
+where the two nodes in the pair are the same, and (ii) unequal,
+where the two nodes in the pair are not the same. Observe
+that the children of the two nodes from an equal pair are the
+same; thus, they are both part of an equal pair in the next
+layer. Similarly, the children of the nodes from an unequal
+pair are part of an unequal pair in the next layer. At each
+layer, applying the correction word transforms exactly one
+of the children of a node from an unequal pair (the child not
+on the path to leaf i∗) to being part of an equal pair. Apply-
+ing h correction words results in leaves such that all the leaf
+pairs except i∗of the two trees XOR to 0, and leaf pair i∗
+XORs to something random. Therefore, DPFs also have a
+notion of a ﬁnal correction word, denoted as F . Unlike the
+correction words, (cw
+(1),...,cw
+(h)), whose goal is to equal-
+ize a particular node in the path from the root to the leaf, F
+converts the random node at the target location i∗into the
+target value M. Figure 3 shows an example construction of
+DPFs. We remark that the two DPF trees in Figure 3 recon-
+struct the point function tree in Figure 2. We can evaluate
+the DPF over the entire domain of the point function using
+the function EVALFULL, which traverses the DPF tree in a
+depth-ﬁrst manner to reduce the amortized number of PRG
+evaluations from O(lgn) to O(1) cost per leaf node [4]. The
+function produces (vb,tb) ←EVALFULL(kb) where vb is the
+vector of labels of all the leaves in tree b and tb is the vector
+of the ﬂags on all the leaves in tree b. We have the property
+that t0 ⊕t1 = ei∗and v0 ⊕v1 = ei∗·M. Also, we have for all
+i that vb[i] = EVAL(kb,i).
+2.2
+Secure Multi-Party Computation (MPC)
+We will ﬁrst present an informal description of MPC. Con-
+sider a situation where parties P0,P1,...,Pn hold secret inputs
+x0,x1,...,xn respectively and would like to compute the func-
+tion y = f(x0,...,xn) without revealing the secret inputs. The
+goal is that no party i learns anything else except y. In other
+words, Pi should not learn any x j (except the information
+about xj implied by y), where j ̸= i. A special case of MPC
+is 2-MPC, which has exactly two parties in the protocol. It is
+deﬁned as follows:
+Deﬁnition 3 (2-MPC, Informal). Parties P0 and P1 hold
+private inputs x0 and x1 respectively. Their goal is to compute
+a function f(x0,x1) with the following properties: (i) Privacy:
+No party should learn anything more than what is implied
+by the ﬁnal output, and (ii) Correctness: Parties P0 and P1
+learn the correct output.
+Loosely speaking, (2 + 1)-MPC, also known as server-
+aided 2-MPC, is a 2-party MPC protocol with a third party
+(which neither holds any secret input nor receives any mes-
+sages during the protocol) that does not collude with any other
+two parties. The third party merely facilitates the MPC by
+sending some correlated randomness to the two MPC parties.
+USENIX Association
+32nd USENIX Security Symposium    3911
+
+2.2.1
+AND and Dot Product on Secret Shares
+We ﬁrst deﬁne the notion of AND triples (on XOR shares)
+and dot-product triples (on vectors of additive shares), which
+facilitate computing (bitwise) AND and dot products on se-
+cret shares. In Appendix A, we describe two main ways to
+generate these triples, namely a (2+1)-MPC protocol (using
+a stateless third party) and a 2-party protocol (using oblivious
+transfer, or OT). The former leads to the Du–Atallah [9] pro-
+tocol for AND (and dot products, which are denoted as ⟨·,·⟩),
+which is an efﬁcient (2+1)-MPC variant of the well-known
+Beaver triples [1] based AND protocol.
+Deﬁnition
+4 (AND Triples).
+(X0,Y0,Z0) ∈{0,1}λ ×
+{0,1}λ × {0,1}λ and (X1,Y1,Z1) ∈{0,1}λ × {0,1}λ ×
+{0,1}λ are called AND triples if for a random T ∈{0,1}λ,
+the following holds true:
+(i) Z0 = (X0 ∧Y1) ⊕T, and
+(ii) Z1 = (X1 ∧Y0)⊕T.
+Deﬁnition 5 (Dot-product Triples). (X0,Y0,Z0) ∈Zn
+2w ×
+Zn
+2w × Z2w and (X1,Y1,Z1) ∈Zn
+2w × Zn
+2w × Z2w are called
+dot-product triples if for a random T ∈Z2w, the following
+holds true: (i) Z0 = ⟨X0,Y1⟩+T, and (ii) Z1 = ⟨X1,Y0⟩−T.
+P0 and P1 hold (x0,y0) and (x1,y1) respectively and their
+goal is to compute shares of (x0 ⊕x1) ∧(y0 ⊕y1). Suppose
+P0 and P1 hold the AND triples (X0,Y0,Z0) and (X1,Y1,Z1).
+First, Pb sends (xb ⊕Xb) and (yb ⊕Yb) to P1−b for b ∈{0,1}.
+P0 computes z0 ←(x0∧(y0⊕(y1⊕Y1)))⊕Y0∧(x1⊕X1)⊕Z0
+and P1 computes z1 ←(x1 ∧(y1 ⊕(y0 ⊕Y0))) ⊕Y1 ∧(x0 ⊕
+X0)⊕Z1 respectively. Now, observe that z0 ⊕z1 = (x0 ⊕x1)∧
+(y0 ⊕y1).
+Similarly, to compute dot products, assume that parties
+P0 and P1 hold (x0,y0) and (x1,y1) respectively, such that
+x = x0 + x1 and y = y0 + y1. Their goal is to obtain shares
+of ⟨x,y⟩. P0 and P1 hold the dot-product triples (X0,Y0,Z0)
+and (X1,Y1,Z1). Pb sends (xb +Xb) and (yb +Yb) to P1−b
+for b ∈{0,1}. P0 computes z0 ←⟨x0,(y0 + (y1 + Y1))⟩−
+⟨Y0,(x1 +X1)⟩+Z0 and P1 computes z1 ←⟨x1,(y1 +(y0 +
+Y0))⟩−⟨Y1,(x0 +X0)⟩+Z1 respectively. Now, observe that
+z0 +z1 = ⟨(x0 +x1),(y0 +y1)⟩.
+3
+Communication Efﬁcient 3-Party DORAM
+We now present the construction of our communication-
+efﬁcient DORAM, which we call DUORAM.
+The main
+feature of DUORAM is that we avoid the need for a linear-
+communication-cost refresh operation like the one required
+by FLORAM, described in Section 1.1. Avoiding the refresh
+operation is possible because DUORAM, unlike FLORAM,
+stores the database as additive secret shares for both READ
+and WRITE operations. Furthermore, since DUORAM does
+not change how data is stored in memory, its initialization
+does not involve any communication. The parties only need
+to allocate sufﬁcient (zeroed) storage. Another surprising
+consequence of avoiding the refresh operation is that we have
+an online communication cost that is independent of the size
+of the database.
+Notation.
+Throughout the paper, we will use up to three
+parties, namely P0, P1, and P2. Parties P0 and P1 are the two
+primary parties. P2 is the helper party. P2’s role is restricted
+to either maintaining a state or assisting in the MPC protocol
+by sending correlated randomness to the primary parties. In
+DUORAM’s 2-party version we replace P2 with a CSPIR pro-
+tocol. We denote by D ∈{0,1}n×w the database into which
+we read or write. D0 and D1 denote the additive shares of the
+database. In other words, D0 +D1 = D. All additive secret
+sharings are treated as integers mod 2w, or vectors of same.
+We use D[i] ∈{0,1}w to denote the ith word of the database.
+Similarly, Db[i] denotes the ith word of Db, thus they are
+the shares of the ith word of the database. We denote by
+ζb ∈{0,1}n×w the blinding factors held by Pb. We use eDb to
+denote the blinded shares of the database, i.e., eDb ←Db +ζb.
+The blinds and the blinded shares are used in our READ pro-
+tocol (where Pb implicitly receives eD1−b from P1−b), the
+details of which appear in Section 3.1.1. We denote by i∗the
+database index into which we want to read or write. M denotes
+the value by which we want to update the value at index i∗.
+The shares of i∗are i∗
+0 and i∗
+1. Similarly, M0 and M1 are the
+shares of M. In our setting, P0 holds (D0, eD1,ζ0,i∗
+0,M0), P1
+holds (D1, eD0,ζ1,i∗
+1,M1), and P2 holds (ζ0,ζ1). DUORAM
+initializes the database shares and the Du–Atallah blinding
+vectors to all zeros, thus making initialization communication-
+free, compared to the O(n) communication cost for initializ-
+ing FLORAM. Formally, the initialization results in D0 ←0,
+D1 ←0, ζ0 ←0, ζ1 ←0, eD0 ←0, eD1 ←0.
+3.1
+High-level Working of DUORAM
+For the high-level exposition of DUORAM, we consider a
+trusted source, given a target location i∗and a target value
+M,3 who creates six pairs of word vectors (mod 2w) with the
+property that t
+(1)
+0 +t
+(1)
+1 = t
+(2)
+0 +t
+(2)
+1 = t
+(3)
+0 +t
+(3)
+1 = ei∗, and v
+(1)
+0 +
+v
+(1)
+1 = v
+(2)
+0 + v
+(2)
+1 = v
+(3)
+0 + v
+(3)
+1 = M · ei∗. The trusted source
+sends: (i) (t
+(1)
+0 ,t
+(2)
+0 ,t
+(3)
+0 ) to P0, (ii) (t
+(1)
+1 ,t
+(2)
+1 ,t
+(3)
+1 ) to P1, and
+(iii) (t
+(2)
+0 ,t
+(3)
+1 ) to P2, and correspondingly: (i) (v
+(1)
+0 ,v
+(2)
+0 ,v
+(3)
+0 ) to
+P0, (ii) (v
+(1)
+1 ,v
+(2)
+1 ,v
+(3)
+1 ) to P1, and (iii) (v
+(2)
+0 ,v
+(3)
+1 ) to P2. We note
+the t
+(k)
+b and v
+(k)
+b vectors (for k ∈{1,2,3,}) are almost the ﬂag
+and label vectors of a DPF, except the aforementioned vectors
+are additively shared, while DPFs are XOR-shared (and the
+ﬂag vectors of DPFs are bit vectors, not word vectors). We
+will see later how to convert DPFs into these additively shared
+vectors.
+3The trusted source is for exposition only; we will remove it shortly. Also
+note that this formulation requires that i∗and M be known at DPF generation
+time, a requirement we will also remove.
+3912    32nd USENIX Security Symposium
+USENIX Association
+
+P0
++
++
+−
+P1
++
+−
++
+D0
+v
+(1)
+0
+eD0
+D′
+0
+ζ0
+v
+(2)
+0
+ζ′
+0
+v
+(1)
+1
+v
+(2)
+1
+eD′
+0
+Figure 4: DUORAM’s REFRESHBLINDS operation. Since v
+(1)
+0 +v
+(1)
+1 = v
+(2)
+0 +v
+(2)
+1 = M·ei∗, we have D′
+0 +ζ′
+0 = eD′
+0. P0 holds D0
+(depicted in orange) and updates it as D0 +v
+(1)
+0 (v
+(1)
+0 depicted as black, with i∗th value depicted in blue). P1 holding f
+D0 ←D0 +ζ0
+(ζ0 is depicted as green) “corrects” by subtracting v
+(1)
+1 (which is exactly the same as −v
+(1)
+0 except at index i∗), which corrects all
+the indices but index i∗. To correct that, P0 subtracts v
+(2)
+0 (depicted as red) from ζ0 and P1 adds v
+(2)
+1 (depicted as red), to eD0 +v
+(1)
+1 .
+3.1.1
+READ Operation
+The goal of the READ protocol is to read from the database,
+D, the word addressed by the target index, i∗. In other words,
+P0 and P1, who hold the additive shares of i∗, along with
+the shares of the database D, want to obtain the additive
+shares of D[i∗]. We observe that D[i∗] = ⟨D,ei∗⟩. While
+we describe the details of the READ operation in Section 4,
+we mention here that we perform the READ operation via a
+variant of a Du–Atallah dot-product protocol to compute the
+dot-product of the ﬂag vectors associated with a DPF at i∗
+with the database. The ﬂag vectors from the DPFs are XOR
+shares of a standard basis vector. In Section 4.1.1 we will
+show a procedure to convert them to additive shares. While
+the idea is to use Du–Atallah-style dot products to compute
+the shares of ⟨D,ei∗⟩, there is a critical difference between the
+original Du–Atallah to compute the dot product (described
+in Section 2.2.1) and the one DUORAM uses. Unlike the
+standard Du–Atallah-styled dot-products, where the database
+shares and the standard-basis vector shares must be blinded
+and exchanged, our protocol only requires the blinded shares
+of the database to be traded. Cruicially, whereas previous
+protocols required linear communication when the database
+shares were updated, our innovation enables the parties to
+refresh their copies of each other’s blinded databases with
+only logarithmic communication. Further, almost all of this
+communication can be done in the preprocessing phase, be-
+fore the update locations or values are known, with only a
+single word exchanged in the online phase. We achieve this
+at the cost of having three distinct shares of the same standard
+basis vector. Our READ protocol works as follows:
+1. P2 selects ρ ∈{0,1}w uniformly at random and sends
+γ0 ←−⟨ζ0,t
+(3)
+1 ⟩+ρ to P0 and γ1 ←−⟨ζ1,t
+(2)
+0 ⟩−ρ to P1.
+2. P0 outputs read0 ←⟨D0 + eD1,t
+(1)
+0 ⟩−⟨ζ0,t
+(3)
+0 −t
+(1)
+0 ⟩+γ0.
+3. P1 outputs read1 ←⟨D1 + eD0,t
+(1)
+1 ⟩−⟨ζ1,t
+(2)
+1 −t
+(1)
+1 ⟩+γ1.
+Lemma 1. After the READ operation, read0 +read1 = D[i∗].
+The proof of Lemma 1 appears in Appendix B. The active
+participation of P2 here is what makes DUORAM a 3-party
+protocol and not a (2+1)-party protocol.
+3.1.2
+UPDATE Operation
+The goal is to add a value to the element at the target index
+of the database. Parties P0 and P1 hold (M0,i∗
+0) and (M1,i∗
+1)
+respectively. Their goal is to obtain shares of a new database,
+whose i∗th value is updated by M. A WRITE operation is
+a READ operation (with the output readb) followed by an
+UPDATE operation with Mb −readb.
+Our UPDATE operation works as follows. For b ∈{0,1},
+Pb simply locally sets D′
+b ←Db +v
+(1)
+b .
+Lemma
+2.
+After the
+UPDATE
+operation,
+we
+have:
+(i)
+D′
+0[i] + D′
+1[i] = D[i]
+for
+all
+i ̸= i∗,
+and
+(ii) D′
+0[i∗]+D′
+1[i∗] = D[i∗]+M.
+The proof of Lemma 2 follows from the deﬁnitions of DPFs.
+Our UPDATE operation is (almost) the same as the one used
+in FLORAM. However, DUORAM has an additional step to
+refresh the blinds to prepare itself for the next read operation.
+Critically, DUORAM’s REFRESHBLINDS requires only O(1)
+words of communication, unlike FLORAM’s O(√n) amor-
+tized cost, and this communication can even be sent in the
+same ﬂows as already used for the UPDATE protocol.
+REFRESHBLINDS.
+Performing the READ operation in a
+Du–Atallah style has the following drawback. The blinded
+shares exchanged become “stale” after one UPDATE operation
+and cannot be used for the next READ operation. Suppose
+that P0 holds (D0,ζ0, eD1) and P1 holds (D1,ζ1, eD0), that they
+update the database with some value M, and that D′
+0 and
+D′
+1 are the updated database shares. We wish for each party
+USENIX Association
+32nd USENIX Security Symposium    3913
+
+to update their blinds ζb and their blinded versions eD1−b of
+the other party’s database share so that eD′
+b (held by P1−b)
+equals D′
+b + ζ′
+b (held by Pb). From the point of view of P1,
+for example, we ﬁrst observe that, the blinded shares, namely,
+eD0 is wrong because P0 updated D0 by v
+(1)
+0 . However, P1
+holds v
+(1)
+1 , which is equal to −v
+(1)
+0 at every location, except
+at i∗. Thus, P1 can (almost) correct the blinded shares. In
+order to completely correct the blinded share eD0, we exploit
+the fact that (i) v
+(2)
+0 [i∗]+v
+(2)
+1 [i∗] = v
+(1)
+0 [i∗]+v
+(1)
+1 [i∗] = M, and
+(ii) only i∗th location needs to be corrected. Therefore, we
+use another pair of vectors that reconstruct to M·ei∗, namely
+v
+(2)
+0 and v
+(2)
+1 . We have P0 update the blind by −v
+(2)
+0 and P1
+do one more update of eD0 by v
+(2)
+1 . Figure 4 gives a pictorial
+depiction of the REFRESHBLINDS from the point of view of
+P0. More formally, we have the following:
+1. P0 and P1 update the blinds as ζ′
+0 ←ζ0 −v
+(2)
+0 and ζ′
+1 ←
+ζ1 −v
+(3)
+1 respectively.
+2. P0 and P1 also update the blinded shares they received as
+eD′
+1 ←eD1 +v
+(3)
+0 −v
+(1)
+0 and eD′
+0 ←eD0 +v
+(2)
+1 −v
+(1)
+1 respec-
+tively.
+3. P2 updates the blinds as ζ′
+0 ←ζ0 −v
+(2)
+0 and ζ′
+1 ←ζ1 −
+v
+(3)
+1 .
+Lemma 3. For b ∈{0,1}, D′
+b +ζ′
+b = eD′
+b.
+The proof of Lemma 3 appears in Appendix B. For the
+next READ operation DUORAM uses (ζ′
+0, eD′
+1) and (ζ′
+1, eD′
+0)
+as the blinds and blinded shares, thus avoiding FLORAM’s
+O(√n) amortized communication.
+Remark 1. Since the computing parties need to hold the
+blinds and blinded shares (in addition to thier own shares of
+D) the per-party storage requirement of 3P-DUORAM is three
+times the database size.
+4
+3P-DUORAM: The Details
+In this section, we ﬁll in the gaps from the high-level discus-
+sion in Section 3.1. 3P-DUORAM proceeds in two phases: the
+preprocessing phase and the online phase. The main idea of
+the preprocessing phase is that parties P0 and P1 receive DPFs
+with a random target point and a random target value before
+the computation begins or its inputs are known. Then they
+can “adjust” the DPFs accordingly to the required index and
+value. In other words, DUORAM generates the DPFs before it
+has the knowledge of (i) what to write into the database, and
+(ii) where to read or write into the database, thus postponing
+those decisions to the online phase.
+DPFs with deferred ﬁnal correction word.
+Before we
+proceed with the descriptions of the preprocessing and online
+phases, we consider the concept of DPFs with deferred ﬁnal
+correction word, which replace the ﬁnal correction word F
+(for some as-yet-unknown target value) with the shares of
+a ﬁnal correction word for the target value 0. Such DPFs
+were used in Pirsona [27] and are critical to the DUORAM
+UPDATE protocol. More formally, in such DPFs, we replace
+the ﬁnal correction word with F0 and F1 sent to P0 and P1,
+respectively, such that F0 +F1 = −(v0[i∗]+v1[i∗]), where
+v0 and v1 are evaluations of the DPF without applying a ﬁnal
+correction word. We denote the DPFs with the ﬁnal correction
+word shares as ¯kb = (s
+()
+b ,cw
+(0),...,cw
+(h),Fb).
+4.1
+Preprocessing Phase
+The goal of the preprocessing phase is to achieve the DPF
+distribution in Section 3, without the trusted source.
+4.1.1
+A (2+1)-Party Protocol to Generate DPFs
+The key idea is to replace the trusted source of DPFs with
+(2+1)-party MPC protocol to create DPFs (without the ﬁnal
+correction word) with random target point ri. The protocol
+begins with parties P0 and P1 selecting random indices f
+ri0
+and f
+ri1 respectively. These values serve as XOR shares
+for the random value ri = f
+ri0 ⊕f
+ri1. The parties then use
+an MPC share conversion procedure to convert these XOR-
+shares to additive shares ri0 and ri1 respectively, such that
+ri0 +ri1 = ri. This conversion is needed because the DPF
+generation protocol takes as input XOR shares, while the
+remaining DUORAM protocols use additive shares.
+We run a (2+1)-party MPC protocol (due to Doerner and
+shelat [8]) on the XOR-shares g
+ri0 and g
+ri1, to generate DPFs
+(and their evaluation) without the ﬁnal correction word at
+the location ri. The presentation of the protocol appears in
+Appendix C. The protocol results in Pb holding (˚vb,˚tb) such
+that, (i) ˚v0[i]⊕˚v1[i] = 0 for all i ̸= ri, and (ii) ˚t0 ⊕˚t1 = eri.
+We interpret ˚v0 as a word vector and call it v0, and interpret
+˚v1 as a word vector, negate each element (recall all word op-
+erations are mod 2w), and call it v1. The ﬁnal correction word
+shares can be locally computed by each party, and are deﬁned
+as F0 = −∑i(v0[i]) and F1 = −∑i(v1[i]). Therefore, we
+have v0[ri]+v1[ri]+F0 +F1 = 0.
+DUORAM also requires additive shares of the ﬂag vectors
+rather than XOR shares. We next describe a procedure that,
+given the above vb and Fb values, converts the ﬂag vectors ˚t0
+and ˚t1 such that ˚t0 ⊕˚t1 = eri, into word vectors t0 and t1 such
+that t0+t1 = eri. (We will note later that this share conversion
+can even be skipped if the database were XOR-shared.)
+Converting to additive shares.
+The share conversion algo-
+rithm begins with the two parties interpreting the ﬂag vectors
+as words, and P1 multiplies its word vector by −1. However,
+this leads to additive shares of ±1·eri. More speciﬁcally, if
+t0[ri] = 1 and t1[ri] = 0, these are additive shares of eri as
+3914    32nd USENIX Security Symposium
+USENIX Association
+
+P0
+P1
+P2
+S ←i∗
+0 −ri0 +i∗
+1 −ri1
+// compute cyclic shift offset
+t
+(2)
+0 [i] ←t
+(2)
+0 [i−S]
+t
+(3)
+1 [i] ←t
+(3)
+1 [i−S]
+// shift ﬂags
+ρ $←Z2w
+// select random value
+γ0 ←−⟨ζ0,t
+(3)
+1 ⟩+ρ
+// cancellation term
+γ1 ←−⟨ζ1,t
+(2)
+0 ⟩−ρ
+// cancellation term
+holds: for k ∈{1,2,3}
+(D0, eD1,i∗
+0,ri0,t
+(k)
+0 )
+holds: for k ∈{1,2,3}
+(D1, eD0,i∗
+1,ri1,t
+(k)
+1 )
+holds: (ζ0,ζ1,t
+(2)
+0 ,t
+(3)
+1 )
+// compute cylic shift offset
+S ←i∗
+0 −ri0 +i∗
+1 −ri1
+// shift ﬂags
+t
+(k)
+0 [i] ←t
+(k)
+0 [i−S], for k ∈{1,3}
+// compute dotproduct
+read0 ←⟨D0 + eD1,t
+(1)
+0 ⟩−⟨ζ0,t
+(3)
+0 −t
+(1)
+0 ⟩+γ0
+// compute cylic shift offset
+S ←i∗
+0 −ri0 +i∗
+1 −ri1
+// shift ﬂags
+t
+(k)
+1 [i] ←t
+(k)
+1 [i−S], for k ∈{1,2}
+// compute dotproduct
+read1 ←⟨D1 + eD0,t
+(1)
+1 ⟩−⟨ζ1,t
+(2)
+1 −t
+(1)
+1 ⟩+γ1
+i∗0 −ri0
+i∗1 −ri1
+i∗0 −ri0
+i∗1 −ri1
+γ0
+γ1
+Figure 5: Online phase of the 3-party READ protocol, for reading the word at index i∗= i∗
+0 +i∗
+1. For k ∈{1,2,3}, t
+(k)
+0 +t
+(k)
+1 = eri.
+All array indices are taken mod n.
+required, but if t0[ri] = 0 and t1[ri] = 1, these are additive
+shares of −eri. (t0 and t1 are the same for all other indices.)
+Our idea is that the parties compute the shares of the unknown
+sign, blind it with some random word, exchange them and
+reconstruct their sum, and multiply their word vectors with
+the sum. At this point, the word vectors add to 0 everywhere
+except at index ri as required, but at ri, the sum is 1±(the
+sum of the blinds), instead of just 1. The ﬁnal step of the
+protocol ﬁxes this offset. A formalization of the protocol
+appears in Appendix D.
+The preprocessing phase for the UPDATE protocol can be
+summarized as follows:
+1. P0 and P1 use the (2 + 1)-MPC protocol to generate
+DPFs, namely, (¯k
+(1)
+0 , ¯k
+(2)
+0 , ¯k
+(3)
+0 ) and (¯k
+(1)
+1 , ¯k
+(2)
+1 , ¯k
+(3)
+1 ) respec-
+tively.
+2. P0 sends ¯k
+(2)
+0 to P2, and P1 sends ¯k
+(3)
+1 to P2.
+3. They convert the XOR-shared ﬂags to additive shares.
+At the end of the preprocessing phase, we have: (i) Pb holds
+(v
+(t)
+b ,t
+(t)
+b ,F
+(t)
+b ,rib), for b ∈{0,1}, t ∈{1,2,3}, and (ii) the
+auxiliary party P2 holds (v
+(2)
+0 ,t
+(2)
+0 ), (v
+(3)
+1 ,t
+(3)
+1 ).
+The preprocessing for the READ protocol is almost the
+same, requiring three DPFs. For the READ protocol, however,
+the parties do not need to hold any vb or any ﬁnal correction
+word.
+4.2
+3-Party Online Phase
+During the multi-party computation, P0 and P1 will want to
+read or update some index i∗of the shared database, where the
+index itself is shared between them. From the preprocessing
+phase, they already have shares of a random standard basis
+vector eri along with shares of ri. The parties ﬁrst use the
+cyclic shift protocol to shift shares of eri into shares of ei∗.
+4.2.1
+Adjusting the Random DPFs
+Cyclic Shifts: Postponing the decision of where to read or
+write.
+The 3-party online phase begins with a cyclic shift
+protocol that adjusts the shares of the standard basis vector at
+a random location ri to the shares of the standard basis vector
+at the target index i∗. P0 and P1 hold i∗
+0 and i∗
+1 respectively,
+such that i∗= i∗
+0 +i∗
+1. They also hold (ri0,v′
+0) and (ri1,v′
+1)
+such that ri = ri0 +ri1, and v′
+0 +v′
+1 = eri. Their goal is to
+get vectors v0 and v1 such that v0 +v1 = ei∗. They exchange
+i∗
+b −rib, reconstruct (i∗
+0 +i∗
+1 −ri0 −ri1), and cyclic right
+shift v′
+b by (i∗
+0 + i∗
+1 −ri0 −ri1). Similarly, P2 receives
+i∗
+b −rib from Pb and can also compute the required offset
+(i∗
+0 +i∗
+1 −ri0 −ri1).
+In this protocol, which is key to being able to move the DPF
+generation to preprocessing, it is required that index shares be
+additive. For consistency, DUORAM keeps the database also
+as additive shares, which also simpliﬁes linked data structures
+where addresses are stored in the database. For computations
+without this need, however, the database can be stored with
+XOR shares in DUORAM, removing the need for the share
+conversion procedure described in Section 4.1.1.
+4.2.2
+READ Protocol
+The READ protocol does not need any other details to be
+ﬁlled in from our high-level discussion. After performing
+the cyclic shift protocol to move the target point from ri to
+i∗, we use the 3-party protocol in Section 3.1.1. Figure 5
+describes the 3-party online phase of the READ protocol.
+Protocol 1 summarizes the entire (preprocessing and online
+phases) DUORAM READ protocol. All array indices are taken
+mod n in Protocol 1.
+4.2.3
+UPDATE Protocol
+Postponing the decision of what to write.
+We have the
+following situation. P0 and P1 hold D0 and D1, the shares of
+USENIX Association
+32nd USENIX Security Symposium    3915
+
+Protocol 1 3P-DUORAM READ Protocol. In the online phase,
+P0 holds (D0,ζ0, eD1,i∗
+0) ; P1 holds (D1,ζ1, eD0,i∗
+1); P2 holds
+(ζ0,ζ1). After the end of the protocol, P0 and P1 get read0
+and read1 respectively, such that read0 +read1 = D[ i∗
+0 +i∗
+1 ].
+Preprocessing Phase:
+1: P0 and P1 pick random index shares ri0 and ri1 re-
+spectively, and with the aid of P2, use the (2 + 1)-
+MPC protocol to generate three DPFs, (¯k
+(1)
+0 , ¯k
+(2)
+0 , ¯k
+(3)
+0 ) and
+(¯k
+(1)
+1 , ¯k
+(2)
+1 , ¯k
+(3)
+1 ), all with index ri = ri0 +ri1.
+2: P0 sends ¯k
+(2)
+0 to P2, and P1 sends ¯k
+(3)
+1 to P2.
+3: The parties evaluate the DPFs to get XOR-shared ﬂag bits.
+P0 and P1 get ˚t
+(k)
+0 and ˚t
+(k)
+1 respectively, for k ∈{1,2,3}.
+P2 gets (˚t
+(2)
+0 ,˚t
+(3)
+1 ).
+4: They convert the XOR-shared ﬂags ˚t to additive shares t.
+Online Phase:
+5: P0 and P1 exchange (i∗
+0 −ri0) and (i∗
+1 −ri1). In the
+same round of communication, P0 and P1 send (i∗
+0−ri0)
+and (i∗
+1 −ri1) respectively to P2.
+6: P0, P1, and P2 reconstruct S ←i∗
+0 −ri0 +i∗
+1 −ri1.
+7: ∀i, P0 computes t
+(k)
+0 [i] ←t
+(k)
+0 [i −S] for k ∈{1,3}; P1
+computes t
+(k)
+1 [i] ←t
+(k)
+1 [i −S] for k ∈{1,2}; P2 com-
+putes t
+(3)
+1 [i] ←t
+(3)
+1 [i−S] and t
+(2)
+0 [i] ←t
+(2)
+0 [i−S].
+8: P2 selects ρ ∈{0,1}w uniformly at random and sends
+γ0 ←−⟨ζ0,t
+(3)
+1 ⟩+ρ to P0 and γ1 ←−⟨ζ1,t
+(2)
+0 ⟩−ρ to P1.
+9: P0 outputs read0 ←⟨D0 + eD1,t
+(1)
+0 ⟩−⟨ζ0,t
+(3)
+0 −t
+(1)
+0 ⟩+γ0.
+10: P1 outputs read1 ←⟨D1 + eD0,t
+(1)
+1 ⟩−⟨ζ1,t
+(2)
+1 −t
+(1)
+1 ⟩+γ1.
+the database D. The two parties also hold (i) M0 and M1, the
+shares of the target value, and (ii) DPFs ¯k0 and ¯k1 at i∗and
+their evaluations (v0,v1). Their goal is to add M = M0 +M1
+to the value at the target index i∗of the database D. The
+idea is that the parties Pb exchange Mb +Fb to reconstruct
+M−(v0[i∗]+v1[i∗]). The reconstruction serves as the new
+ﬁnal correction word to write M in the desired location.
+P0 and P1 then use the technique of Figure 4 to update
+their own blind and their copy of the other’s blinded database
+share; P2 similarly updates its copy of P0’s and P1’s blinds.
+We present the complete online phase of the update proto-
+col, including both sets of updates, in Figure 6. The entire
+UPDATE protocol (preprocessing and online phases) is sum-
+marized in Protocol 2. All array indices are taken mod n in
+Protocol 2.
+5
+2P-DUORAM
+This section presents the 2-party instantiation of DUORAM.
+The update protocol is (nearly) the same as the one in 3P-
+DUORAM, with the number of communication words in the
+online phase independent of the database size. The 2-party
+read protocol uses a single-server Computational Symmetric
+Protocol 2 3P-DUORAM UPDATE Protocol.
+In the on-
+line phase, P0 holds (D0,ζ0, eD1,i∗
+0,M0); P1 holds D1,
+(ζ1, eD0,i∗
+1,M1); P2 holds (ζ0,ζ1).
+After the end of the
+protocol, P0 gets (D′
+0,ζ′
+0, eD′
+1), P1 gets (D′
+1,ζ′
+1, eD′
+0), and P2
+gets (ζ′
+0,ζ′
+1), such that eD′
+0 = D′
+0 + ζ′
+0, eD′
+1 = D′
+1 + ζ′
+1, and
+D′
+0 +D′
+1 = D0 +D1 +(M0 +M1)·ei∗0+i∗1.
+Preprocessing Phase:
+1: P0 and P1 pick random index shares ri0 and ri1 re-
+spectively, and with the aid of P2, use the (2 + 1)-
+MPC protocol to generate three DPFs, (¯k
+(1)
+0 , ¯k
+(2)
+0 , ¯k
+(3)
+0 ) and
+(¯k
+(1)
+1 , ¯k
+(2)
+1 , ¯k
+(3)
+1 ), all with index ri = ri0 +ri1. In the pro-
+cess, P0 and P1 learn shares F
+(k)
+0
+and F
+(k)
+1
+respectively of
+the ﬁnal correction words (k ∈{1,2,3}).
+2: P0 sends ¯k
+(2)
+0 to P2, and P1 sends ¯k
+(3)
+1 to P2.
+3: The parties evaluate the DPFs to get XOR-shared ﬂag bits
+and leaves. P0 and P1 get ˚t
+(k)
+0 ,˚v
+(k)
+0 and ˚t
+(k)
+1 ,˚v
+(k)
+1 respectively,
+for k ∈{1,2,3}. P2 gets (˚t
+(2)
+0 , ˚v
+(2)
+0 ,˚t
+(3)
+1 , ˚v
+(3)
+1 ).
+4: They convert the XOR-shared ﬂags ˚t and leaves ˚v to
+additive shares t and v.
+Online Phase:
+5: P0 and P1 exchange ((i∗
+0 + ri0),(M0 + F
+(2)
+0 ),(M0 +
+F
+(3)
+0 )) and ((i∗
+0 + ri1),(M1 + F
+(2)
+1 ),(M1 + F
+(3)
+1 )) and
+also send those values to P2. P0 and P1 also exchange
+(M0 +F
+(1)
+0 ) and (M1 +F
+(1)
+1 ) but do not send those values
+to P2.
+6: P0,P1,P2 reconstruct F
+(k) ←(M0 +F
+(k)
+0 +M1 +F
+(k)
+1 ) for
+k ∈{2,3}; P0,P1 also do so for k = 1.
+7: P0,P1,P2 reconstruct S ←i∗
+0 +ri0 +i∗
+1 +ri1.
+8: P0 updates ∀i:
+D′
+0[i] ←D0[i]+
+ v
+(1)
+0 [i−S]+F
+(1) ·t
+(1)
+0 [i−S]
+
+,
+ζ′
+0[i] ←ζ0[i]−
+ v
+(2)
+0 [i−S]+F
+(2) ·t
+(2)
+0 [i−S]
+
+,
+eD′
+0[i] ←eD0[i]+v
+(3)
+0 [i−S]+F
+(3) ·t
+(3)
+0 [i−S]
+−(v
+(1)
+0 [i−S]+F
+(1) ·t
+(1)
+0 [i−S]).
+9: P1 updates ∀i:
+D′
+1[i] ←D1[i]+
+ v
+(1)
+1 [i−S]+F
+(1) ·t
+(1)
+1 [i−S]
+
+,
+ζ′
+1[i] ←ζ1[i]−
+ v
+(3)
+1 [i−S]+F
+(3) ·t
+(3)
+1 [i−S]
+
+,
+eD′
+0[i] ←eD0[i]+v
+(2)
+1 [i−S]+F
+(2) ·t
+(2)
+1 [i−S]
+−(v
+(1)
+1 [i−S]+F
+(1) ·t
+(1)
+1 [i−S]).
+10: P2 updates ζ0 and ζ1 to ζ′
+0 and ζ′
+1 as P0 and P1 do above.
+PIR (CSPIR) protocol, resulting in communication logarith-
+mic in the database size (beating FLORAM’s O(√n)), but
+with more local computation. Our experiments in the next
+section show that it can be overall faster than FLORAM for
+typical network conﬁgurations.
+Like in the 3-party setup, the 2-party protocol can be di-
+vided into an online and preprocessing phase. The idea once
+again is to generate and exchange CSPIR queries at a random
+location in the preprocessing phase and then use the cyclic
+shift protocol to correct it. Similarly, for an update operation,
+3916    32nd USENIX Security Symposium
+USENIX Association
+
+P0
+P1
+P2
+//compute cylic shift offset
+S ←i∗
+0 −ri0 +i∗
+1 −ri1
+//compute ﬁnal CW
+F
+(k) ←M0 +F
+(k)
+0
++M1 +F
+(k)
+1
+for k ∈{2,3}
+//update blinds
+ζ′
+0[i] ←ζ0[i]−(v
+(2)
+0 [i−S]+F
+(2) ·t
+(2)
+0 [i−S]), ∀i
+ζ′
+1[i] ←ζ1[i]−(v
+(3)
+1 [i−S]+F
+(3) ·t
+(3)
+1 [i−S]), ∀i
+holds: for k ∈{1,2,3}
+(M1,D1, eD0,ζ1,i∗
+1,F
+(k)
+1 ,ri1,v
+(k)
+1 ,t
+(k)
+1 )
+holds: for k ∈{1,2,3}
+(M0,D0, eD1,ζ0,i∗
+0,F
+(k)
+0 ,ri0,v
+(k)
+0 ,t
+(k)
+0 )
+holds: (ζ0,ζ1,v
+(2)
+0 ,v
+(3)
+1 ,t
+(2)
+0 ,t
+(3)
+1 )
+//compute cylic shift offset
+S ←i∗
+0 −ri0 +i∗
+1 −ri1
+//compute ﬁnal CW
+F
+(k) ←M0 +F
+(k)
+0
++M1 +F
+(k)
+1 , for k ∈{1,2,3}
+//update database
+D′
+0[i] ←D0[i]+v
+(1)
+0 [i−S]+F
+(1) ·t
+(1)
+0 [i−S], ∀i
+//update blinds
+ζ′
+0[i] ←ζ0[i]−(v
+(2)
+0 [i−S]+F
+(2) ·t
+(2)
+0 [i−S]), ∀i
+//update blinded shares
+eD′
+1[i] ←eD1[i]+v
+(3)
+0 [i−S]+F
+(3) ·t
+(3)
+0 [i−S]
+−(v
+(1)
+0 [i−S]+F
+(1) ·t
+(1)
+0 [i−S]), ∀i
+//compute cylic shift offset
+S ←i∗
+0 −ri0 +i∗
+1 −ri1; k ∈{1,2,3}
+//compute ﬁnal CW
+F
+(k) ←M0 +F
+(k)
+0
++M1 +F
+(k)
+1 , for k ∈{1,2,3}
+//update database
+D′
+1[i] ←D1[i]+v
+(1)
+1 [i−S]+F
+(1) ·t
+(1)
+1 [i−S], ∀i
+//update blinds
+ζ′
+1[i] ←ζ1[i]−(v
+(3)
+1 [i−S]+F
+(3) ·t
+(3)
+1 [i−S]), ∀i
+//update blinded shares
+eD′
+0[i] ←eD0[i]+v
+(2)
+1 [i−S]+F
+(2) ·t
+(2)
+1 [i−S]
+−(v
+(1)
+1 [i−S]+F
+(1) ·t
+(1)
+1 [i−S]), ∀i
+i∗
+0 −ri0;M0 +F
+(k)
+0
+for k ∈{1,2,3}
+i∗
+1 −ri1;M1 +F
+(k)
+1
+for k ∈{1,2,3}
+i∗
+0 −ri0;M0 +F
+(j)
+0
+j ∈{2,3}
+i∗
+1 −ri1;M1 +F
+(j)
+1
+j ∈{2,3}
+Figure 6: Online phase of the 3-party UPDATE Protocol. Protocol to add the value M = M0 +M1 to the value at index i∗= i∗
+0 +i∗
+1
+in the database D = D0 +D1. For k ∈{1,2,3}, we have, t
+(k)
+0 +t
+(k)
+1 = eri and v
+(k)
+0 +(t0 ·F
+(k))+v
+(k)
+1 +(t1 ·F
+(k)) = 0. At the end
+of the protocol, for b ∈{0,1}, Pb gets (eD′
+1−b,D′
+b,ζ′
+b), such that eD′
+b = D′
+b + ζ′
+b. The next READ operation uses ζ′
+b and eD′
+b as
+blinding factors and blinded shares. For the next UPDATE operation, new (v
+(k)
+b ,t
+(k)
+b ) are received. All array indices are taken mod
+n.
+we can generate random DPFs at a random location with a
+random target value.
+2-party READ.
+The read operation in 2P-DUORAM relies
+on Computational Symmetric PIR (CSPIR), which works
+as follows. The parties have precomputed and exchanged
+CSPIR queries for lookups at random indices ri0 and ri1
+respectively. Note that the encrypted queries only depend on
+the (random) index being looked up and on the size of the
+database, and not on the contents of the database, so those can
+be computed and exchanged during preprocessing. They also
+have shares i∗
+0 and i∗
+1 of the target index i∗. For b ∈{0,1}:
+1. Pb sends (i∗
+b −rib) to P1−b.
+2. Pb blinds each of the elements of Db with a random value
+rb ∈{0,1}w, and rotates the resulting blinded vector by
+i∗
+b + (i∗
+1−b −ri1−b). In other words, Pb computes
+D′
+b[i] ←(Db[i+i∗
+b +(i∗
+1−b −ri1−b)]+rb).
+3. P1−b computes a response to Pb’s preprepared CSPIR
+query with index rib on D′
+1−b and sends the result to Pb,
+who recovers cb = D1−b[i∗]+r1−b.
+4. Pb outputs: readb ←cb −rb.
+Lemma 4. After the 2-party READ, read0 +read1 = D[ i∗].
+The proof of Lemma 4 can be found in Appendix B. Our
+implementation uses the SPIRAL CPIR protocol by Menon
+and Wu [23]. We note that CPIR protocols like SPIRAL are
+extremely parallelizable with more hardware. The protocol,
+however, cannot be used as-is, as it is not symmetric; that
+is, the client may learn more than just one database element.
+Therefore, we augment the SPIRAL protocol into a SPIR
+protocol using the generic OT-based PIR-to-SPIR transform
+by Naor and Pinkas [24].
+2-party UPDATE.
+Observe that since we do the reading
+via CSPIR, there is no notion of blinds or blinded shares;
+thus, the REFRESHBLINDS operation is no longer needed.
+The online phase of the 2-party UPDATE protocol is then
+the same as the online phase of the 3-party protocol, but
+without the additional REFRESHBLINDS operation. Thus,
+somewhat counterintuitively, the online UPDATE phase of
+2P-DUORAM is cheaper than that of 3P-DUORAM. However,
+the preprocessing phase differs because the multiplicative
+triples, rather than being generated via an auxiliary party,
+are generated via OT, though we only need to precompute
+one DPF per UPDATE operation instead of three DPFs per
+UPDATE and READ.
+6
+Evaluation
+We next evaluate the performance of DUORAM on different
+ORAM operations. We classify the READ operations as ei-
+ther dependent or independent reads for our evaluation. We
+call a block of k READ operations dependent if the target
+index for each read is known only after the completion of the
+previous read. This notion models following pointers in a
+USENIX Association
+32nd USENIX Security Symposium    3917
+
+Table 2: Comparing computation, bandwidth, and the number of sequential messages sent across various DUORAM operations
+for a database containing n words of size w. The gray color represents the preprocessing cost. FLORAM is shown for comparison.
+In this table, we assume w ≥lgn.
+3P-DUORAM
+2P-DUORAM
+FLORAM
+Operation
+Computation
+Bandwidth
+Messages
+Computation
+Bandwidth
+Messages
+Computation
+Bandwidth
+Messages
+k Ind Reads
+O(k·n) +O(k·n)
+O(k·w·lgn) + 2·k·w
+O(lgn) + 2
+O(k·n) +O(k·n)
+O(k·w·lgn) +O(k·w)
+O(1) + 2
+O(k·n)
+O(k·w·lgn)
+O(lgn)
+k Dep Reads
+O(k·n) +O(k·w)
+O(k·w·lgn) + 2·k·w
+O(lgn) + 2·k
+O(k·n) +O(k·n)
+O(k·w·lgn) +O(k·w)
+O(1) + 2·k
+O(k·n)
+O(k·w·lgn)
+O(k·lgn)
+k Writes
+O(k·n) +O(k·n)
+O(k·w·lgn) + 9·k·w
+O(lgn) + 3·k
+O(k·n) +O(k·n)
+O(k·w·lgn) +O(k·w)
+O(lgn) + 3·k
+O(k·n)
+O(k·w·√n)
+O(k·lgn)
+Interleaved
+O(k·n) +O(k·n)
+O(k·w·lgn) + 11·k·w
+O(lgn) + 5·k
+O(k·n) +O(k·n)
+O(k·w·lgn) +O(k·w)
+O(lgn) + 5·k
+O(k·n)
+O(k·w·√n)
+O(k·lgn)
+linked data structure or traversing a binary tree, for example.
+We call a block of k READ operations independent if the k
+target indices are known in advance of performing any of
+the reads. However, we do not make this distinction for the
+WRITE operations, which are always considered dependent.
+A READ operation followed by a WRITE operation is called
+an interleaved operation. Thus, k interleaved operations are
+k read and k write operations interleaved with one another.
+Note that an interleaved operation actually involves two reads,
+since a write operation is a read operation followed by an
+update operation.
+6.1
+Analytical Evaluation
+Before we present our experimental results, we give an ana-
+lytical accounting of computation and communication costs
+of the DUORAM variants. We summarize the costs in Ta-
+ble 2.4 Note that Table 2 shows the number of sequential
+messages rather than the number of rounds. We say that a
+protocol uses q sequential messages if the time spent on In-
+ternet latency is q times the one-way latency. This notion
+differs from rounds, where a round requires each party to wait
+for a response to their message before sending the next mes-
+sage. Thus, q rounds would mean the time spent on Internet
+latency is 2q times the one-way latency. Observe that the
+online communication cost of 3P-DUORAM is constant (for
+constant-sized words; it is linear in the word length). Another
+important thing to note is that the number of messages sent
+for k independent reads is independent of k.
+6.2
+Experimental Evaluation
+Experimental setup.
+We implemented and benchmarked
+DUORAM. We wrote a proof-of-concept reference implemen-
+tation in C++. 5 Our implementation uses Boost.Asio v1.18.1
+for asynchronous communication.We ran the parties in
+separate docker containers and simulated network param-
+eters with tc qdisc add dev eth0 root netem delay
+4Table 1 in the FLORAM paper [8] says it requires only O(1) messages to
+be sent per access. However, Figure 6 in that same work shows that it requires
+Θ(lgn) rounds of communication, and our own measurements reported in
+Section 6.2.1 conﬁrm this latter value.
+5Our source code is available at https://git-crysp.uwaterloo.ca/
+avadapal/duoram.
+Xms rate Ymbit, to set the latency to X ms, and restrict the
+rate to Y Mbit/s. We implemented the PRGs with AES.
+For our experimental evaluation, we compare DUORAM
+against the two works from Table 1 with available imple-
+mentations, namely FLORAM6 and Jarecki and Wei’s [19]
+3P-Circuit ORAM.7
+6.2.1
+Head-to-Head Comparison with FLORAM
+In this section, we do a head-to-head comparison of FLO-
+RAM with DUORAM, comparing the (i) wall-clock time, and
+(ii) bandwidth consumption. The standard latency we use
+is 30 ms,8 and the standard bandwidth 100 Mbit/s. We vary
+network parameters and database sizes, and compare 2P- and
+3P-DUORAM with FLORAM for different ORAM operations.
+Speciﬁcally, we make our comparisons under the following
+conditions: (i) varying the database size from 216 to 226,
+while keeping the latency and throughput constant at 30 ms
+and 100 Mbit/s, respectively, (ii) varying the throughput while
+keeping the number of items constant at 220 and the network
+latency at 30 ms, and (iii) varying the network latency while
+keeping the number of items at 220 and the throughput at
+100 Mbit/s. We omit 3P-Circuit ORAM from these plots
+because FLORAM outperforms it in these settings.
+Figure 7 compares the performance of DUORAM with FLO-
+RAM for doing interleaved operations. The comparative be-
+haviours of DUORAM and FLORAM for read and write opera-
+tions are very similar; those plots can be found in Figures 11
+and 12 in the extended version of this paper [28, App.E]. For
+our standard network settings, we see that 2P-DUORAM is
+faster than FLORAM until the database size reaches some-
+where between 222 and 224 items; at this point, the linear
+SPIR computation of 2P-DUORAM starts exceeding the log-
+arithmic cost of the rest of the protocol. On the other hand,
+3P-DUORAM consistently performs better than FLORAM for
+all database sizes. Decreasing the bandwidth capacity has a
+minimal impact on the performance of DUORAM because it
+6Code retrieved from https://gitlab.com/neucrypt/floram/.
+7Code
+retrieved
+from
+https://github.com/Boyoung-/
+circuit-oram-3pc.
+8A value chosen from the low end of one-way latency values from https:
+//www.cloudping.co/grid. Note that low latencies beneﬁt FLORAM much
+more than DUORAM, as we will soon see.
+3918    32nd USENIX Security Symposium
+USENIX Association
+
+216
+218
+220
+222
+224
+226
+0
+1000
+2000
+3000
+4000
+DB Size (# of 64-bit words)
+Wall clock time (s)
+Rate=100 Mbit/s, Latency = 30ms
+10
+30
+50
+70
+90
+110
+200
+600
+1000
+1400
+1800
+2200
+Rate (Mbit/second)
+DB size = 220 items, Latency=30ms
+10
+30
+50
+70
+100
+500
+900
+1300
+Latency (in ms)
+DB size = 220 items, Rate=100 Mbit/s
+FLORAM
+2P-DUORAM (Total)
+2P-DUORAM (Online)
+3P-DUORAM (Total)
+3P-DUORAM (Online)
+Figure 7: Comparing FLORAM and DUORAM to do 128 interleaved operations for different parameters of database size, latency,
+and bandwidth on databases with 8-byte words. (The error bars are too small and thus not visible.)
+216
+218
+220
+222
+224
+226
+22
+28
+214
+220
+DB Size (# of 64-bit words)
+Bandwidth (KiB)
+Dependent Reads
+216
+218
+220
+222
+224
+226
+22
+28
+214
+220
+DB Size (# of 64-bit words)
+Writes
+216
+218
+220
+222
+224
+226
+22
+28
+214
+220
+DB Size (# of 64-bit words)
+Interleaved
+FLORAM
+2P-DUORAM (Total)
+2P-DUORAM (Online)
+3P-DUORAM (Total)
+3P-DUORAM (Online)
+Figure 8: Comparing bandwidth consumption to do 128 dependent read, 128 write, and 128 interleaved ORAM operations in
+DUORAM and FLORAM; the y-axis is log-scaled.
+sends so much less data, as can be seen in Figure 8. However,
+observe that for all the ORAM operations that we evaluate,
+FLORAM experiences a signiﬁcant dip in performance as
+the bandwidth capacity is throttled. The dip is more signiﬁ-
+cant when we are doing interleaved operations, as FLORAM’s
+interleaved operations require a refresh after every √n/8 iter-
+ations. Finally, as we increase the latency, the performance of
+FLORAM worsens much more than DUORAM’s performance
+owing to the additional rounds in FLORAM. For example, we
+measure that FLORAM requires about 4lgn−25 sequential
+messages per read operation, while DUORAM requires just 2.
+Figure 8 compares the bandwidth consumption between
+DUORAM and FLORAM. The difference between FLORAM
+and DUORAM is the largest in the interleaved operations case.
+This is because FLORAM requires a O(n) communication cost
+before every √n/8 iterations. Most of FLORAM’s bandwidth
+consumption in the case of dependent READ and WRITE
+operations comes in the initialization phase. In the case of the
+WRITE operation, the online phase of 2P-DUORAM performs
+slightly better than the 3-party version because it does not
+need to run REFRESHBLINDS. To illustrate and highlight
+the low bandwidth requirements of DUORAM, we reduced
+the bandwidth capacity to as low as 1 Mbit per second and
+set the latency to 100 ms. Even under these extreme network
+settings, the performance of DUORAM does not suffer much.
+For example, while 2P-DUORAM took about 10 seconds to do
+one read operation (including preprocessing and online time)
+on a database of 220 items, FLORAM took over 1.5 hours. For
+225 items, DUORAM took about 30 seconds, while FLORAM
+did not ﬁnish running after more than 10 hours. Table 4 in the
+extended version of this paper [28, App.E] gives the detailed
+results of this experiment.
+6.2.2
+Internet vs. Local Network Conditions
+In this section, we perform a head-to-head comparison of
+3P-Circuit ORAM and FLORAM with DUORAM for different
+network conditions. Figure 9 compares DUORAM against
+3P-Circuit ORAM and FLORAM for (i) 100 Mbit/s bandwidth
+and a latency of 30 ms, and (ii) 100 Gbit/s bandwidth, and
+no additional latency set (we measure a 30 µs latency). The
+former is our standard realistic Internet setting, while the lat-
+ter is intended to model the parties being colocated in the
+same datacentre, if not the same rack. The latter setting is
+the least favorable for DUORAM, as DUORAM optimizes the
+parameters (round complexity and bandwidth) that are not rel-
+evant for colocated servers; in particular, whereas DUORAM
+requires only two sequential messages per READ operation,
+we ﬁnd that Jarecki and Wei’s 3P-Circuit ORAM needs about
+10lgn+42, which is in the hundreds for these database sizes.
+We observe that to do 128 READ operations in the colocated
+setting, 3P-DUORAM performs better than 3P-Circuit ORAM
+USENIX Association
+32nd USENIX Security Symposium    3919
+
+216 218 220 222 224 226 228 230 232
+10−1
+100
+101
+102
+103
+104
+DB Size (# of 64-bit words)
+Wall clock time (s)
+Rate=100 Mbit/s, Latency = 30ms
+216 218 220 222 224 226 228 230 232
+10−1
+100
+101
+102
+103
+104
+DB Size (# of 64-bit words)
+Rate=100 Gbit/s, Latency = 30µs
+216 218 220 222 224 226 228 230 232
+22
+28
+214
+220
+226
+DB Size (# of 64-bit words)
+Bandwidth (KiB)
+Bandwidth Consumption
+FLORAM
+Circuit ORAM (Total)
+Circuit ORAM (Online)
+3P-DUORAM (Total)
+3P-DUORAM (Online)
+Figure 9: Comparing DUORAM with 3P-Circuit ORAM and FLORAM to do 128 read operations for database sizes between 216
+and 232 for two different network settings: 100 Mbit/s bandwidth and a latency of 30 ms, and 100 Gbit/s bandwidth and a latency
+of 30 µs. The y-axis in all three plots is log-scaled.
+4
+8
+16
+32
+0
+50
+100
+150
+200
+Number of Cores
+Wall clock time (s)
+DB Size (# of 64-bit words) = 216
+4
+8
+16
+32
+0
+50
+100
+150
+200
+250
+300
+Number of Cores
+DB Size (# of 64-bit words) = 220
+4
+8
+16
+32
+0
+1500
+3000
+4500
+Number of Cores
+DB Size (# of 64-bit words) = 226
+FLORAM
+2P-DUORAM
+3P-DUORAM
+Figure 10: Comparing the performance of DUORAM and FLORAM to do 128 read operations by varying the number of cores
+being used for various database sizes. (The error bars are too small and thus not visible.)
+until the number of items is 224; after that, Circuit ORAM
+takes over. When we compare against FLORAM, the crossover
+over point is 220 for total cost and 226 for online cost. Recall
+also that READ operations are the best workload for FLO-
+RAM, since it needs to do only one refresh operation (in the
+initialization).
+For the non-colocated network setting, we observe that 3P-
+DUORAM consistently performs better than FLORAM until
+the database size of nearly 232 items. When we compare
+DUORAM with 3P-Circuit ORAM, we observe that some-
+where between database sizes of 228 and 230 (for total time),
+or between 230 and 232 (for online time), 3P-Circuit ORAM
+starts performing better than DUORAM. Recall from Table 1
+that Jarecki and Wei’s protocol has a O(lg3 n) computation
+cost. At these sizes, the linear computation cost of DUORAM
+starts dominating its low roundtrip cost.
+While comparing bandwidth consumption, we observe in
+Figure 9 that, to do 128 dependent reads, the bandwidth con-
+sumption of 3P-Circuit ORAM and FLORAM are far higher
+than DUORAM (note the log scale). Also, observe that the
+bandwidth consumption of 3P-Circuit ORAM is higher than
+FLORAM until the database size of 224. After that, FLORAM’s
+bandwidth consumption overtakes 3P-Circuit ORAM. FLO-
+RAM’s high bandwidth cost comes mainly from its refresh
+operation, which takes O(n) bandwidth.
+6.2.3
+Scaling DUORAM
+In the following experiments, we examine how DUORAM
+scales as we increase the number of cores. Like in the pre-
+vious experiments, we set to use the network parameters as
+30 ms of latency and 100 Mbit/s bandwidth. Figure 10 shows
+how the performance of DUORAM and FLORAM vary as we
+increase the number of cores. This section omits a compari-
+son with 3P-Circuit ORAM since their implementation does
+not support multithreading. We observe that, as we increase
+the number of cores, 2P-DUORAM sees a signiﬁcant improve-
+ment in performance, while the same improvement is not
+observed in FLORAM’s performance. This is because the
+bottlenecks for FLORAM and DUORAM are different. Band-
+width is the bottleneck for FLORAM; thus, increasing the
+parallelism does not affect FLORAM’s performance in the
+restricted bandwidth setting. The upshot of this ﬁnding is
+that it is much more expensive to scale the performance of
+FLORAM as compared to DUORAM, as buying extra band-
+width is more expensive. For instance, the current rates9 for
+a long-term Amazon EC2 instance: $0.0195/CPU-hour and
+$0.09/GB of outbound trafﬁc.10 Table 3 compares the cost
+in USD to do ORAM operations in DUORAM and FLORAM.
+9https://aws.amazon.com/ec2/pricing/on-demand/
+10These are the same values used by SPRIAL [23] for their dollar costs.
+3920    32nd USENIX Security Symposium
+USENIX Association
+
+Table 3: Comparing monetary costs of DUORAM and FLORAM while setting the throughput to be 100 Mbit/s, and latency to
+30 ms for 128 read operations on a database of size 220.
+2P-DUORAM
+3P-DUORAM
+FLORAM
+operation
+CPU Cost
+Bandwidth Cost
+CPU Cost
+Bandwidth Cost
+CPU Cost
+Bandwidth Cost
+128 Reads
+µ$3800
+µ$1200
+µ$3000
+µ$5
+µ$6400
+µ$20000
+128 Writes
+µ$5100
+µ$5
+µ$4700
+µ$5
+µ$8000
+µ$20000
+128 Interleaved
+µ$8900
+µ$1200
+µ$7700
+µ$5
+µ$13000
+µ$38000
+All the costs in costs in Table 3 in micro-dollars, denoted as
+µ$ (1 micro-dollar = 10−6 USD).
+7
+Related Work
+In this section, we brieﬂy survey some related work from
+the ORAM and DORAM literature. Goldreich and Ostro-
+vsky [14] ﬁrst introduced ORAM in a general client-server
+context and proposed the classic “square-root ORAM” pro-
+tocol, so called because it introduces overhead square root
+in the database size. The ORAM problem they considered
+involves a client who wishes to perform some computation
+over a memory of size n held by an untrusted server, while
+hiding its access patterns to the memory. Over the subsequent
+two decades, many works [2,6,7,15,16,20,25,26,31,32] ad-
+dressed the same basic problem but with progressively lower
+communication overhead between the client and the server.
+Beyond the original client-server model, ORAM can be
+useful in the context of secure computation. In such a setting,
+the client operations are implemented as a circuit. Wang,
+Chan, and Shi’s work [30] introduced a tree-based ORAM
+that optimizes the circuit size. Gentry, Goldman, Halevi, Julia,
+Raykova, and Wichs [11] improve upon the Tree ORAM [25].
+There have been other notable works using Tree ORAM. For
+example, Gordon, Katz, and Wang [17] in 2018 presented a
+2-server ORAM combining Tree ORAM with an extension of
+a 2-server PIR protocol. There have been other notable works
+in this direction. Jarecki and Wei [19] present a 3-party MPC
+ORAM. Faber, Jarecki, Kentros, and Wei [10] show a 3-party
+secure computation ORAM that is a variant of the binary tree
+ORAM by Shi et al. [25]. Zahur, Wang, Raykova, Gascon,
+Doerner, Evans, and Katz [33] revisited square-root ORAM.
+Their work showed that relaxing the asymptotic bounds of
+access complexity would produce smaller circuits. They pro-
+posed an ORAM scheme with cost O(
+q
+n(lgn)3) that yields
+signiﬁcant improvements over any of the tree-based ORAM
+schemes in practice. The FLORAM work by Doerner and
+shelat [8], which we discussed in this paper and is the closest
+to our work, took it a step further and presented an ORAM
+scheme with O(n) local computation while improving upon
+square-root ORAM in practice. Three-party DPF-based DO-
+RAM schemes have also been studied by Bunn, Katz, Kushile-
+vitz, and Ostrovsky [5]. However, they use 3-party DPFs that
+have size O(√n). Hamlin and Varia [18] present a 2-server
+DORAM for secure computation that achieves both constant
+round communication and sub-linear work. However, unlike
+DUORAM, their work has a O(√n·lgn) bandwidth cost. Sub-
+logarithmic DORAM has also been studied by Kushilevitz
+and Mour [21]. Their three-party protocol requires memory
+to be laid out in a complicated data structure, which is dif-
+ferent from DUORAM, where the memory is laid out in an
+array. They also present a four-server ORAM protocol whose
+memory layout is as simple as the one DUORAM uses.
+8
+Conclusion
+In this paper, we presented 2-party and 3-party variants of
+DUORAM, a Distributed ORAM protocol. One of the crucial
+improvements that DUORAM offers compared to previous
+work like FLORAM is that it uses much less bandwidth and
+communication rounds, and so is much less sensitive to net-
+work bandwidth and latency. Two key innovations that enable
+this are our novel constructions for (i) evaluating dot products
+of certain secret-shared vectors using communication that
+is only logarithmic in the vector length, and (ii) generating
+distributed point functions (and CSPIR queries) in a prepro-
+cessing phase, before the target point or message is known,
+both of which vastly reduce the online cost of the protocol.
+Acknowledgements
+We thank the anonymous reviewers and shepherd for their
+helpful comments in improving this paper. This research
+was undertaken, in part, thanks to funding from the Canada
+Research Chairs program, Cisco Research, and an NSERC
+Discovery Grant. This work beneﬁted from the use of the
+CrySP RIPPLE Facility at the University of Waterloo.
+References
+[1] Donald Beaver. Efﬁcient Multiparty Protocols Using
+Circuit Randomization. In CRYPTO, pages 420–432,
+1991.
+USENIX Association
+32nd USENIX Security Symposium    3921
+
+[2] Dan Boneh, David Mazieres, and Raluca Popa. Remote
+Oblivious Storage: Making Oblivious RAM Practical.
+Technical report, MIT, 2011. https://dspace.mit.
+edu/handle/1721.1/62006.
+[3] Elette Boyle, Niv Gilboa, and Yuval Ishai. Function Se-
+cret Sharing. In Advances in Cryptology - EUROCRYPT
+2015, pages 337–367, 2015.
+[4] Elette Boyle, Niv Gilboa, and Yuval Ishai. Function
+secret sharing: Improvements and extensions. In CCS,
+pages 1292–1303, 2016.
+[5] Paul Bunn, Jonathan Katz, Eyal Kushilevitz, and Rafail
+Ostrovsky. Efﬁcient 3-Party Distributed ORAM. In
+Security and Cryptography for Networks, pages 215–
+232, 2020.
+[6] Kai-Min Chung, Zhenming Liu, and Rafael Pass.
+Statistically-secure ORAM with O((logn)2) Overhead.
+In Asiacrypt, pages 62–81, 2014.
+[7] Ivan Damgård, Sigurd Meldgaard, and Jesper Buus
+Nielsen.
+Perfectly Secure Oblivious RAM without
+Random Oracles. In TCC, 2011.
+[8] Jack Doerner and Abhi Shelat.
+Scaling ORAM for
+Secure Computation. In CCS, pages 523–535. ACM,
+2017.
+[9] Wenliang Du and Mikhail J. Atallah. Protocols for Se-
+cure Remote Database Access with Approximate Match-
+ing.
+In E-Commerce Security and Privacy (Part II),
+Advances in Information Security, Feb 2001.
+[10] Sky Faber, Stanislaw Jarecki, Sotirios Kentros, and
+Boyang Wei.
+Three-Party ORAM for Secure Com-
+putation. In ASIACRYPT 2015, pages 360–385, Berlin,
+Heidelberg, 2015. Springer-Verlag.
+[11] Craig Gentry, Kenny Goldman, Shai Halevi, Charanjit
+Julta, Mariana Raykova, and Daniel Wichs. Optimizing
+ORAM and Using it Efﬁciently for Secure Computation.
+In Privacy Enhancing Technologies Symposium, pages
+1–18, 2013.
+[12] Niv Gilboa and Yuval Ishai. Distributed Point Functions
+and Their Applications. In Advances in Cryptology -
+EUROCRYPT 2014, pages 640–658, 2014.
+[13] Oded Goldreich, ShaﬁGoldwasser, and Silvio Micali.
+How to Construct Random Functions.
+J.
+ACM,
+33(4):792–807, 1986.
+[14] Oded Goldreich and Rafail Ostrovsky. Software Pro-
+tection and Simulation on Oblivious RAMs. J. ACM,
+43(3):431–473, 1996.
+[15] Michael T.
+Goodrich and Michael Mitzenmacher.
+MapReduce Parallel Cuckoo Hashing and Oblivious
+RAM Simulations. CoRR, abs/1007.1259, 2010. http:
+//arxiv.org/abs/1007.1259.
+[16] Michael T. Goodrich, Michael Mitzenmacher, Olga
+Ohrimenko, and Roberto Tamassia.
+Oblivious Ram
+Simulation with Efﬁcient Worst-Case Access Overhead.
+In ACM Cloud Computing Security Workshop, pages
+95–100, 2011.
+[17] S. Dov Gordon, Xiao Wang, and Jonathan Katz. Simple
+and Efﬁcient Two-Server ORAM. In Asiacrypt, pages
+141–157, 2018.
+[18] Ariel Hamlin and Mayank Varia.
+Two-server Dis-
+tributed ORAM with Sublinear Computation and Con-
+stant rounds. In PKC, pages 499–527, 2021.
+[19] Stanislaw Jarecki and Boyang Wei. 3PC ORAM with
+Low Latency, Low Bandwidth, and Fast Batch Retrieval.
+In Applied Cryptography and Network Security, pages
+360–378, 2018.
+[20] Eyal Kushilevitz, Steve Lu, and Rafail Ostrovsky. On
+the (in)Security of Hash-Based Oblivious RAM and a
+New Balancing Scheme.
+In SODA, pages 143–156,
+2012.
+[21] Eyal Kushilevitz and Tamer Mour.
+Sub-logarithmic
+Distributed Oblivious RAM with Small Block Size. In
+PKC, pages 3–33, 2019.
+[22] Steve Lu and Rafail Ostrovsky. Distributed Oblivious
+RAM for Secure Two-Party Computation. In Theory of
+Cryptography, pages 377–396, 2013.
+[23] Samir Jordan Menon and David J. Wu. Spiral: Fast,
+High-Rate Single-Server PIR via FHE Composition. In
+IEEE Symposium on Security and Privacy (SP), pages
+930–947, 2022.
+[24] Moni Naor and Benny Pinkas. Oblivious Transfer and
+Polynomial Evaluation. In STOC, pages 245–254, 1999.
+[25] Elaine Shi, T.-H. Hubert Chan, Emil Stefanov, and
+Mingfei Li. Oblivious RAM with O((logn)3) Worst-
+Case Cost. In Asiacrypt, pages 197–214, 2011.
+[26] Emil Stefanov, Marten Van Dijk, Elaine Shi, T.-H. Hu-
+bert Chan, Christopher Fletcher, Ling Ren, Xiangyao
+Yu, and Srinivas Devadas. Path ORAM: An Extremely
+Simple Oblivious RAM Protocol. J. ACM, 65(4), 2018.
+[27] Adithya Vadapalli, Fattaneh Bayatbabolghani, and Ryan
+Henry. You May Also Like... Privacy: Recommenda-
+tion Systems Meet PIR. Proc. Priv. Enhancing Technol.,
+2021(4):30–53, 2021.
+3922    32nd USENIX Security Symposium
+USENIX Association
+
+[28] Adithya Vadapalli, Ryan Henry, and Ian Goldberg. Duo-
+ram: A Bandwidth-Efﬁcient Distributed ORAM for
+2- and 3-Party Computation. https://eprint.iacr.
+org/2022/1747, 2023.
+[29] Adithya Vadapalli, Kyle Storrier, and Ryan Henry.
+Sabre: Sender-Anonymous Messaging with Fast Au-
+dits. In IEEE Symposium on Security and Privacy (SP),
+pages 1953–1970, 2022.
+[30] Xiao Wang, Hubert Chan, and Elaine Shi.
+Circuit
+ORAM:
+On Tightness of the Goldreich-Ostrovsky
+Lower Bound. In CCS, pages 850–861, 2015.
+[31] Peter Williams and Radu Sion. Usable PIR. In NDSS,
+2008.
+[32] Peter Williams, Radu Sion, and Bogdan Carbunar.
+Building Castles out of Mud: Practical Access Pattern
+Privacy and Correctness on Untrusted Storage. In CCS,
+pages 139–148, 2008.
+[33] Samee Zahur, Xiao Wang, Mariana Raykova, Adrià
+Gascón, Jack Doerner, David Evans, and Jonathan Katz.
+Revisiting Square-Root ORAM: Efﬁcient Random Ac-
+cess in Multi-party Computation. In IEEE Symposium
+on Security and Privacy, pages 218–234, 2016.
+A
+Generating AND and Dot-Product Triples
+This section presents two methods to generate the multipli-
+cation triples that were discussed in Section 2.2.1. We use
+XOR-shared AND triples in the 2-party and 3-party READ
+and UPDATE preprocessing protocols.
+Using a third party.
+Here, a stateless third party (which
+does not collude with either other party) samples the 5-
+tuple (X0,X1,Y0,Y1,T) uniformly and sends the AND triples
+(X0,Y0,(X0 ∧Y1) ⊕T) and (X1,Y1,(X1 ∧Y0) ⊕T) to P0 and
+P1 respectively. This process of generating AND triples using
+a noncolluding third party results in a protocol called the Du–
+Atallah protocol [9]. Du–Atallah’s multiplication protocol
+is a variant of the more celebrated Beaver triples protocol,
+where we replace the OT with a third party.
+Using Oblivious Transfer.
+The Du–Atallah triples used
+in MPC bitwise multiplication can be generated without the
+third party by using Oblivious Transfer with the following
+protocol:
+1. P0 picks (X0,Y0) at random from {0,1}w and P1 picks
+(X1,Y1) at random from {0,1}w.
+2. P0 and P1 pick random words T0 ∈{0,1}w and T1 ∈
+{0,1}w respectively. Let T = T0 ⊕T1.
+3. P0 acts as the sender in w parallel 1-of-2 oblivious trans-
+fers with the ith bits of (T0,X0 ⊕T0) as the input. P1
+uses the bits of Y1 as the selection bits. Therefore, P1
+learns (X0 ∧Y1)⊕T0 and computes (X0 ∧Y1)⊕T0 ⊕T1 =
+(X0 ∧Y1)⊕T.
+4. In parallel, P1 acts as a sender with the words (T1,X1 ⊕
+T1), and P0 uses Y0 as the selection word, so P0 learns
+(X1 ∧Y0)⊕T1 and computes (X1 ∧Y0)⊕T1 ⊕T0 = (X1 ∧
+Y0)⊕T.
+B
+Proofs of DUORAM Operations
+This section presents the correctness proofs of various DUO-
+RAM protocols. We will begin this section by proving the
+correctness of the READ protocol.
+Proof of Lemma 1.
+read0 +read1 = ⟨D0 + eD1,t
+(1)
+0 ⟩−⟨ζ0,t
+(3)
+0 −t
+(1)
+0 ⟩+γ0
++⟨D1 + eD0,t
+(1)
+1 ⟩−⟨ζ1,t
+(2)
+1 −t
+(1)
+1 ⟩+γ1
+= ⟨D0 +(D1 +ζ1),t
+(1)
+0 ⟩−⟨ζ0,t
+(3)
+0 −t
+(1)
+0 ⟩+γ0
++⟨D1 +(D0 +ζ0),t
+(1)
+1 ⟩−⟨ζ1,t
+(2)
+1 −t
+(1)
+1 ⟩+γ1
+= ⟨D,t
+(1)
+0 ⟩+⟨ζ1,t
+(1)
+0 ⟩−⟨ζ0,(t
+(3)
+0 −t
+(1)
+0 )⟩+γ0
++⟨D,t
+(1)
+1 ⟩+⟨ζ0,t
+(1)
+1 ⟩−⟨ζ1,(t
+(2)
+1 −t
+(1)
+1 )⟩+γ1
+= ⟨D,ei∗⟩+⟨ζ1,ei∗⟩+⟨ζ0,ei∗⟩
+−⟨ζ0,t
+(3)
+0 ⟩−⟨ζ1,t
+(2)
+1 ⟩+γ0 +γ1
+= ⟨D,ei∗⟩+⟨ζ1,ei∗⟩+⟨ζ0,ei∗⟩
+−⟨ζ0,t
+(3)
+0 ⟩−⟨ζ1,t
+(2)
+1 ⟩−⟨ζ0,t
+(3)
+1 ⟩−⟨ζ1,t
+(2)
+0 ⟩
+= ⟨D,ei∗⟩+⟨ζ1,ei∗⟩+⟨ζ0,ei∗⟩−⟨ζ1,ei∗⟩−⟨ζ0,ei∗⟩
+= ⟨D,ei∗⟩
+Next, we will prove the correctness of the REFRESH-
+BLINDS protocol.
+Proof of Lemma 3.
+eD′
+0 = f
+D0 +v
+(2)
+1 −v
+(1)
+1
+= (D0 +ζ0)+v
+(2)
+1 −v
+(1)
+1
+= (D0 +ζ0)+(M·ei∗−v
+(2)
+0 )−(M·ei∗−v
+(1)
+0 )
+= (D0 +v
+(1)
+0 )+(ζ0 −v
+(2)
+0 )
+= (D′
+0 +ζ′
+0)
+and similarly for eD′
+1.
+Finally, we will prove the correctness of the 2P-DUORAM
+READ protocol.
+USENIX Association
+32nd USENIX Security Symposium    3923
+
+Proof of Lemma 4.
+read0 +read1 = c0 −r0 +c1 −r1
+= D1[i∗]+r1 −r0 +D0[i∗]+r0 −r1
+= D1[i∗]+D0[i∗]
+= D[ i∗]
+C
+DPF Generation Algorithm
+The following protocol is the DPF generation presented in
+the FLORAM paper by Doerner and shelat [8]. Suppose that
+we want to create DPF at the target location, i∗. Represent
+i∗as a binary bit vector ⃗i∗. The parties P0 and P1 start
+with XOR shares ⃗i∗
+0 and ⃗i∗
+1 of ⃗i∗, and create random seeds
+v
+( )
+0 ∈{0,1}λ and v
+( )
+1 ∈{0,1}λ respectively to use as the roots
+of binary trees. They use a length-doubling PRG to construct
+the remainder of the trees, as outlined below. We denote by
+vb,ℓthe nodes at level ℓ, and by tb,ℓthe ﬂags at level ℓ, both in
+the tree share held by Pb. We ﬁrst set the least signiﬁcant bit
+(lsb) of Pb’s root as b; i.e. set lsb(v
+( )
+0 ) ←0 and lsb(v
+( )
+1 ) ←1.
+Set t0,0[0] ←lsb(v
+( )
+0 ) and t1,0[0] ←lsb(v
+( )
+1 ).
+For each layer ℓstarting at the root with ℓ= 0:
+1. For b ∈{0,1}, Pb uses the PRG to construct the labels on
+the children of each node in this level. The left and right
+children of node i at this layer are denoted as (v
+(i∥L)
+b,ℓ,v
+(i∥R)
+b,ℓ).
+Therefore, we have vb,ℓ+1[2·i] = v
+(i∥L)
+b,ℓand vb,ℓ+1[2·i +
+1] = v
+(i∥R)
+b,ℓ.
+2. For b ∈{0,1}, Pb computes Lb ←L2ℓ−1
+j=0 v
+(j∥L)
+b,ℓand Rb ←
+L2ℓ−1
+j=0 v
+(j∥R)
+b,ℓ.
+3. P0
+and P1
+use an MPC AND protocol (using
+the
+AND
+triple
+generation
+described
+in
+Ap-
+pendix
+A)
+to
+compute
+the
+correction
+word
+cw
+(ℓ+1)
+←
+
+⃗i∗
+0[ℓ]⊕⃗i∗
+1[ℓ]
+
+∧(L0 ⊕L1)
+
+⊕
+
+1⊕⃗i∗
+0[ℓ]⊕⃗i∗
+1[ℓ]
+
+∧(R0 ⊕R1)
+
+.
+4. Pb computes cwtb
+L ←lsb(Lb) ⊕⃗i∗
+b[ℓ] and cwtb
+R ←
+lsb(Rb) ⊕⃗i∗
+b[ℓ], and exchanges those values with the
+other party; the parties then both compute cwtL ←
+cwt0
+L ⊕cwt1
+L ⊕1 and cwtR ←cwt0
+R ⊕cwt1
+R.
+5. Pb computes tb,ℓ+1[2 · i] ←lsb(vb,ℓ+1[2 · i]) ⊕(tb,ℓ[i] ·
+cwtL) and tb,ℓ+1[2 · i + 1] ←lsb(vb,ℓ+1[2 · i + 1]) ⊕
+(tb,ℓ[i]· cwtR), for all i ∈[0,2ℓ).
+6. Pb updates vb,ℓ+1[2·i] ←vb,ℓ+1[2·i]⊕(tb,ℓ[i]·cw
+(ℓ+1))
+and vb,ℓ+1[2·i+1] ←vb,ℓ+1[2·i+1]⊕(tb,ℓ[i]·cw
+(ℓ+1)),
+for all i ∈[0,2ℓ).
+D
+Converting an XOR-shared standard basis
+vector to additive shares
+In this section, we elaborate upon the informal description
+of the share conversion algorithm described in Section 4.1.1.
+Recall that P0 and P1 hold DPFs without the ﬁnal correction
+word; that is, P0 holds (v0,˚t0,F0) and P1 holds (v1,˚t1,F1)
+such that ˚t0 ⊕˚t1 = eri and v0 +v1 = −(F0 +F1)·eri. Their
+goal is to end up with vectors t0 and t1 such that t0 +t1 = eri.
+An important point to note is that, in this case, ˚tb and the pair
+(vb,Fb) are not of the same DPF (but have the same target
+index). In other words, we use an additional DPF to perform
+the share conversion.
+1. P0 interprets its ﬂag vector as a word vector. P1 also
+interprets its ﬂag vector as a word vector and multiplies
+it by −1. In other words, P0 computes bt0[i] ←(˚t0[i])
+for all i, and P1 computesbt1[i] ←−(˚t1[i]) for all i.
+2. For b ∈{0,1}, Pb computes pmb ←∑ibtb[i].
+3. For b ∈{0,1}, Pb selects a random word rb to blind pmb,
+and the Pb exchange pmb +rb.
+4. For b ∈{0,1}, Pb updates bt′
+b ←btb · ((pm1−b + r1−b) +
+pmb +rb).
+5. The parties use MPC to compute shares eF0 and eF1 of
+(F0 +F1)·(pm0 +pm1).
+6. The parties then compute F ′
+0 ←eF0 +r0 and F ′
+1 ←eF1 +
+r1 respectively, and exchange them to reconstruct F ′ ←
+F ′
+0 +F ′
+1.
+7. For b ∈{0,1}, Pb updates tb ←bt′
+b −vb −(btb ·F ′).
+Lemma 5. After running the above protocol, t0 +t1 = ˚t0 ⊕
+˚t1 = eri.
+Proof. Denote pm = pm0 +pm1. First observe that bt0[i]+
+bt1[i] = 0 for i ̸= ri, so pm = bt0[ri] +bt1[ri] = ˚t0[ri] −
+˚t1[ri], which is either +1 or −1, and so pm2 is always 1.
+Also note thatbt0 +bt1 = pm·eri.
+Let r = r0 +r1, F = F0 +F1, eF = eF0 + eF1.
+Then bt′
+b = btb · (pm + r),
+so bt′
+0 + bt′
+1 = (pm · eri) ·
+(pm + r) = eri · (1 + pm · r).
+Also eF = F · pm, and
+F ′ = eF + r = F · pm + r.
+Finally, recall that v0 +
+v1 = −F · eri, so that t0 + t1 = (bt′
+0 +bt′
+1) −(v0 + v1) −
+(bt0 + bt1) · F ′ = eri ·
+ (1+pm·r)+F −pm·F ′
+= eri ·
+((1+pm·r)+F −pm·(F ·pm+r)) = eri.
+3924    32nd USENIX Security Symposium
+USENIX Association
+

@@ -1,0 +1,1993 @@
+Security Analysis of the WhatsApp
+End-to-End Encrypted Backup Protocol
+Gareth T. Davies1, Sebastian Faller2,3(B), Kai Gellert1, Tobias Handirk1(B),
+Julia Hesse2, M´at´e Horv´ath1, and Tibor Jager1
+1 Bergische Universit¨at Wuppertal, Wuppertal, Germany
+davies@uni-wuppertal.de , tobias.handirk@uni-wuppertal.de
+2 IBM Research Europe – Zurich, R¨uschlikon, Switzerland
+3 ETH Zurich, Z¨urich, Switzerland
+sebastian.faller@ibm.com
+Abstract. WhatsApp is an end-to-end encrypted (E2EE) messaging
+service used by billions of people. In late 2021, WhatsApp rolled out
+a new protocol for backing up chat histories. The E2EE WhatsApp
+backup protocol (WBP) allows users to recover their chat history from
+passwords, leaving WhatsApp oblivious of the actual encryption keys.
+The WBP builds upon the OPAQUE framework for password-based key
+exchange, which is currently undergoing standardization.
+While considerable eﬀorts have gone into the design and auditing of
+the WBP, the complexity of the protocol’s design and shortcomings in
+the existing security analyses of its building blocks make it hard to under-
+stand the actual security guarantees that the WBP provides.
+In this work, we provide the ﬁrst formal security analysis of the WBP.
+Our analysis in the universal composability (UC) framework conﬁrms
+that the WBP provides strong protection of users’ chat history and pass-
+words. It also shows that a corrupted server can under certain conditions
+make more password guesses than what previous analysis suggests.
+1
+Introduction
+WhatsApp is the most popular instant messaging app in the world with over 100
+billion messages sent per day, containing personal and business communications.
+WhatsApp provides end-to-end encrypted (E2EE) communications [32], where
+no party but sender and receiver should be able to read (or modify) messages.
+This speciﬁcally prevents the WhatsApp service provider from breaking security
+guarantees such as conﬁdentiality if the service gets compromised. E2EE is con-
+sidered a default standard for modern secure messaging protocols, and several
+Gareth T. Davies, Tobias Handirk, and Tibor Jager have been supported by the Euro-
+pean Research Council (ERC) under the European Union’s Horizon 2020 research and
+innovation programme, grant agreement 802823. Julia Hesse was supported by the
+Swiss National Science Foundation (SNSF) under the AMBIZIONE grant “Crypto-
+graphic Protocols for Human Authentication and the IoT”. M´at´e Horv´ath has been
+supported by the German Research Foundation (DFG), project JA2445/6-1.
+c
+⃝International Association for Cryptologic Research 2023
+H. Handschuh and A. Lysyanskaya (Eds.): CRYPTO 2023, LNCS 14084, pp. 330–361, 2023.
+https://doi.org/10.1007/978-3-031-38551-3_11
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+331
+formal analyses of the E2EE messaging protocol used by WhatsApp and other
+messaging apps such as Signal exist [2,4,5,10,13,14,24,29,30].
+Bypassing E2EE via Backups. Protecting the transmission of conﬁdential data
+is necessary to enable secure messaging, however, it is not suﬃcient. WhatsApp
+clients can back up the user’s chat history so that they can recover it if the
+device is lost, for example by theft or switching to a new phone. Naturally, the
+backup mechanism must oﬀer strong protection as well, so as not to undermine
+the security of the E2EE messaging protocol.
+Before the end of 2021, whenever a user1 initiated the procedure for backing
+up their messages (to be stored on iCloud or Google Drive), they would encrypt
+these messages using a key that was known to WhatsApp. While this simple
+approach allowed WhatsApp to return the backup encryption key to the user
+if the original device were to be lost, it allowed access to backed up messages
+beyond the control of the user. For example, by US law, federal governments
+could have forced WhatsApp to reveal the backup key (and the storage provider
+to reveal the encrypted contents) through a court order, and the previously well
+protected private communication suddenly becomes evidence in a lawsuit [27].
+More generally, the fact that the E2EE security can be circumvented by accessing
+the backups harbors a great potential for abuse, for instance by malfeasant
+governments, malicious employees, or in case of a compromise of both the storage
+provider’s servers and WhatsApp’s servers.
+WhatsApp E2EE Backups. In late 2021, WhatsApp rolled out an improved pro-
+tocol for protecting backups [31], with the aim to extend the E2EE security
+guarantees in a user-friendly way that enables users to restore their backup
+keys from a password in case a device is lost. By early 2023, over 100 million
+WhatsApp users have already switched to this option [12]. The underlying proto-
+col, which we call the WhatsApp backup protocol (WBP) in this work, makes use
+of hardware security modules (HSMs). Intuitively, an HSM can be programmed
+once with code and then “locked” in such a way that it is infeasible to change its
+code afterwards. This enables even the protection of a protocol against corrup-
+tion of the party running the HSM (here, the WhatsApp servers). The challenge
+now lies in designing the code run by the HSM in such a way that (1) users
+can retrieve their backup keys from a password, but (2) WhatsApp servers not
+knowing the user password cannot retrieve the backup key.
+The core idea of the WBP is to outsource all cryptographic computations
+to the client and the HSM, while the WhatsApp “main server” essentially only
+relays messages (with some minor modiﬁcations) between client and HSM. The
+protocol is designed such that during the initialization phase2 both client and
+HSM enter a secret value (a password pw for the client, and a “per-client-secret”3
+for the HSM). Furthermore, the client chooses a symmetric backup key K and
+the HSM receives an encrypted version of the key, without either of them learning
+1 In this paper we will refer to the people using a device that runs the WhatsApp
+client software as users, to the device as a client, and to the servers that provide the
+WhatsApp chat and backup service as servers.
+2 Note that WhatsApp refer to this phase as registration.
+3 It is actually a “per-backup-secret”, which is determined during initialization. If a
+client were to re-register, a new “per-backup-secret” would be chosen.
+
+332
+G. T. Davies et al.
+the secret input of the counterparty. The client uses the backup key K to encrypt
+the backup data. If a user loses their device, they can initiate a recovery protocol
+from a new client device. To this end, the new client and the WhatsApp “main
+server” (which, again, relays messages to the HSM) execute a protocol where the
+client recovers the backup key, with the password pw used during initialization
+and the HSM contributing the same per-client-secret as during initialization.
+The password-based nature of the WBP introduces several technical chal-
+lenges. Firstly, being password-based while aiming at keeping the stored key from
+a potentially compromised WhatsApp server implies that the protocol must not
+leak user passwords to the server. To this end, the WBP deploys OPAQUE [23],
+an asymmetric password-based key exchange protocol (aPAKE) [19] that allows
+a key exchange from a password without disclosing the password itself to the
+server. Another essential feature the WBP aims to provide is security against
+password guessing attacks, where a malicious client repeatedly executes the
+recovery protocol with password guesses pw′. If the password guess pw′ equals
+the password pw used during initialization, an adversary would gain access to
+the secret backup key. Note that this attack is especially eﬀective if the user
+password only has low entropy, which is often the case for human-memorable
+passwords in practice. The deployed protocol limits the number of admissible
+incorrect guesses to ten [18,31], after which the HSM destroys the encrypted
+version of the backup key (and thus makes the backup irrecoverable). This guar-
+antee should even hold if the WhatsApp server were to be compromised.
+Contributions. The WBP protocol is a widely-used real-world cryptographic pro-
+tocol that addresses the fundamental problem of recovering data from encrypted
+backups based on human-memorizable secrets. It aims to provide strong security
+properties that match the E2EE-security of the messaging protocol, even against
+a corrupted service provider. This work presents the ﬁrst rigorous security anal-
+ysis of the WBP. Concretely, our results can be summarized as follows.
+– We formalize the security properties expected from the WBP protocol in
+terms of a password-protected key retrieval (PPKR) scheme, where users store
+cryptographic keys on an untrusted server, retrievable with a password. This
+formalization serves as a foundation for our work, and may also support
+future analyses of alternative (potentially non-HSM-based) PPKR protocols
+and their comparison.
+– We provide a full description of the cryptographic core of the WBP proto-
+col. This description is based on a whitepaper published by WhatsApp [31],
+a public security assessment of the backup system conducted by the NCC
+Group [18], and personal correspondence with the WBP designers [1] to ﬁll
+subtle but essential technical gaps left in the protocol descriptions of [18,31].
+– We present the ﬁrst formal security analysis of the WBP protocol. Our anal-
+ysis is conducted in the universal composability (UC) framework [9], which
+is simulation-based and therefore facilitates the consideration of low-entropy
+passwords. We formally conﬁrm several prior statements about the security
+guarantees of the WBP.
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+333
+– We describe how a corrupted server could get more than ten password guesses
+per encrypted backup, even though prior security analysis [18] claimed that
+after ten incorrect tries the account is irremediably locked by the HSM soft-
+ware, and the backup data cannot be retrieved in plaintext. Concretely, we
+show that a corrupted server can get ten password guesses per backup ini-
+tialization. For example, a corrupted server could suppress protocol mes-
+sages to simulate a failed initialization, such that either the WhatsApp client
+app retries sending of initialization messages automatically, or the user re-
+initializes a backup manually, in order to increase the number of password
+guesses against the HSM.
+– We give a formal analysis of the 2HashDH oblivious pseudorandom func-
+tion [21] (that is used in OPAQUE) in the multi-key setting, where the
+domains of the two hash functions used as a building block are not assumed
+to be separated for diﬀerent keys. For our work, this result is required
+since the WBP does not apply hash domain separation. Beyond that, our
+ﬁndings provide the basis for analyzing the about-to-be-standardized version
+of OPAQUE [6]4 and the 2HashDH protocol currently in last call at the
+IRTF [16] even under the usage of multiple OPRF keys.
+Paper Organization.
+The remainder of this work is structured as follows.
+Section 2 contains technical preliminaries and Sect. 3 provides a full protocol
+description of the WBP. We then describe our model for PPKR in Sect. 4 and
+give our formal result in Sect. 5 (the full proof can be found in the full ver-
+sion [17]). Our work concludes with a discussion in Sect. 6.
+Responsible Disclosure. The research conducted for this work did not impact the
+entire WhatsApp system or the privacy of WhatsApp users. In particular, there
+was no interaction with the WhatsApp servers, HSMs, or any WhatsApp users.
+The protocol description was written with the help of WhatsApp employees [1],
+and no reverse-engineering of any implemented code took place. The scenario in
+which a corrupt WhatsApp server can increase the number of password guesses
+against a user was never demonstrated in practice, but it was acknowledged by
+WhatsApp that this would indeed be possible. WhatsApp does not object to the
+publication of this paper.
+1.1
+Related Work
+Password-protected secret sharing (PPSS) [3,21] allows a user to share a secret
+value among a number of servers and later retrieve it using a partial set of the
+servers (in the event that one or more servers become compromised or unavail-
+able) if and only if the password used during retrieval is the same as the one
+4 The existing formal analysis of the OPAQUE protocol [23] assumes hash domain
+separation in 2HashDH and hence does not apply to the version of OPAQUE in the
+most recent Internet Draft [6].
+
+334
+G. T. Davies et al.
+used during the sharing step. This primitive has been analyzed in the UC frame-
+work [8,21], and several constructions based on oblivious pseudorandom func-
+tions (OPRF) exist (an overview can be found in [11]).
+The WhatsApp approach can be viewed as a one-out-of-one version of PPSS,
+where WhatsApp’s HSM is the only server. This makes comparisons with work on
+PPSS diﬃcult: we need to model corruption of the WhatsApp communication
+server (but not the HSM) and assess security in this context, something that
+prior models that do not split the server’s role cannot capture. Nonetheless, our
+formalization of PPKR in the UC model takes great inspiration from existing
+functionalities for PPSS [21].
+Beyond PPSS, there are several works that aim at bootstrapping encryption
+keys (or symmetric encryptions directly) from user passwords with the assistance
+of a server. Updatable oblivious key management [22] relies on server assistance
+to let a user derive ﬁle-speciﬁc encryption keys from a password, while requiring
+strong user authentication. The distributed password-authenticated symmetric
+encryption scheme DPaSE [15] aims for the same, while relying on the assistance
+of several servers but not requiring user authentication. Like the WBP, all the
+above schemes rely on OPRFs to shield passwords from curious servers, but none
+of them aims to provide a restriction in the number of guessing attempts after
+the compromise of the server, which the WBP aims for.
+Password-hardened encryption services [7,26] let users outsource the encryp-
+tion to a fully trusted frontend server. The protocols do not require OPRFs and
+can hence provide better throughput, at the cost of revealing the user’s password
+to the frontend server.
+2
+Preliminaries
+Notation. We denote the security parameter as λ. For any λ ∈N let 1λ be the
+unary representation of λ and let [ℓ] = {1, . . . , ℓ}. We write x
+$←−S to indicate
+that we choose an element x uniformly at random from set S. For a probabilistic
+polynomial-time algorithm A we deﬁne y
+$←−A(x1, . . . , xℓ) as the execution of A
+(with fresh random coins) on input x1, . . . , xℓand assigning the output to y.
+We use records of form ⟨x1, x2, x3⟩for bookkeeping in our formal arguments.
+For convenience, we introduce a notation that combines retrieval and assignment
+of such records, i.e., when retrieving ⟨value, ∗, ∗⟩, we retrieve a record that con-
+tains the value value in the ﬁrst ﬁeld and arbitrary values in the second and third
+ﬁeld (denoted by a wildcard symbol ∗). Additionally, we use brackets to indi-
+cate variable assignment after retrieval, i.e., when retrieving ⟨value, [x2], [x3]⟩, we
+retrieve the record holding the value value in its ﬁrst entry and assign the second
+and third entry to the variables x2 and x3, respectively.
+Cryptographic Building Blocks and Their Security. Due to the lack of space,
+we do not recap deﬁnitions of standard cryptographic building blocks and their
+security. We refer to the full version [17] for formal deﬁnitions.
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+335
+3
+E2EE Backups in WhatsApp
+In this section, we give a detailed description of the WBP. Our presentation is
+based on a whitepaper published by WhatsApp [31], a public security assessment
+of the backup system conducted by NCC Group [18], and personal correspon-
+dence with WhatsApp (Meta) staﬀ[1].
+We will start with a simpliﬁed explanation of the overall protocol layout in
+Sect. 3.1 to give a high-level overview of its main idea. Then, to prepare the
+detailed protocol description, we will discuss the creation of a communication
+channel between clients and the backup server via the WhatsApp client regis-
+tration protocol in Sect. 3.2. In Sect. 3.3, we elaborate on how WhatsApp uses
+HSMs; in Sect. 3.4, we outline how these HSMs outsource storage to servers that
+are considered untrusted. In Sect. 3.5, we then provide a detailed description of
+the actual WBP. We conclude with Sect. 3.6, where we describe how a mali-
+cious server can increase the admissible number of password guesses in certain
+settings.
+3.1
+High-Level Protocol Overview
+There are four entities in the system: the user, a WhatsApp client running on
+the user’s device, the WhatsApp server, and the HSM that only the WhatsApp
+server can communicate with. We will now focus on the latter three. In this
+high-level overview, we simplify by describing the WhatsApp server as merely
+relaying messages between the HSM and the client. In the actual WBP protocol
+it additionally authenticates clients and stores ﬁles encrypted by the HSM. As
+the encryption and outsourced storage of the data at a cloud provider is done
+using symmetric encryption, we focus on the initialization and recovery of the
+encryption key from a password.
+Initialization. When activating WhatsApp’s E2EE backups for the ﬁrst time,
+the client chooses a backup key K to encrypt the chat history and the WBP key
+initialization phase is executed (see Fig. 1). To this end, the client ﬁrst runs the
+OPAQUE protocol with the HSM, which takes a password pw from the client
+and a key KOPRF from the HSM as inputs. It then outputs a key Kexport to the
+client5 and the “envelope” env to the HSM. This envelope is encrypted under
+the key Kexport (which is derived using both pw and KOPRF) and contains freshly
+chosen key material of the client that is used during recovery to perform, e.g., a
+Diﬃe–Hellman key exchange, among other things.
+5 The option to derive this additional key was originally not part of OPAQUE [23].
+However, it exists in the OPAQUE Internet Draft version 03 [25], which is deployed
+by the WBP.
+
+336
+G. T. Davies et al.
+Client(pw, pkHSM)
+Server
+HSM(skHSM)
+OPAQUE
+Init
+pw
+KOPRF
+Kexport
+env
+KOPRF
+$←−{0, 1}λ
+K
+$←−{0, 1}λ
+e
+$←−Enc(Kexport, K)
+E
+$←−Enc(pkHSM, e)
+E
+e ←Dec(skHSM, E)
+ctr ←10
+output K
+store (env, e, KOPRF, ctr)
+Fig. 1. The WBP key initialization, high-level layout. The value KOPRF is freshly chosen
+by the HSM for each initialization request.
+To conclude initialization, the client encrypts the backup key K ﬁrst under
+the symmetric key Kexport and then under the HSM’s public encryption key
+pkHSM, and sends the result E to the HSM. The HSM removes the outer encryp-
+tion layer and stores the encrypted backup key e, the OPAQUE envelope env, the
+key KOPRF, and a counter ctr initialized with 10 that tracks password guessing
+attempts.
+Key Recovery. If the client has lost their client device (and thus lost their backup
+key K), they can re-authenticate their new client device with WhatsApp (via
+a challenge-response protocol that takes place after re-installing the WhatsApp
+application), and subsequently start the recovery part of the WBP depicted in
+Fig. 2.
+The ﬁrst step of the recovery phase is that client and HSM engage in the key
+exchange phase of the OPAQUE protocol. To this end, the client uses a value
+pw′ as input and the HSM contributes the values KOPRF and env as established
+during the initialization phase. If the password pw′ entered by the client is equal
+to the password pw during initialization, the OPAQUE protocol guarantees that
+(1) the client recovers the former export key ¯Kexport = Kexport and (2) both client
+and HSM derive the same value shk′ = shk. However, if pw′ ̸= pw, the client will
+have to abort instead.
+The HSM decrements its counter for attempted password guesses each time
+a recovery procedure is initiated. If the client can convince the HSM that it has
+computed the same value shk′ = shk (via a key conﬁrmation), the HSM will learn
+that the entered password pw′ was indeed correct and hence reset its counter to
+ten and send the stored ciphertext c to the client. Lastly, the client can use the
+derived ¯Kexport to decrypt the ciphertext c and recover their backup key K. This
+concludes the high-level overview of the cryptographic core of the WBP.
+3.2
+Client Registration
+The WBP essentially relies on a communication channel between clients and
+the backup server, which is realized in an indirect way. Upon installing the
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+337
+Client(pw′, pkHSM)
+Server
+HSM(skHSM)
+OPAQUE
+KE
+pw′
+env, KOPRF
+¯Kexport, shk′
+shk
+shk key conﬁrmation
+c
+retrieve (env, e, KOPRF, ctr)
+lock client if ctr = 0
+ctr ←ctr −1
+ctr ←10
+c
+$←−Enc(shk, e)
+e ←Dec(shk′, c)
+K ←Dec( ¯Kexport, e)
+output K
+Fig. 2. The WBP key recovery, high-level layout.
+WhatsApp application, the main WhatsApp server sets up a mutually authenti-
+cated channel with each new client. In the WhatsApp ecosystem this is done
+by a server called ChatD, which is physically distinct form the WhatsApp
+server handling the WBP. We decided to view all WhatsApp servers as a single
+WhatsApp server entity, since a distinction would make the already complex
+protocol description and security analysis unnecessarily more complex without
+providing additional insight.6
+That is, at ﬁrst, a secure channel is set up between the client and WhatsApp
+using the Noise framework [28]. Then WhatsApp uses SMS authentication to
+verify that the phone number it received via the freshly set up Noise channel
+belongs to the client. Upon conclusion, the client stores WhatsApp’s public key
+pkNoise
+WA
+and WhatsApp stores the freshly generated client’s public key pkNoise
+IDC
+together with a unique client identiﬁer IDC. Subsequently, the WhatsApp server
+handles all incoming client requests via the Noise channel and also mediates the
+WBP messages between the client and the backup service.
+Client with phone number no
+WhatsApp server
+Noise Pipe Setup-
+-
+no via Noise Pipe
+choose IDC
+nSMS via SMS
+nSMS
+$←−{0, 1}λ
+-
+n′
+SMS via Noise Pipe
+if n′
+SMS ̸= nSMS
+return Fail
+return pkNoise
+WA
+else return (pkNoise
+IDC , IDC)
+Fig. 3. The WhatsApp client registration that is independent from the WBP. Upon
+conclusion, the client can be identiﬁed via a unique identiﬁer IDC, and both client and
+server are mutually authenticated.
+6 For example, we want a corruption of the WhatsApp server to model a malicious
+WhatsApp service provider, and therefore we want to consider the entire service as
+corrupted in this case, without a need to distinguish between the ChatD and the
+backup server.
+
+338
+G. T. Davies et al.
+3.3
+Hardware Security Modules
+The WBP deploys HSMs as a core component of their PPKR protocol. Intu-
+itively, an HSM is a hardware device that can be programmed once with code
+and then “locked” in such a way that it is infeasible to change its code after-
+wards. After the HSMs are set up they hence serve as an incorruptible entity
+in the backup ecosystem. In the WBP, the HSM performs most cryptographic
+relevant computations on the “WhatsApp side” (with minor computations per-
+formed by a diﬀerent, non-HSM WhatsApp “main server”) and is responsible
+for coordinating the secure storage of backup keys.
+Trusted Setup Ceremony. For the HSM to serve as an incorruptible entity in
+the system, it must be ensured that (1) its secret key material is not leaked and
+that (2) its code cannot be modiﬁed after setup. This is usually ensured via a
+process called trusted setup ceremony or key ceremony. During such a ceremony,
+a ceremony leader essentially unpacks new modules, sets them up with program
+code, and generates fresh key material for the HSM (where public keys are copied
+and secret keys remain secret). After setup, the HSM’s “programming key” is
+destroyed, ensuring that it cannot be modiﬁed after the ceremony has taken
+place. The public key material of the HSM is hard-coded into the WhatsApp
+application [18]. Naturally, this procedure can only be trusted if it was executed
+faithfully. For the remainder of this work we assume that the setup ceremony
+was conducted such that
+– the following key material has been generated
+• a symmetric encryption key KEnc
+HSM
+$←−{0, 1}λ,
+• a signature key pair (skSig
+HSM, pkSig
+HSM)
+$←−Σ.KeyGen(1λ),
+• a public-key encryption key pair (skEnc
+HSM, pkEnc
+HSM)
+$←−PKE.KeyGen(1λ),
+• a static Diﬃe–Hellman key pair (skDH
+HSM, pkDH
+HSM)
+$←−DH.KeyGen(1λ);
+– the HSM uses the secret key material to execute the WBP’s computations
+via predeﬁned interfaces for each protocol step;
+– the HSM can only be queried by a WhatsApp server, and only via the speciﬁed
+interfaces. In particular, the HSM does not leak any of its secret key material.
+We remark that the HSM solution deployed by WhatsApp consists of multiple
+HSMs, which ensures that user cannot get locked out of their backup if an HSM
+breaks down. All HSMs are set up such that they coordinate their state changes
+via a consensus protocol, ensuring that each HSM behaves in the same manner
+towards a user [1]. Without loss of generality, we treat this set of HSMs as a
+single HSM entity. The analysis of the HSM consensus protocol is beyond the
+scope of this work.
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+339
+3.4
+Secure Outsourced Storage
+One might be tempted to store sensitive data along with key material in an
+HSM. However, storing data in the internal memory of an HSM is very expen-
+sive and limited in capacity. Thus, the internal storage of an HSM is not viable to
+store large quantities of sensitive data for millions or billions of users. Therefore
+WhatsApp uses storage fully controlled by the WhatsApp server. The HSM uses
+a dedicated symmetric encryption key KEnc
+HSM
+$←−{0, 1}λ which is used for authen-
+ticated encryption, and this essentially ensures conﬁdentiality and integrity of
+stored records. Whenever the HSM requests a stored record, it decrypts the
+record and veriﬁes its integrity before processing it. In addition, a Merkle tree
+based protocol is deployed to “tie” the encrypted records together and to prevent
+a replay of old state records that were previously deleted by the HSM. Whenever
+the WhatsApp server provides an encrypted record to the HSM, it also has to
+provide a proof (using the Merkle tree) that this ciphertext is consistent with
+the current state of the encrypted database. The HSM veriﬁes this against a
+locally stored root of the Merkle tree. If this veriﬁcation fails, the HSM rejects
+the record. A formal analysis of this mechanism is beyond the scope of our work.
+Therefore we model the interaction of the HSM with the outsourced storage
+mechanism via function calls, which are deﬁned as follows.
+– sec store(id, data) takes as input a unique identiﬁer id and to-be-stored data
+value data. It encrypts the data using the approach described above. The
+record can be identiﬁed via id.
+– sec retr(id) takes as input an identiﬁer id and retrieves the record associated
+with identiﬁer id. The returned record is processed as described above.
+– sec delete(id) takes as input an identiﬁer id and “tombstones” the record asso-
+ciated with identiﬁer id, in that its existing data is overwritten with the infor-
+mation that is has been deleted.
+– For brevity, we deﬁne one additional function call that allows the HSM to
+change counter values. sec set ctr(id, ctr) takes as input an identiﬁer id and an
+integer ctr with 0 ≤ctr ≤10. It takes the record associated with identiﬁer id
+and sets the corresponding counter to the value ctr. Integrity and authenticity
+is ensured via the process described above.
+Should any of the function calls fail (e.g., due to a non-existing record or a
+failed integrity check), the respective function call would return an error symbol
+⊥. We assume that this mechanism provides secure outsourced storage for the
+HSM, which is immutable for any entity but the HSM.
+
+340
+G. T. Davies et al.
+3.5
+WhatsApp Backup Protocol (WBP) Description
+The detailed descriptions of the WBP’s key initialization and recovery phases
+are depicted in Fig. 4 and Fig. 5, respectively. As already discussed in Sect. 3.1,
+the WBP builds on the OPAQUE Internet Draft v3 [25], the steps of which
+are highlighted in the ﬁgures. For a comparison of these OPAQUE steps with
+[25], we refer to the full version [17]. Note that the ﬁgures include events like
+return(Interface, value). These can bee seen as messages delivered to higher-
+level application processes, which, e.g., output a successfully established sym-
+metric backup key to be used for backing up the actual data. We make these
+calls explicit since they will also appear in parts of our security model.
+Participants. There are three participants in the protocol. Client refers to the
+WhatsApp client application of a user with unique identiﬁer IDC. The client is
+Client with phone number IDC
+Server
+HSM
+pw, pkHSM = {pkSig
+HSM, pkEnc
+HSM, pkDH
+HSM}
+acc[ ] ←{}
+skHSM = {skSig
+HSM, skEnc
+HSM, skDH
+HSM, KEnc
+HSM}
+On input (InitC, pw):
+K
+$←−{0, 1}λ
+(pkC, skC)
+$←−DH.KeyGen(1λ)
+r1
+$←−Zp
+a1 ←H1(pw)r1
+r
+a1
+return (InitC, IDC)
+On input (InitS, IDC):
+choose fresh aidnew ∈{0, 1}∗
+set aidold ←acc[IDC]
+set acc[IDC] ←aidnew
+-
+(InitS, aidnew, aidold,a1 )sec delete(aidold)
+if sec retr(aidnew) is successful
+return
+
+(InitResult, aidnew, Fail)
+(InitResult, IDC, Fail)
+else :
+KPRF
+aidnew
+$←−Zp
+b1 ←a
+KPRF
+aidnew
+1
+n1
+$←−{0, 1}λ
+if Σ.Vfy(pkSig
+HSM; b1 ∥n1; σ1) ̸= 1 b1 , n1, σ1
+
+aidnew,b1 , n1, σ1
+σ1
+$←−
+Σ.Sign(skSig
+HSM, b1 ∥n1)
+return (InitResult, Fail)
+trHSM ←H3(a1, b1, n1)
+else :
+y ←H2(pw, b1/r1
+1
+)
+ne
+$←−{0, 1}λ
+(Kexport, Kmask, Kauth) ←KDF1(y, ne)
+e cred ←skC ⊕Kmask
+Te ←MAC.Tag(Kauth, pkDH
+HSM ∥ne ∥e cred)
+trC ←H3(a1, b1, n1)
+e
+$←−AE.Enc(Kexport, K)
+m ←e ∥trC∥pkC ∥e cred ∥ne ∥Te
+E
+$←−PKE.Enc(pkEnc
+HSM; m)
+r
+E
+-
+(File, aidnew, E)
+m ←PKE.Dec(skEnc
+HSM; E)
+CleanUp
+parse
+return (InitResult, K)
+m = e ∥trC∥pkC ∥e cred ∥ne ∥Te
+if trC ̸= trHSM : out ←Fail
+else :
+m′ ←e∥pkC ∥e cred ∥ne ∥Te
+ctr ←10
+sec store(aidnew, (KPRF
+aidnew, m′, ctr))
+
+(InitResult, aidnew, out) out ←Succ
+return
+(InitResult, IDC, out)
+Fig. 4. The WBP initialization. Light blue boxes indicate 2HashDH instructions of
+OPAQUE; dark gray boxes denote other OPAQUE instructions; non-colored parts
+were added by WhatsApp.
+r
+a
+is the IDC-authenticated transmission of a.
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+341
+Client with phone number IDC
+Server
+HSM
+pw′, pkHSM = {pkSig
+HSM, pkEnc
+HSM, pkDH
+HSM}
+acc
+skHSM = {skSig
+HSM, skEnc
+HSM, skDH
+HSM, KEnc
+HSM}
+On input (RecC, pw′):
+r2
+$←−Zp, a2 ←H1(pw′)r2
+nC
+$←−{0, 1}λ
+( ¯pkC, ¯skC)
+$←−DH.KeyGen(1λ)
+r
+nC , ¯pkC ,a2
+return (RecC, IDC)
+On input (RecS, IDC):
+if acc[IDC] unset:
+return (RecResult, IDC, Fail)
+else :
+set aid ←acc[IDC]
+-
+(RecS, aid,nC , ¯pkC ,a2 )(KPRF
+aid , m′, ctr) ←sec retr(aid)
+if no record can be found:
+return
+
+(RecResult, aid, Fail)
+(RecResult, IDC, Fail)
+else :
+if ctr = 0: sec delete(aid)
+return
+
+(DelRec, aid)
+(DelRec, IDC)
+else :
+parse m′ = e∥pkC ∥e cred ∥ne ∥Te
+set ctr′ ←(ctr −1)
+sec set ctr(aid, ctr′)
+b2 ←a
+KPRF
+aid
+2
+,nS
+$←−{0, 1}λ
+( ¯pkS, ¯skS)
+$←−DH.KeyGen
+ikm ←( ¯pk
+¯skS
+C , ¯pk
+skDH
+HSM
+C
+, pkC
+¯skS)
+pre ←(a2, nc, ¯pkC, pkDH
+HSM, e cred, ne, Te, b2, nS, ¯pkS)
+(KMAC
+S
+, KMAC
+C
+, shk) ←KDF2(ikm, pre)
+TS ←MAC.Tag(KMAC
+S
+, H3(pre))
+σ2
+$←−Σ.Sign(skSig
+HSM, b2)
+if
+Σ.Vfy(pkSig
+HSM; b2; σ2) ̸= 1
+b2 ,e cred, ne, Te ,
+nS , ¯pkS, TS ,σ2
+
+aid,b2 ,e cred, ne, Te ,
+nS , ¯pkS, TS , σ2
+return (RecResult, Fail)
+else :
+y ←H2(pw, b1/r2
+2
+)
+(Kexport, Kmask, Kauth) ←KDF1(y, ne)
+T ′
+e ←MAC.Tag(Kauth, pkDH
+HSM ∥ne ∥e cred)
+if T ′
+e ̸= Te return (RecResult, Fail)
+else :
+skC ←e cred ⊕Kmask
+pre ←(a2, nc, ¯pkC, pkDH
+HSM, e cred, ne, Te, b2, nS, ¯pkS)
+ikm ←( ¯pk
+¯skC
+S
+, pkDH
+HSM
+¯skC, ¯pk
+skC
+S
+)
+(KMAC
+S
+, KMAC
+C
+, shk) ←KDF2(ikm, pre)
+T ′
+S ←MAC.Tag(KMAC
+S
+, H3(pre))
+if T ′
+S ̸= TS return (RecResult, Fail)
+else :
+T ′
+C ←MAC.Tag(KMAC
+C
+, H3(pre, T ′
+S))
+r
+T ′
+C
+-
+(RecResult, aid,T ′
+C ) TC ←MAC.Tag(KMAC
+C
+, H3(pre ∥TS))
+if T ′
+C ̸= TC:
+return
+
+(RecResult, aid, Fail)
+(RecResult, IDC, Fail)
+else :
+sec set ctr (aid, 10)
+e ←AE.Dec(shk, c)
+
+c
+
+aid, c
+c
+$←−AE.Enc(shk, e)
+if e = ⊥:
+return
+CleanUp, return (RecResult, Fail)
+(RecResult, IDC, Succ)
+else :
+K
+$←−AE.Dec(Kexport , e)
+CleanUp, return (RecResult, K)
+Fig. 5. The WBP key recovery. Light blue boxes indicate 2HashDH instructions of
+OPAQUE; light gray boxes mark 3DH of OPAQUE; dark gray boxes denote other
+OPAQUE instructions; non-colored parts were added by WhatsApp.
+r
+a
+is the IDC-
+authenticated transmission of a.
+
+342
+G. T. Davies et al.
+in possession of the HSM’s public key, which is composed of a public key for a
+signature scheme pkSig
+HSM, an encryption public key pkEnc
+HSM, and a static Diﬃe–
+Hellman public key pkDH
+HSM. Those keys are hard-coded into the WhatsApp client
+and thus authenticated.
+The server is run by WhatsApp and it mostly relays messages between clients
+and the HSM. For this it communicates with the client via the previously estab-
+lished IDC-authenticated channel (see Fig. 3) and with the HSM directly through
+a TLS channel. The server also maintains an array acc[·] of identiﬁer pairs
+(IDC, aid), which “tie” a so-called account identiﬁer aid (described below) to
+the client identiﬁer IDC. If some IDC is not contained in acc, we let acc[IDC] = ⊥.
+As already described in Sect. 3.4, the server also acts as an external (untrusted)
+storage medium for the HSM.
+Finally the HSM is (a trusted entity that is) in possession of the secret keys
+skSig
+HSM, skEnc
+HSM, skDH
+HSM corresponding to the respective public keys, as well as a key
+KEnc
+HSM that is used to encrypt records stored on the server (see Sect. 3.3).
+Dealing with Unexpected Protocol Messages. We assume that the client, the
+server, and the HSM ignore messages that are sent out-of-order, i.e., messages
+that the party expects at a diﬀerent point in the protocol execution. The ﬁrst
+messages of an initialization (i.e., a1) and recovery (i.e., (nC, ¯pkC, a2)) can be
+sent anytime, leading to the parties deleting all temporary data of the non-
+ﬁnished initialization/recovery and starting with a new initialization/recovery.
+This implies that there is never more than one initialization/recovery running
+at a time.
+Key Initialization. A user with password pw and IDC initializes the backup as
+follows. On input of pw, the WhatsApp client app ﬁrst chooses a uniformly
+random backup key K that can be used for encrypting the backups and which
+is going to be preserved via WBP. Next, it samples a Diﬃe–Hellman key-pair
+(pkC, skC) that will be used later in the OPAQUE key exchange step. Executing
+the 2HashDH OPRF protocol [20] with the HSM, the client samples r1
+$←−Zp
+uniformly at random. This is then used to blind the password pw by computing
+a1 ←H1(pw)r1 using a hash function H1 : {0, 1}∗→G. The client sends a1 to
+the server over the IDC-authenticated channel.
+Upon receiving a1 from IDC, the server chooses a fresh aidnew ∈{0, 1}∗that
+is called “account identiﬁer” by WhatsApp7 and checks if the client with IDC
+has ever initiated the protocol and thus has already an aid in its array acc. If
+so, it sets aidold ←acc[IDC] and acc[IDC] ←aidnew, otherwise it sets aidold = ⊥.
+Finally, the server sends aidnew, aidold, a1 to the HSM. Observe that the HSM
+never receives any identifying information (e.g., IDC) about the clients other
+than the value aid. That is, the HSM is not aware of the concept of a client IDC.
+7 We remark that this terminology is slightly misleading, as aid does not identify a
+client’s account but is rather a “backup identiﬁer”. If the same client initializes many
+backups, possibly with diﬀerent passwords, then each backup will be assigned a new
+aid and only the most recent backup is kept.
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+343
+Upon receiving the server’s message, the HSM “tombstones” all informa-
+tion associated with aidold from its outsourced storage (with the instruction
+sec delete(aidold)). Then it checks whether aidnew has ever been used before.8
+If it was, then the HSM aborts and outputs aidnew, Fail to the server. If the
+HSM sees aidnew for the ﬁrst time, it picks a random key KPRF
+aidnew
+$←−Zp for that
+speciﬁc aidnew to be used in the 2HashDH OPRF. The HSM then uses the client’s
+blinded password a1 to compute b1 ←a
+KPRF
+aidnew
+1
+. Furthermore, the HSM samples a
+nonce n1
+$←−{0, 1}λ uniformly at random and signs b1 ∥n1 under its secret key
+skSig
+HSM. Finally, it computes a transcript hash trHSM of the values a1, b1, n1 with a
+hash function H3 : {0, 1}∗→{0, 1}λ, and sends back aidnew, b1, n1 together with
+the resulting signature σ1 to the server, which relays b1, n1, σ1 to the client.
+After receiving the HSM’s message from the server, the client ﬁrst veriﬁes
+σ1 using pkSig
+HSM and aborts if the veriﬁcation fails. Otherwise, it unblinds the
+server’s response b1 using the randomness r1 and derives the OPRF output
+y ←H2(pw, b1/r1
+1
+) with hash function H2 : {0, 1}∗→{0, 1}λ. Next, further keys
+Kexport, Kmask, Kauth are derived from the OPRF output y with the help of a key
+derivation function KDF1. The obtained keys are used as follows. Kmask is used
+as an XOR mask to obtain e cred, hiding the client’s Diﬃe-Hellman secret skC.
+Kauth is used to compute a MAC tag Te over pkDH
+HSM ∥ne ∥e cred, where ne is
+a randomly sampled nonce of length λ. Finally, Kexport is used to encrypt K to
+produce the envelope9 e ←AE.Enc(Kexport, K). Similarly to the HSM, the client
+also computes a transcript hash trC ←H3(a1, b1, n1) and compose a message
+m ←e ∥trC ∥pkC ∥e cred ∥ne ∥Te, which is then encrypted under the HSM’s
+public key (E ←PKE.Enc(pkEnc
+HSM, m)) to hide its content from the intermediary
+server. The encrypted envelope E is sent to the server over the IDC-authenticated
+channel. The client runs CleanUp to delete all assigned variables and received
+messages10 (including r1, skC) and outputs the backup key K.
+Upon receiving E from a client with IDC, the server looks up acc[IDC] ←
+aidnew and forwards aidnew, E to the HSM. After receiving the message, the HSM
+decrypts E and checks whether the received transcript hash trC matches its own
+view of the transcript (trHSM). If the transcripts do not match, it aborts sending
+aidnew, Fail to the server that outputs IDC, Fail. In case of matching transcripts,
+the HSM initializes a counter ctr that aims to track the unsuccessful key recovery
+attempts and stores in the secure storage the tuple (aidnew, KPRF
+aidnew, e∥pkC∥e cred∥
+ne ∥Te, ctr). Finally, it informs the server about the successful completion of the
+initialization phase by sending aidnew, Succ that outputs IDC, Succ concluding
+the key initialization.
+8 To this end, the HSM tries to retrieve a backup associated with aidnew from the
+secure storage. If aidnew is currently in use, this will succeed. If aidnew was previously
+used but corresponds to an already deleted backup, an empty “tombstoned” backup
+is returned to the HSM, showing that aidnew is not fresh.
+9 Note that the WBP’s envelope is not equivalent to an OPAQUE envelope.
+10 We note that the abstract CleanUp instruction might be implemented without any
+explicit deletion, e.g., by keeping these ephemeral values only in volatile memory
+and never storing them persistently.
+
+344
+G. T. Davies et al.
+Key Recovery. The goal of the WBP recovery phase is to enable users, who do
+not have access anymore to their backup key K, to recover it using the password
+they entered during key initialization. On input of pw′, the WhatsApp client app
+ﬁrst prepares its input r2, a2 to the 2HashDH OPRF the same way as during
+initialization, samples an ephemeral Diﬃe–Hellman key-pair ( ¯pkC, ¯skC) for the
+3DH protocol, and also samples a uniformly random nonce nC. Then nC, ¯pkC, a2
+are sent to the server over the IDC-authenticated channel.
+Upon receiving the client’s message, the server checks the array acc and
+if it does not contain IDC, then it aborts because no user with the identiﬁer
+IDC initialized any backup keys. Otherwise, it attaches the account identiﬁer
+aid ←acc[IDC] to the client’s message and sends these to the HSM.
+When receiving the server’s message, the HSM retrieves the record from
+the secure storage that is indexed by aid. If no such record is found, it returns
+failure to the server. Otherwise the HSM retrieves the record containing the
+per-client OPRF-key KPRF
+aid , the current counter value ctr, and m′ that is parsed
+as m′ = e ∥pkC ∥e cred ∥ne ∥Te. If ctr = 0, then the HSM deletes the record
+indexed with aid from the storage and informs the server of this. If ctr > 0,
+then its value is decreased by one and the stored record for aid is updated
+with the new ctr value. Next, as in the key initialization phase, the HSM com-
+putes b2 ←aKPRF
+aid
+2
+as a step of 2HsahDH. After sampling a uniformly random
+nonce nS, the execution of the 3DH protocol steps follows. The HSM sam-
+ples an ephemeral Diﬃe–Hellman key pair ( ¯pkS, ¯skS) and computes three shared
+Diﬃe–Hellman secrets: ¯pk
+¯skS
+C , ¯pk
+skDH
+HSM
+C
+, pk
+¯skS
+C . Using these shared secrets and the
+preamble pre, which is essentially a concatenation of the full protocol transcript
+(a2, nc, ¯pkC, pkDH
+HSM, e cred, ne, Te, b2, nS, ¯pkS), it derives the keys KMAC
+S
+, KMAC
+C
+,
+and shk from a key derivation function KDF2. Finally, with KMAC
+S
+it computes a
+MAC tag TS over the hashed preamble, signs b2 with skSig
+HSM to get signature σ2
+and sends its response composed of aid, b2, e cred, ne, Te, nS, ¯pkS, TS, σ2 to the
+server, who removes aid from the message and forwards the rest to the client.
+After receiving the HSM’s response from the server, the client ﬁrst veri-
+ﬁes the signature σ2 and aborts if the veriﬁcation fails. It then again derives
+the keys Kexport, Kmask, Kauth and veriﬁes the MAC Te that was created dur-
+ing the initialization. If the veriﬁcation failed, it aborts. Otherwise it con-
+tinues to reconstruct skC by unmasking e cred with Kmask and then to
+derive the keys KMAC
+S
+, KMAC
+C
+, shk from the three shared Diﬃe–Hellman secrets
+¯pk
+¯skC
+S , skDH
+HSM
+¯skC, ¯pk
+skC
+S
+and the preamble pre. Using KMAC
+S
+it veriﬁes the MAC TS
+and aborts if this is not successful. Otherwise the client computes MAC T ′
+C over
+a hash of pre ∥TS with the key KMAC
+C
+, which it then sends to the server through
+the IDC-authenticated channel.
+After attaching aid to T ′
+C, the server forwards these values to the HSM. Since
+the HSM knows all values for computing the MAC tag that it has just received,
+it can verify the MAC. Note that with the MAC veriﬁcation it essentially checks
+whether pw = pw′. If the MAC veriﬁcation fails, it aborts, otherwise it resets the
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+345
+counter ctr to 10. Finally, the HSM encrypts e using shk and sends the resulting
+ciphertext c and aid to the server who forwards c to the client.
+As the ﬁnal steps of the recovery phase, the client ﬁrst decrypts c to obtain
+e (it aborts if the AE decryption fails) and then decrypts e using the key Kexport
+to obtain the backup key K. As in case of the initialization, before returning
+any output, the client always deletes all assigned variables and received messages
+(including shk, skC ¯skC, r2).
+3.6
+Extending the Number of Password Guesses
+As we already noted in the protocol description in Sect. 3.5, the WBP only
+authenticates the client towards the server but not towards the HSM. The usage
+of the so-called “account identiﬁer” aid aims to bridge this gap. The way it is
+used ensures that the HSM always associates every recovery request from the
+same IDC with the same unique aid that was assigned for this IDC during its last
+successful key initialization request. Furthermore, the HSM only keeps records
+of the last key initialization of a user under the aid that was assigned to the
+corresponding IDC during this last initialization. Recall that in order to limit
+the number of password guesses against some account, each password guess has
+to be associated with the targeted account. It turns out that this cannot be
+guaranteed in case of the WBP when the server is malicious. The reason for this
+is that the server is in charge of assigning aids for IDCs, and neither the client
+nor the HSM can check this because the former never sees their assigned aid,
+and the latter never learns the IDC of clients. This allows the server to increase
+the number of password guesses in certain cases.
+We demonstrate the attack with an example. Let us assume that some client
+with identity IDC has already initialized a key and the HSM stored the corre-
+sponding record under aid. Now if the same client runs key initialization again
+with the same password,11 the server is assumed to instruct the HSM to delete
+the previous record by setting aidold ←aid. However, the execution of this step
+completely depends on the server acting honestly. A malicious server might how-
+ever proceed as if it has never seen IDC before and make the HSM store qI records
+for IDC, if the client with IDC runs the key initialisation qI times. If the client
+used the same password pw all qI times, the malicious server will have 10qI pass-
+word guessing opportunities, since it knows all the qI aids that are associated
+with IDC’s records.
+Mitigating the Attack. If the transcripts trHSM and trC contained information
+about the client identity IDC, in a way that both the client and the HSM can
+verify this, then they would be able to notice if the server is dishonest about the
+client identity. However, note that this countermeasure is very diﬃcult to deploy
+retroactively, since any changes in the programming of the HSM would require
+the setup ceremony to be performed again.
+11 WhatsApp is for mobile devices, connection loss may happen leading to a failure.
+After an unsuccessful attempt, the user would most probably re-run initialization,
+likely with the same password.
+
+346
+G. T. Davies et al.
+Client
+Server
+-
+InitC : pw
+
+InitS
+PPKR
+initialization
+
+InitResult : K
+-
+RecC : pw′
+
+RecS
+PPKR
+recovery
+RecResult :
+-
+RecResult :
+K if pw = pw′, else Fail
+Succ if pw = pw′, else Fail
+Fig. 6. Schematic overview of password-protected key retrieval with initialization on
+top and recovery at the bottom, already using the interface names of our functionality
+FPPKR. In both phases, the server does not provide any particular input but still has to
+participate in the protocol for the client to successfully initialize and recover a key K,
+which is modeled in the ideal functionality by letting it provide the InitS and RecS
+messages.
+4
+Password-Protected Key Retrieval
+In this section we give a formal deﬁnition of password-protected key retrieval
+(PPKR) in terms of an ideal functionality. For the unfamiliar reader, we provide
+a short introduction to the basic UC framework in the full version [17].
+The Cryptographic Abstraction of the WBP. We introduce the concept of a
+password-protected key retrieval (PPKR) protocol, which is a 2-party protocol
+executed by a client and a server. (Note that in the WBP protocol, this client is
+the user’s WhatsApp client and this server is the combination of the WhatsApp
+server and the HSM.) A PPKR protocol consists of two phases: (1) an initial-
+ization phase, where the client generates a symmetric encryption key and, using
+a password, securely stores it with a server, and (2) a recovery phase, where the
+client can recover their symmetric encryption key using a password.
+The server may neither learn any information about the client’s password, nor
+their key from these interactions, but only whether a recovery was successful.
+To provide a high-level intuition, we depict the input-output behavior of the
+PPKR functionality in Fig. 6. Besides this, we demand several properties from a
+PPKR scheme that seem relevant for such a primitive in practice. These include
+protection against online and oﬄine dictionary attacks, and that it provides
+cryptographically strong encryption keys.
+Remark 1. We note here that alternative modelings are possible. For example,
+one could case-tailor the deﬁnition to the WhatsApp setting and formulate a
+variant of PPKR with three parties: the client, the server, and the HSM. How-
+ever, our notion with only two parties is more versatile: it can be used to ana-
+lyze protocols where the server relies on an HSM, as well as protocols where
+the server acts on its own, or relies on arbitrarily many other entities, such as
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+347
+a cloud provider, oﬄine storage, etc. The reason why this is possible is that
+usage of such “helpers” is well integrated into the UC framework [9] through
+the notion of so-called hybrid functionalities, which can be modularly “plugged”
+into protocol descriptions without “spilling” into the deﬁnition of the underlying
+primitive.
+Expected Security Properties. We now describe which security properties we
+intuitively expect from a PPKR scheme, and thus want to formalize in an ideal
+PPKR functionality FPPKR. The key K that is generated in a PPKR scheme
+should be usable without restrictions in any other application, thus we require
+that K is indistinguishable from random. Note that in particular this implies
+that neither the server nor the adversary can inﬂuence the generation of K
+in any way. Moreover, we expect K to remain secret from everyone but the
+client that computed it throughout the lifetime of the PPKR protocol. Hence,
+FPPKR should leak no information on the key, and any output given by FPPKR
+to the server or the adversary must be independent from K, unless the server
+gets corrupted and correctly guesses the client’s password. In order to limit
+the ability to guess passwords via dictionary attacks, we expect FPPKR to (1)
+not leak any information about a password used by some client to any other
+party beyond whether a password used in a recovery is the same as in the
+most recent initialization by that client, and (2) allow only a small number of
+failed recovery attempts before K is deleted. We further expect that clients
+are authenticated towards the server12 and cannot be impersonated by other
+clients or the adversary, to ensure that any client’s key remains secret from
+all other clients even if they knew the correct password. However, note that
+a corrupt server might be able to skip client authentication13 and execute the
+protocol on behalf of any client by itself, i.e., without interacting with any client.
+Further, we expect that the server is authenticated towards clients and cannot
+be impersonated by the adversary.
+We summarize the list of expected security properties below.
+– Pseudorandomness of K: Honest clients compute pseudorandom keys K,
+even if the server acts maliciously.
+– Secrecy of K: Initialized and recovered keys of any honest client remain
+hidden from even a malicious server as long as the server does not correctly
+guess the honest client’s password.
+– Uniqueness of K: If the server is honest, initialization of a key K by user
+C buries any key that C previously initialized.
+12 We leave the concrete means of authentication to the application. In the case of
+the WBP, SMS-based authentication is used, creating a one-to-one correspondence
+between IDC and phone numbers of WhatsApp users. Other authentication methods
+such as biometrics (where IDC would correspond to, e.g., a ﬁngerprint) or even device-
+bound strong authentication using signatures are possible as well.
+13 We opted for a general treatment here, i.e., allowing client impersonation by the
+server. In fact, we could strengthen this (see Sect. 4.2 for more details) but this
+depends on which mechanisms on the server side are corruptible.
+
+348
+G. T. Davies et al.
+– Oblivious passwords: The initialization phase does not leak any informa-
+tion about the password to even a malicious server.
+– No online dictionary attacks: The recovery phase does not leak any infor-
+mation (1) about the password used by the client to even a malicious server,
+and (2) about the initialized password to even a malicious client, beyond
+whether the password used during recovery matches the one used to create
+the backup.
+– Limited number of recovery attempts with wrong passwords: Let
+K denote the key initialized by honest client C, and assume that C later
+runs the recovery phase 10 times consecutively with a wrong password. Then
+the server erases all K-dependent information, i.e., K cannot be recovered
+anymore. This must hold even if the client becomes maliciously corrupted
+after initializing K.
+– Limited number of oﬄine guesses: The above guarantee extends to mali-
+ciously corrupted servers, i.e., after 10 wrong password guesses to recover any
+honestly initialized key K, K is buried and cannot be retrieved by anyone
+anymore.14
+– Client authentication: Only the client who initialized K or a malicious
+server can attempt to recover K. This must hold even if the password used
+during initialization becomes publicly known.
+– Server authentication: There is only one server in the system and it cannot
+be impersonated by the adversary, unless the server gets corrupted.
+4.1
+A PPKR Functionality
+In Figs. 7 and 8 we describe the ideal functionality FPPKR for password-protected
+key retrieval. On a high level, FPPKR implements a password protected lookup
+table that contains clients’ keys. When some client executes the initialization
+phase, an entry for that client is created in the lookup table or updated if
+an entry already existed. By executing the recovery phase, clients can access
+their entry in the table and recover their key, but only if they pass password
+authentication. If they fail password authentication 10 times in a row, FPPKR
+“buries the key” by erasing the corresponding table entry of that user. Note
+that while FPPKR maintains the table entries using client identiﬁers, FPPKR does
+not enforce the initialization and recovery processes to run on the same physical
+client machine. In our model, we understand the client’s party identiﬁer as the
+identity under which the client device can authenticate. This way, if multiple
+devices can authenticate under the same identity (as is possible, e.g., for the
+SMS-based authentication in the WBP), InitC and RecC can be called from
+diﬀerent machines.
+14 Note that the phrasing “any initialized” here reﬂects that the adversary can extend
+the number of admissible password guesses, as described in Sect. 3.6. This is nec-
+essary to model the security achieved by WhatsApp’s protocol. We will discuss in
+Sect. 4.2 how the functionality can be strengthened.
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+349
+Next we will explain the interfaces and record keeping of FPPKR. In Figs. 7 and
+8 we labeled all instructions for easy referencing. FPPKR interacts with arbitrary
+clients and a single server S, where S is encoded in the session identiﬁer sid
+(server authentication). The functionality internally maintains diﬀerent types
+of records to keep track of ongoing and ﬁnished initialization and recovery phases.
+If FPPKR ever tries to retrieve a record that does not exist, it ignores the query
+causing this.
+Initialization Phase. Whenever a client IDC starts a new initialization, it calls
+the InitC interface with the password pw the user has chosen. FPPKR then
+(IC.1) generates a fresh key K
+$←−{0, 1}λ (ensuring pseudorandomness of
+K) for IDC and records that IDC has started a new initialization by creating a
+record ⟨InitC, sid, IDC, pw, K⟩(IC.2). This newly created record overwrites any
+existing record of type InitC for IDC, which ensures that a client can only have
+one ongoing intialization session. Finally, the functionality informs the server S
+and the adversary A that the client IDC has started a new initialization (IC.3).
+If the server agrees to participate in the initialization with IDC, it calls the
+InitS interface, which takes as input two (not necessarily distinct) client iden-
+tities IDC and IDC
+∗. The additional identity IDC
+∗is only eﬀective if the server is
+corrupt, and reﬂects that a malicious server can simply ignore client authentica-
+tion and claim a diﬀerent identity has authenticated to him. FPPKR now retrieves
+the InitC record of IDC, which ensures that the query only proceeds if IDC has
+started a new initialization (IS.1). Then it creates a File record containing the
+password pw and key K from the retrieved InitC record and, depending on
+whether the server is honest or corrupt, either the identity IDC or IDC
+∗(IS.2
+and IS.3). Thus, a corrupt server can freely choose for which identity the File
+record is created, while File records created for an honest server always contain
+the same identity as the corresponding InitC record. A newly created record
+overwrites any existing record of the same identity to ensure that any key K′
+that may have been generated in a previous initialization by IDC cannot be recov-
+ered anymore (Uniqueness of the key). However, since a malicious server can
+make FPPKR store ﬁles under diﬀerent identities IDC
+∗, this guarantee holds only
+as long as the server is honest. Indeed, FPPKR allows a malicious server to make
+FPPKR store all the password-protected key records that any honest client ever
+initialized (see Sect. 4.2 for a discussion of this weakness).
+After the server agreed to participate in the initialization with IDC, the adver-
+sary may let FPPKR compute the output of the initialization phase for the client
+with either the interface CompleteInitC or CompleteInitC-DoS and for the
+server with either CompleteInitS or CompleteInitS-DoS. The functionality
+does not enforce an order in which the parties receive their output and leaves this
+decision to the adversary A. All these interfaces ensure that only one output can
+be generated towards client and server for every ongoing initialization session,
+by retrieving (CIC.1, CICD.1) and deleting (CIS.1, CISD.1) the corresponding
+session records (in the case of CIS.1, the record is not deleted but assigned a
+special marking - see below for details). The adversary’s choices are as follows:
+
+350
+G. T. Davies et al.
+FPPKR is parameterized with a security parameter λ. FPPKR talks to a server S where S is encoded in
+sid. FPPKR also talks to the adversary A, and arbitrary clients IDC. If the functionality tries to “re-
+trieve a record” that does not exist, it ignores the incoming message. We write txsid[·] for a list of counters.
+Oﬄine attacks
+On input (MaliciousInit, sid, IDC, pw∗, K∗) from A: // A corrupt server can impersonate an either
+honest or corrupt IDC and initialize on his behalf.
+MI.1 If S is honest ignore this input.
+MI.2 Record ⟨File, sid, IDC, pw∗, K∗⟩, overwriting any existing record ⟨File, sid, IDC, ∗, ∗⟩. Set
+txsid[IDC] ←10
+On input (MaliciousRec, sid, IDC, pw∗) from A: // Attacking an honest client’s stored key: bury the
+key after 10 subsequent wrong password guesses.
+MR.1 If S is honest ignore this input. // Server needs to be corrupt to mount an oﬄine attack.
+MR.2 Retrieve record ⟨File, sid, IDC, [pw], [K]⟩marked Stored.
+MR.3 If txsid[IDC] = 0, delete record ⟨File, sid, IDC, pw, K⟩and output (DelRec, sid, IDC) to A //
+The key is buried if zero guesses remain.
+MR.4 If pw∗= pw, set txsid[IDC] ←10 and output (sid, K) to A. Otherwise, set txsid[IDC] ←
+txsid[IDC] −1 an output (sid, Fail) to A
+Initialization phase
+On input (InitC, sid, IDC, pw) from IDC (or A if IDC is corrupt): // Client always starts initialization
+IC.1 Choose K
+$←−{0, 1}λ
+IC.2 Record ⟨InitC, sid, IDC, pw, K⟩, overwriting any existing record ⟨InitC, sid, IDC, ∗, ∗⟩// Stor-
+ing IDC’s current init state; a client can only be in one initialization session
+IC.3 Send (InitC, sid, IDC) to A and to S
+On input (InitS, sid, IDC, IDC
+∗) from S (or A if S is corrupt): // Server agrees to assist IDC in initializa-
+tion. If S is corrupt, A can reroute the initialization to a diﬀerent IDC
+∗. Note that IDC
+∗does not have
+to be the identity of an existing client and can be an arbitrary identity
+IS.1 Retrieve ⟨InitC, sid, IDC, [pw], [K]⟩// Continue only if IDC started initialization already
+IS.2
+If S is honest,
+record
+⟨File, sid, IDC, pw, K⟩,
+overwriting
+any
+existing
+record
+⟨File, sid, IDC, ∗, ∗⟩, and send (InitS, sid, IDC) to A // Storing S’s current init state;
+the server can only be in one initialization session. Invariant: There is only one key stored
+IS.3
+Otherwise,
+record
+⟨File, sid, IDC
+∗, pw, K⟩,
+overwriting
+any
+existing
+record
+⟨File, sid, IDC
+∗, ∗, ∗⟩.
+On input (CompleteInitC, sid, IDC) from A: // Client completes the protocol and outputs a key
+CIC.1 Retrieve record ⟨InitC, sid, IDC, ∗, [K]⟩and delete it
+CIC.2 Output (InitResult, sid, K) to IDC (or A if IDC is corrupt)
+On input (CompleteInitS, sid, IDC) from A: // Server concludes initialization with ﬁle storage
+CIS.1 Retrieve record ⟨File, sid, IDC, ∗, ∗⟩not marked Stored and mark it Stored // Note: there
+is only one such record thanks to overwriting in InitS interface. This becomes the stored key
+now!
+CIS.2 Set txsid[IDC] ←10
+CIS.3 Send (InitResult, sid, IDC, Succ) to S (or A if S is corrupt)
+Attacks on Initialization Phase
+On input (CompleteInitC-DoS, sid, IDC) from A: // DoS attack against IDC, who concludes the
+initialization session with failure.
+CICD.1 Retrieve record ⟨InitC, sid, IDC, ∗, ∗⟩and delete it
+CICD.2 Output (InitResult, sid, Fail) to IDC (or A if IDC is corrupt)
+On input (CompleteInitS-DoS, sid, IDC) from A: // DoS attack against the server, such that it
+cannot store a ﬁle
+CISD.1 Delete any record ⟨File, sid, IDC, ∗, ∗⟩// Server’s state in current initialization session no
+longer needed
+CISD.2 Send (InitResult, sid, IDC, Fail) to S (or A if S is corrupt)
+Fig. 7. Ideal functionality FPPKR for password-protected key retrieval, oﬄine attacks
+and initialization interfaces. For a stronger version of FPPKR, boxed code can be dropped
+(see Sect. 4.2).
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+351
+Recovery Phase
+On input (RecC, sid, IDC, pw′) from IDC (or A if IDC is corrupt):
+RC.1 Record ⟨RecC, sid, IDC, pw′⟩, overwriting any existing record ⟨RecC, sid, IDC, ∗⟩// Storing
+IDC’s current init state; a client can only be in one recovery session.
+RC.2 Send (RecC, sid, IDC) to A and S. // S learns which clients started recovery, with the guar-
+antee that attempts by honest clients cannot be faked.
+On input (RecS, sid, IDC, IDC
+∗) from S (or A if S is corrupt): // Server agrees to assist IDC in recovery.
+If S is corrupt, A can reroute the recovery to a diﬀerent IDC
+∗. Note that IDC
+∗does not have to be the
+identity of an existing client and can be an arbitrary identity
+RS.1 If S is honest, set IDC
+′ ←IDC, otherwise set IDC
+′ ←IDC
+∗
+RS.2 Retrieve record ⟨RecC, sid, IDC, [pw′]⟩// Continue only if IDC started recovery already
+RS.3 If
+there
+exists
+no
+record
+⟨File, IDC
+′, sid, [pw], [K]⟩
+marked
+Stored,
+send
+(RecResult, aid, Fail) to S (or A if S is corrupt). Else retrieve the record. // The
+currently stored K and pw (for IDC
+′) are used. If IDC
+′ re-inits afterwards, it has no eﬀect on
+this recovery session.
+RS.4 If
+txsid[IDC
+′]
+=
+0,
+delete
+record
+⟨File, sid, IDC
+′, pw, K⟩
+marked
+Stored
+and
+send
+(DelRec, sid, IDC
+′) to S and A Else continue.
+RS.5 Set txsid[IDC
+′] ←txsid[IDC
+′] −1
+RS.6 Append pw
+and K
+to record ⟨RecC, sid, IDC, pw′⟩, overwriting any existing record
+⟨RecC, sid, IDC, ∗, ∗, ∗⟩// The recovery session of IDC is used
+RS.7 Send (RecS, sid, IDC
+′, pw
+?= pw′) to A // A ppKR protocol may not hide whether recovery
+was successful or not
+On input (CompleteRecC, sid, IDC) from A:
+CRC.1 Retrieve record ⟨RecC, sid, IDC, [pw′], [pw], [K]⟩. If record is marked recovered, delete it.
+Otherwise, mark it recovered. // Ensures that record can be retrieved twice before deletion.
+CRC.2 Determine the output as follows:
+(1) If pw = pw′ then set K′ ←K // Recovering the key!
+(2) In all other cases, set K′ ←Fail
+CRC.3 Send (RecResult, sid, K′) to IDC (or A if IDC is corrupt).
+On input (CompleteRecS, sid, IDC) from A// Server ﬁnishes recovery session by learning whether the
+password was correct or not:
+CRS.1 Retrieve record ⟨RecC, sid, IDC, [pw], [pw′], [K]⟩. If record is marked recovered, delete it.
+Otherwise, mark it recovered. // Ensures that record can be retrieved twice before deletion.
+CRS.2 If pw = pw′, set txsid[IDC] ←10 and send (RecResult, sid, IDC, Succ) to S.
+CRS.3 If pw ̸= pw′, then send (RecResult, sid, IDC, Fail) to S (or A if S is corrupt).
+Attacks on Recovery Phase
+On input (CompleteRecC-DoS, sid, IDC) from A // Network attacker or malicious server can always
+make the client fail:
+CRCD.1 Retrieve record ⟨RecC, sid, IDC, ∗, ∗, ∗⟩and delete it.
+CRCD.2 Send (RecResult, sid, Fail) to IDC (or A if IDC is corrupt).
+On input (CompleteRecS-DoS, sid, IDC) from A: // Server ﬁnishes with failure. In particular, it
+never learns if the password was correct
+CRSC.1 Retrieve record ⟨RecC, sid, IDC, ∗, ∗, ∗⟩and delete it.
+CRSD.2 Output (RecResult, sid, IDC, Fail) to S (or A if S is corrupt).
+Fig. 8. Ideal functionality FPPKR, recovery interfaces.
+– CompleteInitC outputs K from the session record to the client (CIC.2)
+– CompleteInitC-DoS outputs Fail to the client (CICD.2)
+– CompleteInitS outputs Succ to the server (CIS.3)
+– CompleteInitS-DoS outputs Fail to the server (CISD.2)
+Additionally to these outputs, the CompleteInitS interface ensures that
+FPPKR installs a password-protected backup key ﬁle for IDC that contains K.
+This works as follows: instead of deleting it, FPPKR marks the File record of IDC
+
+352
+G. T. Davies et al.
+as Stored (CIS.1). Looking ahead, in the recovery phase clients can only recover
+keys from File records that are marked Stored. FPPKR then initializes a counter
+txsid[IDC] to 10 (CIS.2), which indicates the remaining recovery attempts for the
+newly created File record, and sends the output (InitResult, sid, IDC, Succ)
+to the server (CIS.3).
+This concludes the description of FPPKR’s initialization phase. The absence
+of any K- or pw-dependent information in the outputs towards the server (IC.3,
+CIS.3, CISD.2) and the adversary (IS.2) ensures secrecy of K and password
+obliviousness during initialization.
+Recovery Phase. The general structure of record keeping and interfaces of the
+recovery phase are very similar to the initialization phase. First, a client starts
+a recovery session with the RecC interface, then the server has to agree in
+participating in the recovery with the RecS interface, and ﬁnally there are again
+for each party two interfaces to let FPPKR output either success or failure to the
+parties. For the RecC interface, IDC provides as input the password pw′ it chose
+for this recovery attempt. FPPKR then records this in a RecC record (RC.1),
+again overwriting any existing RecC record, and outputs to S and A that IDC
+started a recovery session (RC.2).
+If the server agrees to participate in the recovery session with IDC it calls
+the RecS interface with two (not necessarily distinct) client identities IDC and
+IDC
+∗, where again the second identity IDC
+∗being given by the server allows a
+malicious server to ignore client authentication and claim a diﬀerent identity is
+recovering. FPPKR now does three things:
+– FPPKR checks whether IDC has started recovery in the ﬁrst place by looking for
+a corresponding client recovery session (RS.2) and drops the query otherwise.
+– Then, FPPKR grabs password and key from the stored key record with identity
+IDC
+′ (RS.3), and writes them into the client’s recovery session record. With
+this, FPPKR lets a corrupt server, who can let IDC
+′ be any IDC
+∗(RS.1), re-
+route the recovery attempt of any honest client to the password-protected key
+record of any other honest client, which is again motivated by the fact that
+a malicious server can simply skip client authentication. Conversely, if the
+server is honest, FPPKR ensures IDC
+′ = IDC and hence gives access to some
+File record containing an identity IDC only to a client with that identity
+(Client authentication during recovery).
+– After ﬁnding a ﬁle for a recovery attempt in the previous step, FPPKR checks
+if the recovery attempt counter for IDC
+′ has reached zero (RS.4). In that
+case, it deletes the File record of IDC
+′ marked Stored to ensure that the
+key contained in that record cannot be recovered anymore (limited number
+of recovery attempts with wrong passwords) and outputs DelRec to
+S and A. Otherwise, the recovery attempt counter for IDC
+′ is decremented
+(RS.5) and the password pw and key K obtained from the File record are
+appended to the RecC record (RS.6).
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+353
+Extending the record again serves the purpose of recording that S agreed to
+participate in the recovery with IDC. Note that this extended record is not deleted
+if IDC starts a new recovery session with another call to the RecC interface. This
+reﬂects the fact that the server should still be able to ﬁnish a recovery session
+until it agrees to participate in another recovery session with IDC. Finally, the
+functionality gives the output (RecS, sid, IDC
+′, pw
+?= pw′) to the adversary A
+(RS.7). We let FPPKR leak the latter bit to the adversary because many protocols,
+including the WBP, leak via their communication pattern whether the client
+used the correct password or not. For example, a server might only send its last
+message to the client if it has previously learned that the client’s password was
+correct.
+To complete the recovery session, the adversary calls either CompleteRecC
+or CompleteRecC-DoS and either CompleteRecS or CompleteRecS-
+DoS, again with FPPKR enforcing no order in which the interfaces are called. In
+CompleteRecC the functionality retrieves the extended RecC record (CRC.1)
+and compares the two password pw and pw′ contained in it (CRC.2). If they are
+the same, it outputs the key K contained in the record to the client and otherwise
+outputs Fail to the client. To ensure that both the client and the server can ﬁnish
+the recovery in any order, the RecC record is marked as Recovered or deleted if
+it already is marked as Recovered (CRC.1). Similarly, in the CompleteRecS
+interface FPPKR retrieves the extended RecC record (CRS.1) and outputs either
+Succ or Fail to the server depending on whether the passwords pw and pw′ in the
+RecC record match (CRS.2 and CRS.3). Additionally, if the passwords match,
+the recovery attempt counter txsid[IDC] is reset to 10 (CRS.2). To again enforce
+no order on which party receives its outputs ﬁrst, the RecC record is marked as
+Recovered or deleted if it already is marked as Recovered. Using this mech-
+anism both parties receive their output once, and the record is deleted after both
+parties received their output.
+The
+two
+interfaces
+CompleteRecC-DoS
+and
+CompleteRecS-DoS
+behave exactly the same. The RecC record of IDC is deleted (CRCD.1 and
+CRSD.1) and FPPKR outputs Fail to the corresponding party (CRCD.2 and
+CRSD.2). In these interface we do not use the mechanism of marking the record
+Recovered, since we assume that if either party produces the output Fail the
+other party cannot successfully ﬁnish the recovery anymore.
+It can be seen from the outputs towards the server (RC.2, CRS.2-3,
+CRSD.2) and the adversary (RS.7) that only one bit of information about the
+password used by an honest client during recovery (i.e., match or no match) is
+leaked, protecting the client from online dictionary attacks. Similarly, adver-
+sary and client learn only the match bit about the password contained in the ﬁle
+that the server uses during a recovery session (RS.7, CRC.3, CRCD.2).
+Oﬄine Attacks. The adversary has access to two interfaces MaliciousRec
+and MaliciousInit to mount oﬄine attacks. In both interfaces the adversary
+impersonates some client IDC, however, as described in the discussion of the
+expected security properties, a client can only be impersonated if the server is
+
+354
+G. T. Davies et al.
+corrupt. Therefore, both queries are ignored by FPPKR if S is honest (MR.1 and
+MI.1).
+With the MaliciousInit interface the adversary impersonates a client IDC
+and executes a new initialization for IDC. For this, A can choose a new password
+pw∗and a new key K∗, which are then stored in a new File record marked
+Stored that overwrites any existing File record for IDC (MI.2). FPPKR resets
+the counter txsid to 10 since with any new initialization the client gets 10 new
+recovery attempts.
+With the interface MaliciousRec the adversary impersonates a client and
+tries to recover a client’s key from a guessed password. To this end, A inputs the
+client identity IDC and a password guess pw∗. FPPKR retrieves the File record
+of IDC marked Stored (MR.2) and checks if IDC has any recovery attempts
+left by checking if txsid[IDC] = 0. If IDC has no recovery attempts left, it deletes
+the File record of IDC (limited number of oﬄine guesses) and outputs
+(DelRec, sid, IDC) to A to notify A that the record was deleted (MR.3). Oth-
+erwise, the functionality proceeds to check whether the guessed password pw∗
+matches the password pw from the File record. If the passwords match, the
+adversary gets access to the key stored in the File record, and otherwise FPPKR
+returns Fail to the adversary (MR.4).
+Diﬀerences Between PPKR and 1-PPSS A password-protected secret sharing
+scheme [3] allows a user to retrieve a password-protected secret from a set of
+servers. The servers cannot derive or oﬄine-attack the user’s data unless a cer-
+tain subset of them colludes. A PPKR scheme could be interpreted as a 1-
+PPSS scheme, i.e., where only one server is involved in storing and retrieving
+the password-protected secret. While both primitives are very similar consider-
+ing only honest parties, it is actually the server corruption model that greatly
+diﬀers for PPKR and 1-PPSS. Intuitively, the one server of a 1-PPSS scheme
+holds the only share of a secret (or key, in the terminology of PPKR), i.e., the
+full secret. If such a server is compromised, unlimited oﬄine guesses on the
+shared user secret are unavoidable. PPKR is stronger: upon server compromise,
+only a limited number of password guesses are allowed on user secrets. Hence,
+PPKR never falls back to 1-PPSS, due to the stronger guarantees upon server
+compromise.
+4.2
+On Strengthening FPPKR
+We discuss a potential strengthening of FPPKR regarding the limitation of oﬄine
+guesses by a malicious server. While FPPKR buries keys of honest users whenever a
+user re-initializes (e.g., when refreshing the key, or when changing the password)
+as long as the server is honest, it does not guarantee uniqueness of clients’ backup
+keys if the server is corrupted. Consequently, the limitation of oﬄine guessing
+attempts holds only per initialized key of a user, and not per user. The reason
+why we go with the weaker FPPKR is that the WBP cannot guarantee the stronger
+version, and thus we have to reﬂect this weakness for the security analysis of the
+actual protocol. However, for completeness, we state here the properties that we
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+355
+would ideally like to demand from FPPKR, and the corresponding functionality
+can be read from Fig. 7 by dropping the boxed code. Figure 8 does not change.
+A bit more detailed, we could strengthen FPPKR by disallowing the adversary
+to reroute initializations of honest clients IDC to new identities IDC
+∗, such that
+upon honest re-initialization, FPPKR always buries the former key of that client.
+The security guarantees are then strengthened as follows.
+– Uniqueness of K: If the server is honest, initialization of a key K by user C
+buries any key that C previously initialized, even if the server is malicious.
+– Limited number of oﬄine guesses: The above guarantee extends to mali-
+ciously corrupted servers, i.e., after 10 wrong password guesses to recover any
+honestly initialized the latest honestly initialized key K of any client, K is
+buried and cannot be retrieved by anyone anymore.
+5
+Security Analysis
+The Diﬃculty of a Security Analysis. One might hope that the security of the
+WBP directly follows from the security of its OPAQUE component. There are
+two main reasons why that does not hold true. First, OPAQUE is a key exchange
+protocol that results in two parties sharing a key, while the goal of the WBP
+is to hide the key from the server. Second, the WBP deploys version 03 of the
+OPAQUE Internet Draft [25] to which the security analysis of the OPAQUE
+framework [23] does not apply.
+The main challenge when performing a security analysis of the WBP is to
+tame its complexity (cf. Figure 4 and Fig. 5). Since we want to focus on the
+actual cryptographic protocol, we do not to include the way in which the HSM
+outsources data storage in the security analysis. WhatsApp deploys a Merkle
+tree based outsourced storage routine that lets the HSM put encrypted data
+onto the WhatsApp server’s storage, which should guarantee integrity of the
+data and the ability of the HSM to detect malicious erasures by the WhatsApp
+server. We leave the analysis of this scheme as a future task, and in this work
+simply make the exact same assumptions about it that are claimed in the WBP
+whitepaper [31]. To further tame the complexity of the proof of the WBP, we
+modularize the security proofs of the underlying OPRF and the authenticated
+key exchange (AKE) scheme 3DH. Since previous security analyses did not apply
+to the protocol versions deployed by the WBP, we ﬁrst show their security
+separately, which may be of independent interest. Then we use the resulting
+simulators as subcomponents of the WBP simulator. This proof technique, which
+was already used for AKE in [23], avoids formulating the WBP in the AKE- and
+OPRF-hybrid model. The latter is not even possible, due to the non-black-box
+use that the WBP makes of these components. Altogether, our analysis (1)
+shows a lower bound on the security of the WBP, (2) shows the security of
+the multi-key 2HashDH OPRF and AKE building blocks as deployed by the
+OPAQUE internet draft version 3 [25], as well as malicious client security of
+that OPAQUE version.15
+15 Our proof considers the security of OPAQUE only against a malicious client, since
+the OPAQUE server is run on the incorruptible HSM.
+
+356
+G. T. Davies et al.
+Modeling the HSM. We model the HSM as a hybrid functionality FHSM that can
+be queried by the server as in Fig. 4 and Fig. 5. That is, FHSM contains exactly
+the code that the HSM contains in these ﬁgures. For completeness and clarity,
+FHSM is depicted in Fig. 9. In addition, FHSM provides an interface for clients to
+retrieve pkHSM, which models the setup process that ensures that clients have
+the “right” WhatsApp public key hard-coded into their smartphones.16
+In the UC framework, messages sent between some party and an ideal func-
+tionality are perfectly secure, meaning no network adversary can intercept them
+or tamper with them. So modeling the HSM key distribution as idealized com-
+munication expresses our assumptions
+– that the user installs the correct WhatsApp client on her phone,
+– that WhatsApp’s setup ceremony of the HSM leads to honestly generated
+keys being distributed to the clients,
+– and that only the HSM knows the secret key of the HSM.
+However, analyzing the mechanisms to ensure the above assumptions is not in
+the scope of this work.
+Treatment of Out-of-Order Messages. We assume that the protocol parties
+ignore messages that are received out-of-order. That means that during an ini-
+tialization or a recovery, the parties do nothing upon receiving a message that
+is not formatted as expected. The only exception to this is the respective ﬁrst
+message of an initialization or recovery, i.e., a1 for initialization or (nC, ¯pkC, a2)
+for recovery. If such a message is received, the currently running initialization
+(or recovery, resp.) is discarded and the new initialization (or recovery, resp.)
+is continued. This way, there is never more than one initialization (or recovery,
+resp.) running per user.
+Corruption Model. All corruptions are malicious, meaning that the adversary
+can fully control not only the communication but also the behavior of a corrupted
+party. We consider adaptive corruptions of clients and the server. However, we
+add the restriction that clients cannot be corrupted during an ongoing initializa-
+tion or recovery session. More precisely, the environment is not allowed to corrupt
+some client IDC if, following the most recent (InitC, ∗) input from the environ-
+ment to IDC, IDC did not produce a corresponding output (InitResult, ∗) yet.
+Analogously, if following the most recent (RecC, ∗) input from the environment
+to IDC, IDC did not produce a corresponding output (RecResult, ∗) yet, the
+environment is not allowed to corrupt IDC as well. We deem this reasonable,
+since the time it takes to execute the initialization or recovery protocol is rela-
+tively short. Formally, this means that the eﬀect of adaptive client corruptions
+16 One might be tempted to model this by giving the HSM’s public key as input to
+the client instead. However, that would mean that the UC environment machine
+can give public keys to clients for which the environment knows the corresponding
+secret key. For WBP the clients have a hard-coded public key for which only the
+HSM knows the secret key, so this would not adequately model WBP and make the
+already complex security analysis unreasonably more complex.
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+357
+Ideal functionality FHSM
+The functionality talks to a server S hardcoded in sid and to arbitrary other parties P.
+Initially:
+KEnc
+HSM
+$←−{0, 1}λ
+(skSig
+HSM, pkSig
+HSM)
+$←−Σ.KeyGen(1λ)
+On input (RecS, aid, nc, ¯pkC, a2) :
+(skEnc
+HSM, pkEnc
+HSM)
+$←−PKE.KeyGen(1λ)
+(KPRF
+aid , m, ctr) ←sec retr(aid)
+(skDH
+HSM, pkDH
+HSM)
+$←−DH.KeyGen(1λ)
+if no record can be found:
+pkHSM = {pkSig
+HSM, pkEnc
+HSM, pkDH
+HSM}
+return (RecResult, aid, Fail)
+skHSM = {skSig
+HSM, skEnc
+HSM, skDH
+HSM, KEnc
+HSM}
+parse m = e ∥pkC ∥e cred ∥ne ∥Te
+if ctr = 0 :
+On input (GetPK) from P ∈{IDC, S, A}
+return (DelRec, aid)
+return pkHSM to P
+else :
+set ctr′ ←ctr −1
+On input (InitS, aidnew, aidold, a1) from S :
+sec set ctr(aid, ctr′)
+sec delete(aidold)
+b2 ←a
+KPRF
+aid
+2
+if sec retr(aidnew) is successful:
+nS
+$←−{0, 1}λ
+return (InitResult, aidnew, Fail)
+( ¯pkS, ¯skS)
+$←−DH.KeyGen
+else :
+pre ←(a2, nc, ¯pkC, pkDH
+HSM, e cred,
+KPRF
+aidnew
+$←−Zp
+ne, Te, b2, nS, ¯pkS)
+b1 ←a
+KPRF
+aidnew
+1
+ikm ←( ¯pk
+¯skS
+C , ¯pk
+skDH
+HSM
+C
+, pkC
+¯skS)
+n1
+$←−{0, 1}λ
+(KMAC
+S
+, KMAC
+C
+, shk) ←KDF2(ikm, pre)
+σ1
+$←−Σ.Sign(skSig
+HSM; b1 ∥n1)
+TS ←MAC.Tag(KMAC
+S
+, H3(pre))
+trHSM ←H3(a1, b1, n1)
+σ2
+$←−Σ.Sign(skSig
+HSM; b2)
+return (aidnew, b1, n1, σ1) to S
+return (aid, b2, e cred, ne, Te, nS, ¯pkS, TS, σ2)
+On input (File, aidnew, E) :
+On input (RecResult, aid, T ′
+C) :
+m ←PKE.Dec(skEnc
+HSM; E)
+TC ←MAC.Tag(KMAC
+C
+, H3(pre ∥TS))
+parse m = (e ∥trC ∥pkC ∥e cred ∥ne ∥Te)
+if T ′
+C ̸= TC :
+if trC ̸= trHSM :
+return (RecResult, aid, Fail) to S
+return (InitResult, aidnew, Fail) to S
+else :
+else :
+c
+$←−AE.Enc(shk; e)
+sec store(aidnew, (KPRF
+aidnew,
+sec set ctr(aid, 10)
+e ∥pkC ∥e cred ∥ne ∥Te, ctr ←10))
+return (aid, c) to S
+return (InitResult, aidnew, Succ) to S
+Fig. 9. The ideal functionality FHSM.
+is that the adversary (1) learns all values that the client stores after completion
+of an initialization or recovery phase, namely key K, and (2) controls the client
+behavior from that point on.
+Let AE′ be the AE scheme that is implicitly used in Figs. 4 and 5 to encrypt
+skC, that is:
+– KeyGen′(1λ) →(Kmask, Kauth), where Kmask, Kauth
+$←−{0, 1}λ
+– Enc′((Kmask, Kauth), m) →(m ⊕Kmask, MAC.Tag(Kauth, m ⊕Kmask))
+– Dec′((Kmask, Kauth), (e cred, Te)) →
+
+⊥if MAC.Vfy(Kauth, m) = 0
+e cred ⊕Kmask else
+Theorem 2. Let H1, H2, KDF1, KDF2 be random oracles such that 2HashDH
+UC-realizes the “multi-key” functionality FOPRF and 3DH UC-realizes the
+
+358
+G. T. Davies et al.
+authenticated key exchange functionality FAKE-KCI, which are formally deﬁned
+in the full version [17]. Let Σ = (Σ.KeyGen, Σ.Sign, Σ.Vfy) be an sEUF-CMA-
+secure signature scheme, MAC = (MAC.Tag, MAC.Vfy) be an sEUF-CMA-secure
+MAC, PKE = (PKE.KeyGen, PKE.Enc, PKE.Dec) be an IND-CPA-secure public
+key encryption scheme, AE = (AE.KeyGen, AE.Enc, AE.Dec) be an authenticated
+encryption scheme, AE′ = (KeyGen′, Enc′, Dec′) have random-key robustness, and
+H3 : {0, 1}∗→{0, 1}λ be a collision resistant hash function.
+Then the WBP as described in Fig. 4 and Fig. 5 UC-realizes the PPKR func-
+tionality of Fig. 7 and Fig. 8 in the FHSM-hybrid model, assuming malicious adap-
+tive corruption of clients as deﬁned above, malicious adaptive corruption of the
+server, and a client-authenticated channel between clients and the server. Con-
+cretely, for any eﬃcient adversary against WBP (interacting with FHSM), there
+is an eﬃcient simulator Sim that interacts with FPPKR and produces a view such
+that for every eﬃcient environment Z, it holds that
+DistWBP,{FPPKR,Sim}
+Z
+(λ) ≤Dist2HashDH,{FOPRF,SimOPRF}
+Z∗
+(λ)
++ Dist3DH,{FAKE-KCI,Sim3DH}
+Z∗
+(λ)
++ AdvsEUF-CMA
+B,Σ
+(λ) + 2QRecAdvsEUF-CMA
+B,MAC
+(λ)
++ 2AdvCR
+B,H3(λ) + QInitAdvIND-CPA
+B,PKE (λ)
++ QRecAdvIND-CPA
+B,AE
+(λ) + QRecAdvINT-CTXT
+B,AE
+(λ)
++
+QInit
+2
+
+2−λ +
+QRec
+2
+
+2−λ+1 +
+QKDF1
+2
+
+AdvRKR
+B,AE′(λ),
+where QInit ∈N is an upper bound on the number of initializations, QRec ∈N
+is an upper bound on the number of recoveries, QKDF1 is an upper bound on the
+number of KDF1 queries, and B, resp. Z∗, is the adversary in the corresponding
+security experiments.
+Proof. A proof sketch outlining the proof steps, the full proof, as well as a
+discussion of the proof can be found in the full version [17].
+6
+Conclusion and Future Work
+We have presented the ﬁrst formal security analysis of the widely-used
+WhatsApp backup protocol and conﬁrmed that the WBP indeed provides strong
+security guarantees such as online protection of the password, and the strength
+and secrecy of the backup key. However, we also show how a compromised
+WhatsApp server can increase the number of admissible password guesses from
+only ctr on the most recent password of the user, to qpw ∗ctr on any password pw
+ever entered by the user, where qpw is the number of initializations performed
+with pw by the WhatsApp client device. Our analysis and formal modeling fur-
+ther spans a multitude of interesting research questions, that we divide into three
+categories.
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+359
+Widening the Scope of the Analysis. In this work we have only focused on the
+cryptographic core of the WBP. Potential avenues for future research include
+a formal analysis of the (Merkle tree based) protocol which the HSM uses to
+securely outsource storage to untrusted servers. Another interesting direction
+would be to extend the corruption model to proactive corruptions, which allows
+to investigate whether WBP participants can recover faithfully from corruptions,
+e.g., after having granted compelled access at border control.
+Direct Improvements of the WBP. The increased number of password guesses is
+only possible because the HSM cannot authenticate the client but has to trust the
+WhatsApp server that it indeed only acts on demand of honest clients. This can,
+e.g., be achieved if the client directly authenticates towards the HSM. That way,
+the server cannot impersonate clients towards the HSM anymore. However, this
+approach also requires WhatsApp to modify its authentication infrastructure,
+which is currently independent of the WBP. An “easy” modiﬁcation of WBP is to
+let the HSM sign all messages. This provides direct protection of replay attacks
+by the adversary, against which the WBP protects implicitly using message
+authentication codes (MACs). Such “full” signing would greatly simplify the
+analysis of the protocol. This raises also the interesting question whether other
+potentially more costly protection mechanisms of the integrity of messages could
+be dropped if signing ensures HSM-authenticated channels, ending up with a
+more eﬃcient protocol overall. Lastly, regarding eﬃciency improvements, one
+could look into whether a “less secure” (and potentially more eﬃcient) version
+of OPAQUE could be plugged into the WBP, where protection against server
+compromise is dropped. Server compromise seems not a realistic attack scenario
+in this particular application of OPAQUE, because the OPAQUE server part is
+run on an HSM, which needs to be trusted anyway.
+We note here that the above discussed eﬃciency improvements might not be
+of immediate interest to WhatsApp, where the WBP is only seldomly executed
+per user. Improvements regarding the security must be carefully analyzed and
+justiﬁed, since updating the HSM code of WBP requires WhatsApp to replace
+all HSMs with new ones and to perform the setup ceremony again.
+Constructing PPKR Diﬀerently. The WBP is built around the OPAQUE proto-
+col, which in turn deploys an oblivious pseudorandom function (OPRF) and an
+authenticated key exchange (AKE) protocol. The authenticated key exchange
+part serves as a tool for convincing the HSM of correctness of the client’s pass-
+word, which is necessary to ensure that the guess attempt counter can be reset
+to 10 guesses. It is an interesting open question whether this could be achieved
+from simpler primitives, such as symmetric primitives, which are more eﬃcient
+than the public-key-based AKE.
+
+360
+G. T. Davies et al.
+References
+1. Direct correspondences with Kevin Lewi and other members of the WhatsApp
+engineering team, 2022–2023
+2. Alwen, J., Coretti, S., Dodis, Y.: The double ratchet: security notions, proofs, and
+modularization for the signal protocol. In: Ishai, Y., Rijmen, V. (eds.) EURO-
+CRYPT 2019, Part I. LNCS, vol. 11476, pp. 129–158. Springer, Cham (2019).
+https://doi.org/10.1007/978-3-030-17653-2 5
+3. Bagherzandi, A., Jarecki, S., Saxena, N., Lu, Y.: Password-protected secret sharing.
+In: ACM CCS 2011, pp. 433–444. ACM Press (2011)
+4. Bellare, M., Singh, A.C., Jaeger, J., Nyayapati, M., Stepanovs, I.: Ratcheted
+encryption and key exchange: the security of messaging. In: Katz, J., Shacham, H.
+(eds.) CRYPTO 2017, Part III. LNCS, vol. 10403, pp. 619–650. Springer, Cham
+(2017). https://doi.org/10.1007/978-3-319-63697-9 21
+5. Bienstock, A., Fairoze, J., Garg, S., Mukherjee, P., Raghuraman, S.: A more com-
+plete analysis of the signal double ratchet algorithm. In: Dodis, Y., Shrimpton, T.
+(eds.) CRYPTO 2022, Part I. LNCS, vol. 13507, pp. 784–813. Springer, Heidelberg
+(2022). https://doi.org/10.1007/978-3-031-15802-5 27
+6. Bourdrez, D., Krawczyk, D.H., Lewi, K., Wood, C.A.: The OPAQUE Asymmet-
+ric PAKE Protocol. Internet-Draft draft-irtf-cfrg-opaque-09, Internet Engineer-
+ing Task Force (2022). https://datatracker.ietf.org/doc/draft-irtf-cfrg-opaque/
+09/. Work in Progress
+7. Brost, J., Egger, C., Lai, R.W.F., Schmid, F., Schr¨oder, D., Zoppelt, M.: Threshold
+password-hardened encryption services. In: ACM CCS 2020, pp. 409–424. ACM
+Press (2020)
+8. Camenisch, J., Lysyanskaya, A., Neven, G.: Practical yet universally composable
+two-server password-authenticated secret sharing. In: ACM CCS 2012, pp. 525–
+536. ACM Press (2012)
+9. Canetti, R.: Universally composable security: A new paradigm for cryptographic
+protocols. In: 42nd FOCS, pp. 136–145. IEEE Computer Society Press (2001)
+10. Canetti, R., Jain, P., Swanberg, M., Varia, M.: Universally composable end-to-end
+secure messaging. In: Dodis, Y., Shrimpton, T. (eds.) CRYPTO 2022, Part II.
+LNCS, vol. 13508, pp. 3–33. Springer, Heidelberg (2022). https://doi.org/10.1007/
+978-3-031-15979-4 1
+11. Casacuberta, S., Hesse, J., Lehmann, A.: SoK: oblivious pseudorandom functions.
+In: IEEE EuroS&P 2022. IEEE (2022)
+12. Cathcart, W.: (2022). https://twitter.com/wcathcart/status/16006038264776171
+52
+13. Chase, M., Perrin, T., Zaverucha, G.: The signal private group system and anony-
+mous credentials supporting eﬃcient veriﬁable encryption. In: ACM CCS 2020, pp.
+1445–1459. ACM Press (2020)
+14. Cohn-Gordon, K., Cremers, C., Dowling, B., Garratt, L., Stebila, D.: A formal
+security analysis of the signal messaging protocol. In: EuroS&P, pp. 451–466. IEEE
+(2017)
+15. Das, P., Hesse, J., Lehmann, A.: DPaSE: distributed password-authenticated
+symmetric-key encryption, or how to get many keys from one password. In: ASI-
+ACCS 2022, pp. 682–696. ACM Press (2022)
+16. Davidson, A., Faz-Hernandez, A., Sullivan, N., Wood, C.A.: Oblivious Pseudo-
+random Functions (OPRFs) using Prime-Order Groups. Internet-Draft draft-irtf-
+cfrg-voprf-17, Internet Engineering Task Force (2023). https://datatracker.ietf.org/
+doc/draft-irtf-cfrg-voprf/17/. Work in Progress
+
+Security Analysis of the WhatsApp End-to-End Encrypted Backup Protocol
+361
+17. Davies, G.T., et al.: Security analysis of the whatsapp end-to-end encrypted backup
+protocol. Cryptology ePrint Archive, Paper 2023/843 (2023). https://eprint.iacr.
+org/2023/843
+18. Doussot, G., Lacharit´e, M.S., Schorn, E.: End-to-End Encrypted Backups Security
+Assessment (2021). https://research.nccgroup.com/wp-content/uploads/2021/10/
+NCC Group WhatsApp E001000M Report 2021-10-27 v1.2.pdf
+19. Gentry, C., MacKenzie, P., Ramzan, Z.: A method for making password-based
+key exchange resilient to server compromise. In: Dwork, C. (ed.) CRYPTO 2006.
+LNCS, vol. 4117, pp. 142–159. Springer, Heidelberg (2006). https://doi.org/10.
+1007/11818175 9
+20. Jarecki, S., Kiayias, A., Krawczyk, H.: Round-optimal password-protected secret
+sharing and T-PAKE in the password-only model. In: Sarkar, P., Iwata, T. (eds.)
+ASIACRYPT 2014. LNCS, vol. 8874, pp. 233–253. Springer, Heidelberg (2014).
+https://doi.org/10.1007/978-3-662-45608-8 13
+21. Jarecki, S., Kiayias, A., Krawczyk, H., Xu, J.: Highly-eﬃcient and compos-
+able password-protected secret sharing (or: how to protect your bitcoin wallet
+online). In: IEEE European Symposium on Security and Privacy, EuroS&P 2016,
+Saarbr¨ucken, Germany, 21–24 March 2016, pp. 276–291. IEEE (2016)
+22. Jarecki, S., Krawczyk, H., Resch, J.K.: Updatable oblivious key management for
+storage systems. In: ACM CCS 2019, pp. 379–393. ACM Press (2019)
+23. Jarecki, S., Krawczyk, H., Xu, J.: OPAQUE: an asymmetric PAKE protocol
+secure against pre-computation attacks. In: Nielsen, J.B., Rijmen, V. (eds.) EURO-
+CRYPT 2018, Part III. LNCS, vol. 10822, pp. 456–486. Springer, Cham (2018).
+https://doi.org/10.1007/978-3-319-78372-7 15
+24. Jost, D., Maurer, U., Mularczyk, M.: A uniﬁed and composable take on ratcheting.
+In: Hofheinz, D., Rosen, A. (eds.) TCC 2019, Part II. LNCS, vol. 11892, pp. 180–
+210. Springer, Cham (2019). https://doi.org/10.1007/978-3-030-36033-7 7
+25. Krawczyk, D.H., Lewi, K., Wood, C.A.: The OPAQUE Asymmetric PAKE
+Protocol.
+Internet-Draft
+draft-irtf-cfrg-opaque-03,
+Internet
+Engineering
+Task
+Force (2021). https://datatracker.ietf.org/doc/draft-irtf-cfrg-opaque/03/. Work in
+Progress
+26. Lai, R.W.F., Egger, C., Reinert, M., Chow, S.S.M., Maﬀei, M., Schr¨oder, D.: Simple
+password-hardened encryption services. In: USENIX Security 2018, pp. 1405–1421.
+USENIX Association (2018)
+27. Novak, M.: Paul Manafort Learns That Encrypting Messages Doesn’t Matter If
+the Feds Have a Warrant to Search Your iCloud Account (2018). https://gizmodo.
+com/paul-manafort-learns-that-encrypting-messages-doesnt-ma-1826561511
+28. Perrin, T.: The noise protocol framework. http://noiseprotocol.org/noise.html
+29. R¨osler, P., Mainka, C., Schwenk, J.: More is less: on the end-to-end security of
+group chats in signal, whatsapp, and threema. In: EuroS&P, pp. 415–429. IEEE
+(2018)
+30. Vatandas, N., Gennaro, R., Ithurburn, B., Krawczyk, H.: On the cryptographic
+deniability of the signal protocol. In: Conti, M., Zhou, J., Casalicchio, E., Spog-
+nardi, A. (eds.) ACNS 2020, Part II. LNCS, vol. 12147, pp. 188–209. Springer,
+Cham (2020). https://doi.org/10.1007/978-3-030-57878-7 10
+31. WhatsApp: Security of End-to-End Encrypted Backups (2021). https://www.
+whatsapp.com/security/WhatsApp Security Encrypted Backups Whitepaper.pdf
+32. WhatsApp: WhatsApp Encryption Overview (2021). https://www.whatsapp.com/
+security/WhatsApp-Security-Whitepaper.pdf
+

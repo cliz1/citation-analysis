@@ -382,6 +382,14 @@ n_truncated_early  = 0  # references section cut short by appendix/acknowledgeme
 n_empty_refs_text  = 0  # heading found but extracted text was empty after truncation
 parse_totals = {"dropped_too_short": 0, "stray_lines": 0}
 
+TEXT_DIR = Path(f"text/{CONFERENCE}")
+TEXT_DIR.mkdir(parents=True, exist_ok=True)
+
+def _sanitize_filename(title: str, max_len: int = 100) -> str:
+    s = re.sub(r'[^\w\s\-]', '', title)
+    s = re.sub(r'\s+', '_', s.strip())
+    return s[:max_len].rstrip('_')
+
 citation_rows = []
 
 for title, pdf_path in deduped_pdfs.items():
@@ -389,6 +397,8 @@ for title, pdf_path in deduped_pdfs.items():
     if not pdf_text:
         n_pdf_errors += 1
         continue
+
+    (TEXT_DIR / f"{_sanitize_filename(title)}.txt").write_text(pdf_text, encoding="utf-8")
 
     references_text, truncated = extract_references_section(pdf_text)
     if truncated:
@@ -421,6 +431,7 @@ df_citations = pd.DataFrame(citation_rows)
 _csv_opts = dict(index=False, escapechar="\\", quoting=1)
 df_citations.to_csv(f"csv/{CONFERENCE}_citations_raw.csv", **_csv_opts)
 print(f"Saved {len(df_citations)} citation rows to csv/{CONFERENCE}_citations_raw.csv")
+print(f"Saved {len(deduped_pdfs) - n_pdf_errors} full-text files to {TEXT_DIR}/")
 
 # Fall-through summary
 print(f"\nPDF extraction fall-throughs ({len(deduped_pdfs)} papers attempted):")

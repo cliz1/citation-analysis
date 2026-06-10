@@ -1,0 +1,2304 @@
+This paper is included in the Proceedings of the 
+32nd USENIX Security Symposium.
+August 9–11, 2023 • Anaheim, CA, USA
+978-1-939133-37-3
+Open access to the Proceedings of the 
+32nd USENIX Security Symposium 
+is sponsored by USENIX.
+Tight Auditing of Differentially Private Machine Learning
+Milad Nasr, Jamie Hayes, Thomas Steinke, and Borja Balle, Google DeepMind; 
+Florian Tramèr, ETH Zurich; Matthew Jagielski, Nicholas Carlini, and 
+Andreas Terzis, Google DeepMind
+https://www.usenix.org/conference/usenixsecurity23/presentation/nasr
+
+Tight Auditing of Differentially Private Machine Learning
+Milad Nasr1
+Jamie Hayes1
+Thomas Steinke1
+Borja Balle1
+Florian Tramèr2
+Matthew Jagielski1
+Nicholas Carlini1
+Andreas Terzis1
+1Google DeepMind
+2ETHZ
+Abstract
+Auditing mechanisms for differential privacy use proba-
+bilistic means to empirically estimate the privacy level of an
+algorithm. For private machine learning, existing auditing
+mechanisms are tight: the empirical privacy estimate (nearly)
+matches the algorithm’s provable privacy guarantee. But these
+auditing techniques suffer from two limitations. First, they
+only give tight estimates under implausible worst-case as-
+sumptions (e.g., a fully adversarial dataset). Second, they
+require thousands or millions of training runs to produce non-
+trivial statistical estimates of the privacy leakage.
+This work addresses both issues. We design an improved
+auditing scheme that yields tight privacy estimates for natural
+(not adversarially crafted) datasets—if the adversary can see
+all model updates during training. Prior auditing works rely on
+the same assumption, which is permitted under the standard
+differential privacy threat model. This threat model is also
+applicable, e.g., in federated learning settings. Moreover, our
+auditing scheme requires only two training runs (instead of
+thousands) to produce tight privacy estimates, by adapting
+recent advances in tight composition theorems for differential
+privacy. We demonstrate the utility of our improved auditing
+schemes by surfacing implementation bugs in private machine
+learning code that eluded prior auditing techniques.
+1
+Introduction
+Training ML models with stochastic gradient descent (SGD)
+is not a privacy-preserving function. There is ample evidence
+that private information from training data can be inferred
+by observing model parameters trained with SGD or other
+optimizers [4, 6, 8, 23, 25, 33]. There is also substantial ev-
+idence that this privacy risk increases with the number of
+model parameters [7,13], a worrying fact given we are now
+ﬁrmly in the age of large models with hundreds of billions of
+parameters.
+Fortunately, we can train models with differential privacy
+(DP) guarantees [2, 12], which provably upper bounds any
+privacy leakage of the training data. Private training typically
+uses a variant of SGD referred to as Differentially Private
+Stochastic Gradient Descent (DP-SGD). DP-SGD’s analysis
+has been conjectured to be overly conservative, and to provide
+a provable guarantee on privacy leakage that overestimates
+the leakage in practice [15]. Nasr et al. [24] partially refuted
+this conjecture by showing that DP-SGD’s analysis gives a
+tight estimate of the empirical privacy leakage in some worst-
+case regimes (that fall under the DP threat model). However,
+their tightness result only holds in a narrow and very strong
+adversarial model, where the adversary chooses the entire
+training dataset. This leads to a natural follow-up question:
+Q1: Is DP-SGD’s privacy analysis only tight for worst-
+case datasets?
+A further limitation of the approach of Nasr et al.—and
+other techniques for auditing DP-SGD [14, 19, 35]—is the
+computational overhead. Differential privacy is a probabilistic
+guarantee, and so empirically estimating an algorithm’s pri-
+vacy requires computing tight probability estimates of certain
+events. Existing auditing techniques do this by running the
+training algorithm thousands of times—which is prohibitively
+expensive for large models that can cost millions of dollars to
+train even once. Our second question is thus:
+Q2: Can DP-SGD’s privacy leakage be tightly estimated
+with a small number of training runs?
+In this work, we design a new auditing scheme for DP-SGD
+that resolves Q1 and Q2. Our scheme provides much tighter
+empirical privacy estimates compared to prior work [14,19,
+24,35], which match the provable privacy leakage obtained
+from DP-SGD’s analysis even for non-adversarially-chosen
+training datasets. We further design methods to reduce the
+number of models that need to be trained for auditing, from
+tens of thousands to just two. Despite this massive reduction
+in computational overhead, our empirical privacy estimates
+remain tight.
+Our improvements over prior auditing approaches stem
+from a fairly simple insight. We observe that existing auditing
+USENIX Association
+32nd USENIX Security Symposium    1631
+
+techniques are universal: they make no assumption about the
+privacy mechanism. We show that “opening the black box”
+and tailoring our scheme to the speciﬁc privacy mechanisms
+used in DP-SGD results in much tighter empirical privacy esti-
+mates and with signiﬁcantly fewer observations (i.e., training
+runs). Intuitively, (ε,δ)-DP—the standard formulation of DP
+used in DP-SGD analysis—is concerned with outcomes that
+have probability O(δ) and, thus, we need many training runs
+to observe such outcomes even once. However, we can make
+inferences about these rare outcomes from common outcomes
+by leveraging our knowledge about the privacy mechanism.
+As an analogy, if we know that data follows a Gaussian distri-
+bution, then we could estimate the mean and variance from
+a few samples, and make inferences about the tails of the
+distribution without ever observing those tails. At a technical
+level, we adapt existing DP auditing techniques to Gaussian
+DP and functional DP [11] which provide a more ﬁne-grained
+characterisation of the privacy leakage for speciﬁc mecha-
+nisms. We also verify experimentally that our results agree
+with existing auditing techniques [24, 35] after sufﬁciently
+many training runs.
+Our improved auditing scheme enables new applications.
+First, our tight characterization of the empirical privacy leak-
+age of DP-SGD unlocks the ability to directly inspect the
+impact of various model and training design choices on pri-
+vacy. We explore how different choices of hyperparameters,
+model architecture, and the assumed attacker model impact
+DP-SGD’s empirical privacy leakage.
+Second, our tight and computationally efﬁcient auditing
+enables us to (probabilistically) verify the correctness of DP-
+SGD implementations. Indeed, implementing DP-SGD is
+notoriously difﬁcult: subtle privacy bugs resulting from in-
+correct gradient clipping or noising are common and hard
+to detect [1,27,28]. Auditing can help detect such errors by
+showing that the implementation empirically leaks more in-
+formation than it should provably allow. However, existing
+auditing tools are either too expensive to run [24], or provide
+leakage estimates that are too loose to catch the most perni-
+cious errors [28, 35]. We show that our improved auditing
+scheme can surface bugs that would not have been captured
+by prior methods [14,19,24,35]. We thus encourage develop-
+ers of differentially private learning algorithms to incorporate
+our auditing tools into their testing pipeline.
+2
+Background
+We begin with a brief background on differential privacy (DP),
+private machine learning, and techniques to audit the privacy
+guarantees claimed under DP.
+2.1
+Differential privacy
+Differential privacy (DP) has become the gold standard
+method for providing algorithmic privacy [12].
+Deﬁnition 1 ((ε,δ)−Differential Privacy (DP)). An algo-
+rithm M is said to be (ε,δ)-DP if for all sets of events
+S ⊆Range(M ) and all neighboring data sets D,D′ ∈Dn
+(where D is the set of all possible data points) that differ in
+one sample we have the guarantee:
+Pr[M (D) ∈S] ≤eε Pr[M (D′) ∈S]+δ
+(1)
+Informally in the context of machine learning, if a training
+algorithm M satisﬁes (ε,δ)-DP then an adversary’s ability to
+distinguish if M was run on D or D′ is bounded by eε, and δ
+is the probability that this upper bound fails to hold.
+Trade-off functions and functional DP.
+There are other
+useful formalisms of DP. For example, functional differential
+privacy ( f-DP) [11] originates from a hypothesis testing inter-
+pretation of differential privacy [16,31], where an adversary
+aims to distinguish D from D′ given the output of the privacy
+mechanism. Although our results will be framed using (ε,δ)-
+DP, our auditing framework will operate using functional
+DP. Consider the following hypothesis testing problem, given
+some machine learning model f:
+H0: the model f is drawn from P
+H1: the model f is drawn from Q
+where P and Q are the probability distributions M (D) and
+M (D′), respectively. If M is differentially private, we can de-
+rive a bound on an adversary’s power 1−β (i.e. True Positive
+Rate or TPR, where β is the False Negative Rate or Type II er-
+ror) for this hypothesis test at a signiﬁcance level α (i.e. False
+Positive Rate, FPR, or Type I error). For example, (ε,δ)-DP
+upper-bounds the power of this hypothesis test by eεα+δ.
+Dong et al. [11] deﬁne a trade-off function to capture the
+difﬁculty in distinguishing the two hypotheses above in terms
+of the adversary’s type I and type II errors. Consider a rejec-
+tion rule 0 ≤φ(f) ≤1 that takes as input the model f trained
+by the mechanism M , and which outputs a probability that
+we should reject the null hypothesis H0. This rejection rule
+has type I error αφ = EP[φ] and type II error βφ = 1−EQ[φ],
+which gives rise to the following trade-off function:
+Deﬁnition 2 (Trade-off function [11]). For any two proba-
+bility distributions P and Q on the same space deﬁne the
+trade-off function T(P,Q) : [0,1] −→[0,1] as
+T(P,Q)(α) = inf {βφ : αφ ≤α}
+(2)
+where the inﬁmum is taken over all rejection rules φ.
+The trade-off function completely characterizes the bound-
+ary of achievable type II errors at a given signiﬁcance level α,
+and the optimal test is given by the Neyman-Pearson Lemma.
+For arbitrary functions f,g deﬁned on [0,1], we say that f ≥g
+if f(α) ≥g(α) for all α ∈[0,1]. Then, if T(P,Q) ≥T( ˜P, ˜Q),
+this means the distributions P and Q are harder to distinguish
+1632    32nd USENIX Security Symposium
+USENIX Association
+
+than ˜P and ˜Q at any signiﬁcance level. Thus, a privacy mech-
+anism that produces distributions P and Q on neighboring
+datasets is strictly more private than one that produces dis-
+tributions ˜P and ˜Q. Dong et al. [11] introduce the following
+formulation of differential privacy using this insight:
+Deﬁnition 3 (f-differential privacy ( f-DP)). Let f be a trade-
+off function. A mechanism M is f-DP if
+T(M (D),M (D′)) ≥f
+(3)
+for all neighboring datasets D and D′.
+Dong et al. show that (ε,δ)-DP is equivalent to f-DP for
+the following trade-off function:
+fε,δ(α) = max{0,1−δ−eεα,e−ε(1−δ−α)}
+(4)
+When the underlying distributions P,Q are Gaussian, we
+get a special case of f-DP called Gaussian DP (GDP) [11]:
+Deﬁnition 4 (µ-Gaussian Differential Privacy (µ-GDP)). A
+mechanism M is µ-GDP if
+T(M (D),M (D′))(α) ≥Φ(Φ−1(1−α)−µ) ,∀α ∈[0,1] (5)
+for all neighboring datasets D and D′, where Φ is the standard
+normal CDF.
+One of the main advantages of GDP is that composition
+of differential privacy guarantees becomes simple, the com-
+position of two mechanisms following µ1-GDP and µ2-GDP
+satisﬁes µ-GDP with µ =
+q
+µ2
+1 +µ2
+2. A ﬁnal fact that will be
+useful throughout the paper is that it is possible to interpret
+µ-GDP in terms of (ε,δ)-DP:
+Corollary 5 (µ-GDP to (ε,δ)-DP conversion [11]). A mech-
+anism is µ-GDP iff it is (ε,δ(ε))-DP for all ε ≥0, where:
+δ(ε) = Φ
+
+−ε
+µ + µ
+2
+
+−eεΦ
+
+−ε
+µ −µ
+2
+
+(6)
+2.2
+Differentially Private Machine Learning
+Stochastic gradient descent (SGD) can be made differentially
+private through two modiﬁcations: clipping individual gradi-
+ents to maximum Euclidean norm of C and adding random
+noise to the average of a batch of gradients; this algorithm
+is commonly referred to as DP-SGD. Intuitively, clipping
+bounds the individual contribution any sample can make to
+the model parameters, θ, and adding random noise serves
+to obfuscate the contributions of any individual example. In
+practice the update rule for DP-SGD is given as follows: let
+B denote a batch of examples sampled independently from a
+dataset D, each with probability q, ℓbe a loss function, and η
+a learning rate, then
+θ ←θ−η
+ 
+N (0,σ2I)+ 1
+|B| ∑
+z∈B
+clipC (∇θℓ(θ,z))
+!
+(7)
+where clipC(v) projects v onto the ℓ2 ball of radius C with
+clipC(v) = v·min
+
+1, C
+∥v∥2
+
+.
+When we refer to a privatized gradient, we mean the gradi-
+ent after it has been clipped, then averaged, and then noised.
+To achieve (ε,δ)-DP, typically σ is typically on the order
+of Ω(q
+p
+T log(1/δ)ε−1) [2] where T is the number of gradi-
+ent descent iterations, but tighter bounds for a given σ have
+been found [11,18,21]. Each iteration of DP-SGD satisﬁes a
+particular (ε,δ)-DP guarantee through the subsampled Gaus-
+sian Mechanism [2]—a composition of data subsampling
+and Gaussian noise addition. Since DP is immune to post-
+processing, we can compose this guarantee over multiple
+updates to reach a ﬁnal (ε,δ)-DP guarantee.
+Unfortunately, a naive composition—by summing the ε’s
+from each iteration—gives values of ε ≫104 for accurate
+neural networks. This yields a trivial upper bound of ≈1
+on the true positive rate for the hypothesis testing problem
+discussed in Section 2.1, for any reasonable value of α. Such
+a large ε thus does not guarantee any meaningful privacy.
+As a result, many works have proposed more sophisticated
+methods for analyzing the composition of DP-SGD iterations,
+which can prove much tighter values of ε < 10 for the same
+algorithm [2,11,18,21].
+2.3
+Auditing DP-SGD
+Any differentially private algorithm M bounds an adversary’s
+ability to infer if M was trained with D or D′. Kairouz et
+al. [16] show that if M is (ε,δ)-DP then it deﬁnes a privacy
+region (a bound on an attacker’s TPR and FPR) given by
+R (ε,δ) = {(α,β) | α+eεβ ≥1−δ∧eεα+β ≥1−δ ∧
+α+eεβ ≤eε +δ∧eεα+β ≤eε +δ} (8)
+In other words, an (ε,δ)-DP algorithm implies a valid re-
+gion for the type I (α) and type II (β) error of any test.
+The goal of a privacy audit is to design a hypothesis test
+that distinguishes D from D′ while minimizing α and β. Then,
+we can compute the privacy budget ε, for any ﬁxed value
+of δ, using Equation (8) (or as we will see later, via other
+means). In practice, for many interesting differentially private
+algorithms including DP-SGD, one cannot compute the min-
+imum possible values of α and β in closed form, and so we
+must rely on empirical estimates. This is done by designing
+a distinguisher that predicts if mechanism M operated on D
+or D′. We then run the distinguishing experiment multiple
+USENIX Association
+32nd USENIX Security Symposium    1633
+
+times (i.e., by running M multiple times to train a model on
+a random choice of D or D′), collect these observations, and
+compute empirical lower and upper bounds α ∈(α, ¯α) and
+β ∈(β, ¯β) using a binomial proportion conﬁdence interval,
+where the α and ¯α are lower and upper bound on type I (α)
+and β and ¯β are lower and upper bound on type II (β) error.
+Nasr et al. [24] use the Clopper-Pearson method to ﬁnd ¯α and
+¯β. Clopper-Pearson method is a procedure used for calculat-
+ing the exact conﬁdence intervals for a binomial proportion.
+This method does not rely on approximations like the normal
+approximation, which can be unrealistic in many cases. Using
+the lower and upper bound Nasr et al. [24] ultimately derived
+an empirical lower bound to ε by appealing to Equation (8)
+and noting that
+εlower
+emp = max
+
+ln
+1−¯α−δ
+¯β
+
+,ln
+1−¯β−δ
+¯α
+
+,0
+
+(9)
+The lower bound εlower
+emp comes with an empirical level of
+conﬁdence through the conﬁdence level for ¯α and ¯β. Unfor-
+tunately, a high level of conﬁdence in εlower
+emp often requires
+thousands or millions of observations.
+The adversary is also free to design D and D′ = D∪{z} in
+any way they choose, because the privacy guarantee of DP
+must hold for any pair of neighboring datasets. The goal of
+the auditor/adversary is thus to design D and z in such a way
+that it is easy to design a distinguisher for M (D) and M (D′).
+Nasr et al. [24] showed that εlower
+emp is close to the upper
+bound ε output by a DP accounting mechanism when D = /0
+and so the model is trained on either zero points, or one point
+z. That is, they designed a test where α and β are minimized
+under this setting. In summary, this auditing mechanism has
+shown that current DP accounting methods are nearly tight [2,
+11,18,21], by showing that the lower bounds for ε one can
+ﬁnd through a statistical test are close to the upper bound for ε
+given by DP accounting. The drawback of this analysis is that
+it only demonstrates the analysis is tight with a worst-case
+dataset, D = /0, and to show this it is necessary to train the
+model thousands of times in order to ﬁnd non-trivial lower
+bounds εlower
+emp .
+Zanella-Béguelin et al. [35] propose a reﬁned Bayesian
+approach to ﬁnding an empirical lower bound for ε through
+a non-informative prior on (α,β). Speciﬁcally, they deﬁne a
+lower bound for ε as
+ε = sup{ε ∈R>0 | (α,β) /∈R (ε,δ)}
+(10)
+From here, they deﬁne f(α,β) to be the density function of
+the posterior joint distribution of (α,β) given the observed
+trials (found through training on M (D) and M (D′) multiple
+times). A 100(1-γ)% credible interval [ε, ¯ε] is then deﬁned as
+ε = argmax
+ε
+Z Z
+R (ε,δ) f(α,β)(x,y)dxdy ≤γ
+2
+¯ε = argmin
+ε
+Z Z
+R (ε,δ) f(α,β)(x,y)dxdy ≥1−γ
+2
+(11)
+There are number of subtle assumptions made in this ap-
+proach which require unpacking. Equation (11) cannot be
+evaluated in closed form, and so we must approximate it,
+and it is not clear how this approximation translates into
+a statistically sound lower bound. Moreover, the compari-
+son between bounds found through this method and through
+Clopper-Pearson may be slightly unfair, as they are distinct
+statements about uncertainty of an estimate. Nevertheless,
+Zanella-Béguelin et al. [35] show that their method dramati-
+cally improves the tightness of the lower bound estimate for ε
+in practice. Thus, the number of training runs needed for the
+audit is also signiﬁcantly reduced.
+In other recent work, Lu et al. [19] compute an ε lower
+bound by replacing the Clopper-Pearson method for ﬁnding
+bounds on (α,β) with the Katz-log conﬁdence interval [17],
+which directly bounds the ratio of binomial proportions and
+empirically gives tighter estimates for εlower
+emp with fewer ob-
+servations (i.e. the method requires fewer number of models
+that must be trained on D and D′). However, the Katz-log
+method gives a conﬁdence bound on the ratio of α to β, and it
+is not clear if this is valid for (ε,δ)-DP where the ratio would
+change to α−δ
+β . Lu et al. set δ = 0 in their experiments, giv-
+ing a lower bound for (ε,0)-DP. Lu et al. also suggest that
+empirical privacy leakage is dataset dependent. Our work di-
+rectly contradicts this claim; we argue that their observations
+were mostly due to using weaker attacks than are permitted
+under the DP threat model. By instantiating a more powerful
+attack our results in Section 6 show that the empirical privacy
+leakage is close to the theoretical ε across a range of datasets.
+While many recent works focus on the DP-SGD. A va-
+riety of statistical approaches have been developed to test
+simpler differentially private algorithms, primarily to identify
+ﬂawed implementations of private algorithms. These methods
+offer tools to check if the privacy guarantees claimed by an
+algorithm hold in practice.
+For instance, StatDP [10] was developed to identify vio-
+lations of ε-DP in the sparse vector algorithm. Further im-
+provements to StatDP were provided by DP-Sniper [5], which
+catered to similar algorithms, like the sparse vector technique
+and local differentially private algorithms. DP-Sniper is es-
+sentially an advanced testing framework designed to uncover
+violations in the privacy promises of the algorithms being
+tested. CheckDP [30] offers another approach. It provides
+a code analysis-based tool to either prove or generate coun-
+terexamples to a variety of algorithms, including the sparse
+vector algorithm. This methodology allows researchers and
+practitioners to check the validity of their privacy-preserving
+algorithms in a more systematic way. Wang et al. [29] re-
+cently leveraged auditing estimates to convert them to formal
+guarantees.
+We note that throughout this work we use the terms trainer,
+auditor, and attacker interchangeably. The party that audits
+the model takes on the role of an attacker to measure the em-
+pirical privacy leakage, and this involves training the model.
+1634    32nd USENIX Security Symposium
+USENIX Association
+
+3
+Motivation & Threat Model
+The goal of our work is to improve the efﬁciency of empirical
+privacy estimation. This allows us to study the gap between
+theoretical and practical privacy bounds. And, as a practical
+application, auditing methods can be used to validate the
+correctness of a DP implementation.
+Our empirical privacy estimates depend upon the speciﬁc
+threat model we instantiate the test within, and assumptions
+we place on the adversary. Nasr et al. [24] describe several
+threat models and settings for auditing machine learning with
+differential privacy. We similarly study multiple threat models,
+as there is inevitably a trade-off between the power of the
+audit (with a powerful adversary) and generalizability of the
+audit to practical machine learning applications (where the
+assumptions we make to instantiate a powerful adversary may
+be unrealistic). We focus on three threat models in decreasing
+order of attack power.
+White-box access with gradient canaries:
+This is the
+main threat model considered by the DP-SGD theoretical
+analysis, and matches the (implicit) threat model assumed by
+DP. The adversary has access to the privatized gradient and
+model parameters in every update step and can choose an ar-
+bitrary gradient at each update step [4], which we refer to as a
+canary gradient. This canary gradient then gets included into
+the update with probability q. This mimics an adversary who
+has access to all aspects of training other than the randomness
+used in noise addition and batch selection (i.e., the knowledge
+of when z was used in training, where D′ = D∪{z}).
+White-box access with input-space canaries:
+The threat
+model above assumes the adversary can choose an arbitrary
+gradient that is sampled into a batch of updates. This may
+be an unrealistic capability for an adversary in practice. Our
+second threat model removes this assumption, and instead
+allows adversaries access to intermediate updates, but restricts
+them to choose an arbitrary training sample (from which
+gradients are subsequently computed), rather than the ability
+to choose a gradient directly. We refer to the training sample
+chosen for each update step as the canary sample. This setting
+matches the threat model of federated learning particularly
+well, where an adversary can access model updates but may
+not always have the ability to insert arbitrary gradients into
+the training pipeline.
+Black-box access:
+One of the most restrictive threat models
+to conduct audits on is that of an adversary who can only
+insert a training example at the beginning of training, and
+observe the model after it has completed training. In other
+words, the adversary does not get to observe or inﬂuence
+intermediate model updates. While this is the most restrictive
+setting from an adversarial perspective, it is perhaps the most
+realistic from a practical standpoint. We stress that this threat
+model is not the typical setting analyzed in DP, which assumes
+intermediate model updates are visible to the adversary. We
+choose to evaluate it because it allows us to compare how the
+incremental removal of adversarial access to model updates
+and gradients affects the tightness of our lower bound for ε.
+4
+Auditing with f-DP
+To audit the privacy of DP-SGD (or other DP mechanisms),
+an adversary repeatedly runs a distinguishing attack to infer
+if a model’s training set was either D or D′; by measuring
+the false positive and false negative rates of the attack we
+can bound privacy. All prior work has used (ε,δ)-DP deﬁ-
+nition to audit the privacy parameters of the algorithm. The
+limitation of this approach is that different differential pri-
+vacy mechanisms with identical (ε,δ) guarantees can have
+different trade-offs between false positive and false negative
+rates, which are upper bounded by the trade-off function of
+(ε,δ)-differential privacy. In particular, any (ε,δ)-DP guaran-
+tee corresponds to two symmetric supporting linear functions
+deﬁning the trade-off between type I and type II errors. How-
+ever, any mechanism will have its own “true” trade-off curve
+capturing the relationship between the FPR and TPR of the
+best possible attack on the mechanism, consisting of the in-
+tersection between a collection of (ε,δ(ε))-DP curves where
+(ε,δ(ε)) satisfy Corollary 5. While it is possible to audit any
+algorithm to lower bound its privacy with an (ε,δ)-DP guar-
+antee, we instead use an f-DP guarantee that is as close as
+possible to the true trade-off function of the mechanism. By
+doing so, we can avoid any looseness that appears in convert-
+ing between this f-DP guarantee and its collection of many
+(ε,δ)-DP guarantees. It is important to note that our ﬁndings
+are not limited solely to DP-SGD. They can be applied to
+other mechanisms as well. We concentrated on DP-SGD in
+this study because it is one of the most commonly used mech-
+anisms in this context. However, the principles and strategies
+we outlined can certainly be extended and applied to other
+relevant mechanisms in the ﬁeld of differential privacy.
+To illustrate this idea, in Figure 1 we plot the trade-off
+functions for several different DP mechanisms that all satisfy
+(ε,δ)-DP where ε = 1,δ = 10−5. Clearly, the achievable false
+positive and false negative rates by an adversary who wants
+to audit a (ε,δ)-DP guarantee depends signiﬁcantly on the
+underlying privacy mechanism.
+Let us now give a concrete example demonstrating the
+beneﬁt of auditing by measuring the privacy region of the pri-
+vate mechanism directly, rather than focusing on the privacy
+region speciﬁed by (ε,δ)-DP. Suppose we want to audit an
+instance of the Gaussian mechanism satisfying (1,10−5)-DP;
+Figure 2 illustrates the privacy regions of a generic private
+mechanism with ε = 1,δ = 10−5 and with a Gaussian mecha-
+nism which has an equivalent (ε,δ)-DP guarantee (i.e, µ-GDP
+with µ ≈0.25). Now, if we want to audit the Gaussian mecha-
+USENIX Association
+32nd USENIX Security Symposium    1635
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Type I Error (FPR)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Type II Error (FNR)
+Sampled-Gaussian
+Gaussian
+Laplace
+RandResp
+( ,
+)-DP
+Figure 1: Comparison of the trade-of functions for different
+DP mechanisms that satisfy (ε,δ)-DP where ε = 1,δ = 10−5.
+Note that the trade-off curve for the Random-Response mech-
+anism overlaps with (ε,δ)-DP.
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Type I Error (FPR)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Type II Error (FNR)
+= 1 , 
+= 0.25
+= 0.3 , 
+= 0.25
+-GDP 
+= 0.25
+( ,
+)-DP = 1
+( ,
+)-DP = 0.3
+Figure 2: Comparison of the privacy region of (ε,δ)-DP vs
+f-DP for the Gaussian mechanism (GDP) with the same ε
+budget.
+nism by bounding (ε,δ)-DP, our attack needs to have very low
+false positive or false negative rates (corresponding to the four
+locations where the GDP region and the (ε,δ)-DP region have
+tangent borders). As a concrete example, suppose we are au-
+diting this Gaussian mechanism (with ε = 1) and we have an
+attack that achieves FPR≈0.23 and FNR= 1−FPR(e0.3 +δ)
+over an inﬁnite number of trials (the red dot in Figure 2). If
+we use (ε,δ)-DP to audit this mechanism we get an empir-
+ical ε of 0.3, and we might (incorrectly) conclude that our
+mechanism is not tight. This is not because our attack is weak,
+but rather it is because our attack has a large FNR and no
+attack can achieve a lower FNR from the deﬁnition of the
+Gaussian mechanism (i.e, if an attack can achieve a lower
+FNR it violates ∼0.25-GDP).
+4.1
+Lower Bounding
+f-DP With Clopper-
+Pearson
+Previous works use Equation (9) which describe the predictive
+power of an adversary auditing with (ε,δ)-DP to compute
+the privacy parameters from the false positive and negative
+rates. However, as we have already seen by appealing to
+the hypothesis testing interpretation of DP, the predictive
+power of the adversary is by deﬁnition equal to the trade-
+off function of the privacy mechanism. Therefore, instead of
+using Equation (9) to compute the privacy parameters, we can
+directly use the trade-off function. Now by upper bounding
+the false positive (α) and false negative rates (β) (referred to
+as ¯α, ¯β) we can calculate the lower bound on the privacy of
+the mechanism. Similar to the previous works [24] we can use
+the Clopper-Pearson method to compute the upper bounds on
+the attacker errors.
+For example, suppose we want to audit the Gaussian mech-
+anism. To compute a lower bound on the privacy parameters
+of the Gaussian mechanism (i.e, µ), we have:
+µlower
+emp = Φ−1(1−¯α)−Φ−1(¯β)
+(12)
+We convert this into a lower bound for ε by noticing that the
+lower bound µlower
+emp implies an upper bound on the trade-off
+function of the mechanism at every α. Such an upper bound
+on the trade-off function enables us to use Equation (4) at a
+ﬁxed δ, to ﬁnd the largest lower bound for ε over all α.
+Improvement:
+Nasr et al. [24] showed DP-SGD account-
+ing is tight for a worst case dataset (D = /0), assuming the
+adversary has white-box access to all iterations of the train-
+ing. However, they require many observations to achieve tight
+bounds, due to the aforementioned drawbacks of auditing with
+(ε,δ)-DP. We re-evaluate this setting using our new approach
+of auditing with GDP. In Figure 3, we compare the lower
+bounds found through (ε,δ)-DP (Equation (9)) against using
+the Gaussian trade-off function and converting the Gaussian
+mechanism parameter to (ε,δ)-DP, and we inspect how these
+two methods compare as the adversary collects more observa-
+tions from which they compute upper bounds ¯α and ¯β. While,
+it is possible for (ε,δ)-DP audit to ﬁnd a lower bound that
+is tight to the theoretical value for ε, this is only achieved
+when the adversary has 100 million observations. When the
+number of the observations is smaller there is a non-trivial
+gap between the theoretical bound and the empirical lower
+bound. Comparatively, if we use the Gaussian mechanism’s
+trade-off function (GDP) to estimate a lower bound on the
+privacy parameter µ, and convert this into a bound on ε, we
+can achieve a tight estimate even with 1,000 observations.
+Approximating the trade off function:
+While using GDP
+to audit can give us a tight lower bound on the estimated pri-
+vacy in simple cases, analyzing the privacy cost of a complex
+1636    32nd USENIX Security Symposium
+USENIX Association
+
+103
+104
+105
+106
+107
+108
+Number of observations
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Empirical Epsilon
+( ,
+)
+DP (CP)
+f
+DP (CP)
+Upper bound
+(a) ε = 1
+103
+104
+105
+106
+107
+108
+Number of observations
+0.00
+0.25
+0.50
+0.75
+1.00
+1.25
+1.50
+1.75
+2.00
+Empirical Epsilon
+( ,
+)
+DP (CP)
+f
+DP (CP)
+Upper bound
+(b) ε = 2
+103
+104
+105
+106
+107
+108
+Number of observations
+0.0
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+3.5
+4.0
+Empirical Epsilon
+( ,
+)
+DP (CP)
+f
+DP (CP)
+Upper bound
+(c) ε = 4
+103
+104
+105
+106
+107
+108
+Number of observations
+0
+1
+2
+3
+4
+5
+6
+Empirical Epsilon
+( ,
+)
+DP (CP)
+f
+DP (CP)
+Upper bound
+(d) ε = 6
+Figure 3: Comparison of the (ε,δ)-DP deﬁnition to audit DP-SGD compared to using f-DP of Gaussian mechanism both
+converted in (ε,δ)-DP and lower bounded using Clopper Pearson (20 independent runs, δ = 10−5).
+mechanism such as DP-SGD (that needs both sub-sampling
+ampliﬁcation and composition over multiple update steps)
+is non-trivial, and the current existing approaches returns
+loose privacy estimates for different values of ε. Dong et
+al. [11] suggest to use a Central Limit Theorem for DP to
+compute a closed form solution, unfortunately, this can lead to
+signiﬁcant underestimation of the privacy cost in general set-
+tings [18]. Therefore, to analyze DP-SGD we use an empirical
+approach called the “Privacy Loss Distribution (PLD)” [18]
+to approximate the trade-off function, which computes a tight
+privacy cost of DP-SGD over multiple update steps. We refer
+to Koskela et al. [18] for a detailed description of PLD, and
+will interact with it as a black-box ε = fM (δ) that for private
+mechanism M and a given δ will return the exact theoretical
+ε. PLD does not have a closed-form trade-off function, in
+Appendix A we explain how we use PLD for auditing. Wang
+et al. [29] recently designed a parallalization based approach
+for computing PLD which can be used to speed up the PLD
+computations specially for settings where δ is very small.
+4.2
+Lower Bounding f-DP With Bayesian Es-
+timation
+Recently, Zanella-Béguelin et al. [35] showed it is also pos-
+sible to compute credible intervals for ε using a Bayesian
+method which can signiﬁcantly reduce the number of obser-
+vations to estimate a tight bound. Here, we show it is possible
+to extend their approach to lower bound in f-DP (and then
+convert to a lower bound for ε).
+Deﬁnition
+6
+(Cumulative
+Distribution
+Function
+of
+f(α,ˆ.)-DP). Let u(FPR,FNR) be the density function of the
+joint distribution of (FPR,FNR). The value of cumulative
+distribution function of f(α;ˆ.) evaluated at f(α;.) is:
+Pˆ.(.) =
+Z 1−f(1−α;.)
+f(α;.)
+Z 1
+0 u(FPR,FNR)(α,β)dαdβ
+(13)
+Using Eq. (13), we can ﬁnd an empirical lower bound for µ
+in µ-GDP, and then convert to a lower bound for (ε,δ)-DP. As
+shown by Zanella-Béguelin et al. [35], using the CDF of the
+private mechanism parameters given the attack observations
+of we can compute credible intervals over ε. As a reminder
+Zanella-Béguelin et al. deﬁned u(FPR,FNR) as follows:
+u(FPR,FNR)(α,β) :=u(FPR|FP)(α)u(FNR|FN)(β)
+(14)
+=Beta(α;0.5+FN,0.5+N−FN)×
+Beta(β;0.5+FP,0.5+N−FP)
+where N is the number of observations used to compute
+false positive and false negative rates, and FN, FP are the total
+number of false negative and false positives, respectively.
+5
+Auditing Setup
+As we have seen, the choice of framework used for auditing
+can affect the tightness of our lower bound for ε. In this sec-
+tion, we describe our auditing procedure for each threat model
+described in Section 3, and then discuss the effect of different
+attacker choices—such as attack speciﬁc hyperparameters—
+have on the audit results.
+5.1
+Auditing Procedure
+As mentioned in Section 3, we consider three main threat
+models. For the black-box setting, we use Algorithm 1 which
+trains 2T models on datasets D and D′ = D∪{z} where z =
+(x′,y′) is the differing example between D and D′, which we
+refer to as the canary. Then the auditor evaluates the loss on
+the canary example of each model trained on D and D′; using
+this set of losses, the auditor chooses a decision threshold and
+computes α and β. We refer to the statistics collected by the
+adversary as observations.
+In the white-box setting, the adversary can observe model
+parameters at each update step. We summarize the approach
+used for auditing in a white-box setting in Algorithm 2, us-
+ing either canary gradients or canary inputs as described in
+Section 3. At each iteration of DP-SGD, the trainer indepen-
+dently samples two batches of data, B and B′. Theoretically, B
+USENIX Association
+32nd USENIX Security Symposium    1637
+
+Algorithm 1 Black-box auditing for DP-SGD
+Args: training dataset D, loss function l, canary input (x′,y′), number of
+observations T
+Observations: O ←{}, O′ ←{}
+for t ∈{T} do
+θ ←DP-SGD on Dataset D
+θ′ ←DP-SGD on Dataset D∪(x′,y′)
+O[t] ←l(θ,(x′,y′))
+O′[t] ←l(θ′,(x′,y′))
+end for
+return θ , O, O′
+can be identical to B′. We experimented with both conﬁgura-
+tions and did not observe any signiﬁcant difference between
+them. Consequently, we opted for this setup as it carries fewer
+assumptions, speciﬁcally removing the need to ﬁx the ran-
+domization process for sampling. In the White-box access
+with Input Space Canaries threat model, the trainer creates a
+canary sample and adds it to B′ with probability qc.
+In the White-box access with Gradient Canaries threat
+model, the trainer computes the batch of per-example gra-
+dients for B and B′ and adds a canary gradient into B′ with
+probability qc. Please note that in both input and gradient
+space attacks, the canaries can be chosen dynamically based
+on the current parameters of the model.
+Batch B has been sampled from the original dataset D,
+while B′ has been sampled from a modiﬁed dataset D′. In both
+threat models, after the canary is added, DP-SGD proceeds as
+normal, clipping, aggregating, and noising the gradient sums.
+For each batch, the trainer computes the dot product between
+the privatized gradient sum and the canary gradient (or the
+gradient from the canary input), resulting in a score (which
+we again refer to as an observation). The goal of the adversary
+is to determine whether a batch was drawn from D or D′. At
+the end of each run of the algorithm, the trainer produces 2T
+observations, two for each update, and a fully trained model
+with parameters θ.
+In Algorithm 2, we consider different sampling rates for
+the canary example and normal training examples to allow the
+model trainer to evaluate the mechanism at different sampling
+rates. We use q to represent the sampling rate for the normal
+instances and qc for the canary examples. If the trainer sets
+qc = 1, the canary is selected in all iterations, and the audit
+focuses on the privacy mechanism without data sub-sampling.
+This modiﬁcation allows us to identify bugs in DP-SGD that
+are not due to batch sampling.
+After collecting observations from a model trained on either
+dataset D or D′, they can be compared with a threshold to
+compute true and false positive rates. Next, we will focus
+on considerations for choosing an appropriate threshold and
+their effects on the auditing process. We will also discuss
+other important factors in the auditing process, such as canary
+selection strategies and the sampling rate qc.
+Algorithm 2 White-box auditing for DP-SGD with gradient
+or input space canaries
+Args: training dataset D, sampling rate q, learning rate η, noise scale σ,
+gradient norm clip C, loss function l, canary gradient C(θ) →g′, canary
+input C(θ) →(x′,y′), canary sampling rate qc, function clip that clips
+vectors to max norm C, number of observations T, number of training
+iterations τ.
+Observations: O ←{}, O′ ←{}
+Trained Models: Θ ←{}
+t ←0
+while t ≤T do
+Initiate θ randomly
+for τ iterations do
+Bt ←sample instances from dataset D with prob q
+B′
+t ←sample instances from dataset D with prob q
+∇[t] ←⃗0
+for all (x,y) ∈Bt do
+∇[t] ←∇[t]+clip(∇θ(l(x,y)))
+end for
+g
+∇[t] ←∇[t]+N (0,σ2I)
+∇′[t] ←⃗0
+for all (x,y) ∈B′
+t do
+∇′[t] ←∇′[t]+clip(∇θ(l(x,y)))
+end for
+g
+∇′[t] ←∇′[t]+N (0,σ2I)
+g′ ←C(θ) canary gradient or g′ ←clip(∇θ(l(C(θ))))
+g
+∇′[t] ←g
+∇′[t]+g′ with prob qc o.w. g
+∇′[t]+⃗0
+O[t] ←⟨g′, g
+∇[t]⟩
+O′[t] ←⟨g′, g
+∇′[t]⟩
+θ ←θ−ηg
+∇[t]
+t = t +1
+end for
+Θ = Θ+{θ}
+end while
+return Θ , O, O′
+5.2
+Choosing a Decision Threshold
+The output of Algorithm 1 or Algorithm 2 is a set of ob-
+servations, with canaries {o′
+1,o′
+2,...,o′
+T}, and a set without
+canaries, {o1,o2,...,oT}. To compute our attack’s FNR and
+FPR, we must ﬁrst choose a decision threshold to distinguish
+between observations from the observation space without the
+canary, O, or the observation space with canaries O′.
+In the white-box threat model, our observation is o =
+⟨g′, g
+∇[t]⟩and o′ = ⟨g′, g
+∇′[t]⟩, where g′ is the canary gradi-
+ent, g
+∇[t] is the privatized gradient over a batch B, and g
+∇′[t]
+is the privatized gradient over a batch B′. By construction,
+we expect g′ to be orthogonal to any other gradient g in the
+batch, ⟨g′,g⟩= 0. In practice, the clipping norm and batch
+size are known to the adversary and so we can re-scale and
+normalize the set of observations such that O = N (0,σ2I)
+and O′ = N (1,σ2I), meaning that in expectation o and o′
+are sampled from Gaussians with zero and unit mean, respec-
+tively. Thus, the attacker’s goal is to distinguish observations
+sampled from N (0,σ2I) and N (1,σ2I) – we note that this
+is exactly the same hypothesis testing problem considered
+in GDP. A beneﬁt of auditing with qc = 1 and GDP is that
+1638    32nd USENIX Security Symposium
+USENIX Association
+
+4
+2
+0
+2
+4
+Decision threshold
+0
+1
+2
+3
+4
+Empirical Epsilon
+f-DP (CP)
+( ,
+)-DP (CP)
+Upper bound
+Figure 4: An example comparison between f-DP and (ε,δ)-
+DP with Clopper-Pearson lower bounds for 5,000 observa-
+tions. The lower bounds found through GDP are approxi-
+mately the same for any decision threshold within the obser-
+vation’s support, whereas the (ε,δ)-DP with Clopper-Pearson
+lower bound varies dramatically. We also visualize observa-
+tions when the canary was and wasn’t included in training as
+histograms.
+the lower bounds we derive with GDP are agnostic to our
+choice of decision threshold used to compute type I and type
+II errors (in the limit of number of observations), while this
+is not true for (ε,δ)-DP. This is due to the perfect match be-
+tween the GDP analysis and the true privacy of the Gaussian
+mechanism. Figure 4 shows the result that different choices
+of threshold have on auditing using either GDP or (ε,δ)-DP.
+As we can see, auditing using (ε,δ)-DP is much more sensi-
+tive to the decision threshold compared to GDP. Note that if
+thresholds we use are found using the same observation data
+that we compute the lower bound on, the bound is technically
+not valid. However, it has become common to report lower
+bounds on the same set of observations that one uses to ﬁnd
+an optimal decision threshold [20,35], and so for each method
+we will ﬁnd the threshold that maximizes the reported lower
+bound. We stress that for GDP, any decision threshold will be
+equally likely to maximize the lower bound with a sufﬁcient
+number of observations; this is not true of (ε,δ)-DP. See our
+extended version for full discussion [22, Appendix C.1].
+Next, we discuss how to construct the canary point (either
+gradient or sample) used in auditing.
+5.3
+Canary Type
+The strength of our bound depends on being able to distin-
+guish samples from O and O′. In turn, this means crafting
+canaries that maximize distinguishability.
+In the White-box access with Gradient Canaries threat
+model, we use what we refer to as a Dirac canary gradient; a
+gradient with zeros everywhere except at a single index in the
+gradient vector, where we set its value to the clipping norm C.
+We compare this choice with other possibilities and also the
+effect of generating canaries dynamically in Appendix B.1. I
+In the White-box access with Input Space Canaries threat
+Algorithm 3 Input canary generation in white-box setting
+Args: In-distribution dataset D, model loss function l, model parameters
+θ, T crafting steps, η step size
+⃗gdist =
+1
+|D| ∑(xi,yi)∈D ∇l(θ,(xi,yi))
+ladv(x,y) = | ∇l(θ,(x,y)).⃗gdist
+|∇l(θ,(x,y))||⃗gdist||
+(x,y) $←D
+for t ∈{T} do
+x = x−η∇ladv(x,y)
+end for
+return (x,y)
+model, we design a new attack that crafts an input for given
+model parameters. We evaluate four different canary strate-
+gies: (1) a random sample from the dataset distribution with
+a wrong label, (2) using a blank sample, (3) an adversarial
+example, and (4) and our new canary crafting approach given
+in Algorithm 3 and discussed in Appendix B.2. In the black-
+box threat model, we consider a similar range of canary types,
+which are detailed in Section 6.4. In the main body the work
+we only present the results of the best possible attacks.
+5.4
+Canary Sampling Rate (qc)
+The analysis of the sub-sampling mechanism in the worst
+case is tight using PLD/f-DP [18]. From Figure 13, we see
+that when qc = 1, the observations closely match the theoreti-
+cal FPR-FNR trade-off. Instead, in Figure 5 we audit a sub-
+sampled Gaussian mechanism with sampling rate of qc = 1
+4,
+setting σ2 = 0.3 and the number of collected observations
+to 10,000. This ﬁgure plots the FPR-FNR curve predicted
+by using the PLD accounting and also GDP accounting with
+an equivalent ε with δ = 10−5, and compares it to the em-
+pirical curve found through auditing this sub-sampled Gaus-
+sian mechanism. Clearly, both PLD and GDP upper bounds
+the observed FPR-FNR curve, but tends to overestimate the
+trade-off between FPR and FNR, particularly at higher false
+positive rates [11]. This suggests that to accurately audit a
+sub-sampled privacy-preserving mechanism, it may be nec-
+essary to use attacks with more precise false positive rates
+and optimal thresholds in order to achieve tight bounds. As
+mentioned in Section 5.2 (and expanded upon in ??) by using
+qc = 1 (and a sufﬁcient number of observations) we do not
+need to ﬁnd the optimal threshold, as the lower bound found
+using GDP auditing is threshold agnostic, and any threshold
+will results in tight auditing (which ensures a valid conﬁdence
+interval and lower bound).
+When using auditing to debug an implementation of DP-
+SGD, we focus on the auditing of the privacy mechanism
+itself, rather than the sub-sampling process. We therefore
+set qc = 1 throughout most of the experiments in Section 6.
+However, we will experiment with the sub-sampled Gaussian
+mechanism (qc < 1) in the black-box threat model, where we
+are more focused on effect of the threat model on privacy
+USENIX Association
+32nd USENIX Security Symposium    1639
+
+0.00
+0.25
+0.50
+0.75
+1.00
+Type I Error (FPR)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Type II Error (FNR)
+Observations
+GDP
+PLD
+Figure 5: PLD or GDP analysis does not describe the achiev-
+able error rate from a sub-sampled Gaussian mechanism.
+leakage rather than debugging to check if an implementation
+of DP-SGD is correct.
+5.5
+From Step-wise to End-to-end Auditing
+Our white-box audit observes each step of DP-SGD. As
+such, we generate privacy lower bounds for individual steps.
+We convert these into a privacy lower bound for the end-
+to-end training procedure by appealing to tight composition
+results. For instance, if we assume that each step is tightly
+characterized by Gaussian DP, then the tightness of Gaussian
+DP composition allows us to infer that the end-to-end training
+procedure is also tightly characterized by Gaussian DP and
+that we can sum up the privacy parameters. In other words, if
+the privacy loss distribution of one step is Gaussian, then the
+privacy loss distribution of the end-to-end procedure is also
+Gaussian; this is because composition simply adds/convolves
+the privacy losses. Given a lower bound for a single step of
+DP-SGD, εlower
+emp (δ), we ﬁnd a Gaussian noise scale σ that
+corresponds to this (ε,δ)-DP guarantee. The we compose the
+corresponding Gaussian DP guarantees to obtain our ﬁnal
+estimate.
+In DP-SGD, there is also subsampling. That is, we must
+account for the randomness of the batch selection. In this
+case, the privacy is not tightly characterized by Gaussian
+DP.1 However, it can be characterized by a more general f-
+DP guarantee and then we can use PLD to compose over
+the number of update steps. In Section 6, we show that this
+method of conversion gives empirical estimates for ε that are
+close to the end-to-end theoretical ε value. We note that a
+similar idea has been explored by Maddock et al. [20].
+1Although it is not tightly characterized by Gaussian DP, a subsampled
+Gaussian can be approximated by Gaussian DP. In practice, this approxima-
+tion yields conservative estimates of the ﬁnal (ε,δ)-DP guarantee. Hence this
+would also be an acceptable auditing methodology.
+6
+Experiments
+We now evaluate the performance of our proposed auditing
+technique. We ﬁrst demonstrate that auditing with f-DP gives
+a tight bound on privacy leakage. After this, we show that
+tight auditing can be used for a multitude of purposes, such
+as investigating if certain choices of training hyperparameters
+lead to more or less privacy leakage, and debugging imple-
+mentations of DP-SGD.
+6.1
+Experiment Setup
+We experiment with two commonly used datasets in the pri-
+vacy literature: CIFAR-10 (with Wide ResNet (WRN-16) [34]
+and ConvNet architectures) and Purchase. In addition we also
+evaluate our experiment on a randomly initialized dataset.
+Please to our extended version [22, Appendix B] where we
+describe the hyperparameters and details used to train models.
+Unless otherwise stated, all lower bounds are given with a
+95% conﬁdence (Clopper-Pearson as in Nasr et al. [24]) /
+credible interval (Zanella-Béguelin et al. [35]), and we audit
+in the White-box access with Gradient Canaries threat model
+using Algorithm 2. In all of our experiment the initial param-
+eters of the models are equal between different runs, however,
+the random processes use different seeds.
+Terminology: We describe below the approaches we use to
+compute lower bounds; our work introduces the f-DP strate-
+gies. f-DP (CP): using the trade-off function of the privacy
+mechanism with Clopper-Pearson. When we do not have the
+exact trade-off function (e.g, if there are multiple composi-
+tion of sub-sampled Gaussian mechanisms) we use approxi-
+mated trade-off function of the privacy mechanism from PLD
+accounting and Algorithm 4.(ε,δ)-DP (CP) [14, 24]: using
+the (ε,δ)-DP (Equation (4)) trade-off function with Clopper-
+Pearson. f-DP (ZB) and (ε,δ)-DP (ZB) are similar to f-DP
+(CP) and (ε,δ)-DP (CP), however, we use the Bayesian es-
+timation approach (Section 4.2) to compute lower bounds
+instead of Clopper-Pearson. (ε,δ)-DP (ZB) is equivalent to
+the approach used by Zanella-Béguelin et al. [35]. ε−DP
+(Katz) [19] audits ε−DP with the Katz log conﬁdence inter-
+val.
+6.2
+(Almost) Tight Auditing of DP-SGD For
+Natural Datasets Using f-DP
+Nasr et al. [24] showed that DP-SGD is tight with worst-
+case training sets; however, they observed a noticeable gap
+between the empirically estimated lower bound and theo-
+retic upper bound for ε when they replace these worst-case
+datasets with datasets commonly used for DP-SGD bench-
+marking, even when the adversary has white-box access to
+the model and can insert canary gradients (e.g., they achieved
+an empirical ε lower bound of < 1 with a theoretical ε of 8
+on CIFAR-10).
+1640    32nd USENIX Security Symposium
+USENIX Association
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+Empirical Epsilon
+( ,
+)-DP (CP)
+-DP (Katz)
+( ,
+)-DP (ZB)
+f-DP (CP)
+f-DP (ZB)
+Upper bound
+Figure 6: Auditing with f-DP provides the strongest lower
+bounds with theoretical upper bound ε = 8 on CIFAR-10.
+Table 1: Comparison of the empirical lower bounds on ep-
+silon with 95% (conﬁdence or credible interval), where the
+adversary has access to every intermediate model and the ad-
+versary can insert a canary gradient vector (white-box setting).
+We include results on a Random dataset—random pixels and
+labels—of the same cardinality as CIFAR-10.
+Lower Bounding
+Theoretical ε
+CIFAR-10 WRN-16
+CIFAR-10 ConvNet
+Purchase
+Random WRN-16
+f-DP (CP)
+1
+0.75
+0.77
+0.78
+0.74
+4
+3.40
+3.34
+3.54
+3.14
+8
+5.80
+6.12
+6.40
+7.14
+16
+11.14
+12.08
+12.42
+13.14
+f-DP (ZB)
+1
+0.95
+0.94
+0.89
+0.90
+4
+3.73
+3.80
+3.60
+3.52
+8
+7.09
+7.12
+6.94
+7.12
+16
+13.95
+13.80
+13.80
+15.14
+(ε,δ)-DP (CP)
+1
+0.41
+0.45
+0.36
+0.35
+4
+1.37
+1.80
+1.65
+1.14
+8
+3.63
+3.85
+3.25
+4.09
+16
+5.25
+6.22
+6.34
+6.96
+(ε,δ)-DP (ZB)
+1
+0.62
+0.62
+0.57
+0.61
+4
+2.65
+2.69
+2.45
+2.75
+8
+5.07
+5.15
+4.65
+5.09
+16
+5.25
+6.22
+6.34
+6.96
+ε−DP (Katz)
+1
+0.49
+0.51
+0.46
+0.41
+4
+1.65
+1.95
+2.05
+2.14
+8
+4.17
+3.95
+4.24
+4.15
+16
+7.52
+7.63
+7.69
+8.01
+We ﬁrst demonstrate that by auditing with f-DP, we can
+now compute strong lower bounds with the standard CIFAR-
+10 training set, where we train and audit a model with 79% test
+accuracy at (ε = 8,δ = 10−5)-DP. We evaluate and compare
+our auditing technique against the state-of-the-art auditing
+methods of Zanella-Béguelin et al. [35] and Lu et al. [19].
+Results are given in Figure 6, where we report the average
+lower bound found over ten independent executions of the
+experiment along with standard deviation, and the theoretical
+upper bound for ε given by the privacy accountant. Regardless
+of if we use Zanella-Béguelin et al.’s method for ﬁnding cred-
+ible intervals, or use the Clopper-Pearson conﬁdence interval,
+the main gain in estimating ε comes from auditing with f-DP.
+Auditing with f-DP is almost tight, while the strongest upper
+bound from prior work is ∼5.
+Our method of auditing with f-DP gives a tight analysis
+for privacy leakage for both small and large ε and across dif-
+ferent datasets (CIFAR-10, Purchase, and a Random dataset—
+random pixels and labels—of the same cardinality as CIFAR-
+10). The results, reported in Table 1, show that our approach
+does not require the use of a worst-case dataset to achieve
+tight estimation of the privacy parameters. Lu et al. [19] hy-
+pothesize that privacy is dataset dependent even in a white-box
+setting, however, our experiments contradict this hypothesis.
+Given that our results show that tight lower bounds are largely
+independent of the choice of dataset if the adversary audits in
+a white-box threat model with canary gradients, our remain-
+ing experiments will focus primarily on the CIFAR-10 dataset
+unless stated otherwise.
+We next demonstrate that auditing with f-DP can be useful
+for detecting implementations of DP-SGD that violate the
+purported upper bound for ε. As discussed previously, we
+will concentrate on violations that are not directly caused by
+sub-sampling, and so our experiments will audit the Gaussian
+mechanism without composition or sub-sampling, for which
+we will use the exact trade-off function (GDP instead of the
+PLD approximation detailed in Section 4.1).
+6.3
+Auditing and Debugging DP-SGD Imple-
+mentations
+Implementing DP-SGD correctly is notoriously difﬁcult. Au-
+diting can help identify issues of correctness, as demonstrated
+by Tramèr et al. [27] who used black-box auditing to show
+the DP-SGD implementation proposed by Stevens et al. [26]
+was incorrect and reported a much lower value of ε than its
+true privacy leakage.
+We investigate how easily our method of auditing with
+f-DP can detect incorrect implementations of DP-SGD com-
+pared to prior work on CIFAR-10. The upper bound for ε
+claimed by each DP-SGD implementation throughout the fol-
+lowing experiments is 1.27. For all experiments in this section
+we audit a step of DP-SGD, that is, we do not convert our
+lower bounds into a guarantee of the ε reported after compos-
+ing across all training steps with PLD. We do this because
+even if we were to report a lower bound on the ﬁnal value
+of ε (via ﬁnding a lower bound for a step of DP-SGD and
+composing with the (almost) lossless PLD), there will be bugs
+that cannot be captured by this auditing method. For example,
+a bug that is caused by implementing a biased sub-sampling
+method from the training dataset will likely not be captured
+by our audit.
+Violation 1: Clipping after gradient averaging.
+In DP-
+SGD, individual gradients must be clipped to a maximum
+norm C before aggregation. If the order of these operations
+is reversed, clipping after aggregation, then the model will
+not be (ε,δ)-DP. In Figure 7, we see all auditing methods
+are able to identify a violation as the lower bound found is
+much larger than the reported upper bound. However, one
+may still incorrectly assume that the implementation retains
+some privacy if we do not audit with f-DP, as the best lower
+bound we can ﬁnd is < 10. By auditing with f-DP, it becomes
+clear that the implementation is completely broken.
+USENIX Association
+32nd USENIX Security Symposium    1641
+
+0
+5
+10
+15
+20
+25
+30
+35
+40
+Empirical Epsilon
+( ,
+)-DP (CP)
+-DP (Katz)
+( ,
+)-DP (ZB)
+f-DP (CP)
+f-DP (ZB)
+Claimed upper bound
+Figure 7: Clipping after gradient averaging bug. We plot the
+lower bound for ε we can ﬁnd with each auditing technique
+when the implementation clips the gradient after averaging in
+a batch, and so is not (ε,δ)-DP with the claimed ε = 1.27. All
+methods are able to detect a violation but only f-DP auditing
+can show the implementation is completely broken, as we can
+show ε > 35.
+0.0
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+3.5
+4.0
+Empirical Epsilon
+( ,
+)-DP (CP)
+( ,
+)-DP (ZB)
+f-DP (CP)
+-DP (Katz)
+f-DP (ZB)
+Claimed upper bound
+Figure 8: Biased noise bug. The Gaussian noise used to pri-
+vatize gradients in DP-SGD is not sampled randomly. Both
+f-DP and Lu et al. detect this implementation issue while
+auditing with (ε,δ)-DP fails to detect the issue.
+Violation 2: Biased noise sampling.
+At every step of DP-
+SGD, random Gaussian noise must be added to gradients. If
+the noise is not randomly sampled then the model will not be
+(ε,δ)-DP. In practice, we generate a Gaussian noise sample
+by seeding a random number generator. We train a model
+where the seed can only take on 100 different possible values,
+meaning there are only 100 different possible Gaussian noise
+vectors. It may seem that this is a rather contrived example
+of a DP-SGD bug, but a similar error appeared in the JAX
+canonical example of how to implement DP-SGD, where a
+random seed was re-used when adding noise to different sets
+of model parameters [1].
+Results are shown in Figure 8. We can detect violations
+when auditing with f-DP; the auditing method introduced
+by Lu et al. [19] also successfully detects the bug. However,
+auditing with (ε,δ)-DP directly, either using Clopper-Pearson
+or the method proposed by Zanella-Béguelin et al. was not
+able to identify a violation of the claimed upper bound.
+Violation 3: Noise scale is too small.
+The value of ε is in-
+versely proportional to the scale of noise we add to gradients.
+As we decrease the scale of noise, ε increases. The third bug
+we investigate is when the noise scale we add is unexpectedly
+1.39
+1.39
+1.40
+1.43
+1.58
+1.77
+2.17
+Theoretical Epsilon (upper bound)
+0.25
+0.50
+0.75
+1.00
+1.25
+1.50
+1.75
+2.00
+2.25
+Empirical Epsilon (lower bound)
+f-DP (ZB)
+-DP (Katz)
+( ,
+)-DP (ZB)
+( ,
+)-DP (CP)
+f-DP (CP)
+Claimed upper bound
+True upper bound
+Figure 9: Incorrect noise scale bug. We measure how quickly
+each auditing method can detect a violation of the purported
+upper bound of ε = 1.27 when the scale of noise we add to
+gradients is incorrectly set.
+smaller than the target scale we set. This bug often arises
+because the the sensitivity (clipping value) needs to calibrated
+to the batch size in order to compute the correct noise scale,
+and this is easy to get wrong (c.f. Tramèr et al. [27]). For
+example, in settings where gradient computations are dis-
+tributed across multiple machines, we could incorrectly add
+noise to the average gradient found on each machine, and then
+aggregate.
+We train models with decreasing scales of noise, implying
+larger values of ε than the claimed upper bound. Results are
+shown in Figure 9, where we ﬁnd auditing with f-DP closely
+follows the true upper bound, meaning we can detect a viola-
+tion to reported ε = 1.27 when the true value is ε = 1.57. Au-
+diting with (ε,δ)-DP directly, either using Clopper-Pearson,
+Lu et al. [19], or the method proposed by Zanella-Béguelin et
+al. does not successfully identify a violation of the claimed
+upper bound, even when the true upper bound for ε is as large
+as 2.17.
+6.4
+Investigating Privacy Leakage with Tight
+Auditing
+In this section, we expand our analysis to examine the impact
+of various settings and parameters on privacy leakage.
+Is there a difference between auditing in gradient and in-
+put space?
+Auditing with gradient canaries can be useful
+in speciﬁc contexts, such as in federated learning or when
+debugging a model. However, in most cases, practitioners
+are more concerned with understanding the effect of a single
+input space example on the model. This is because this set-
+ting more closely measures the privacy leakage that could be
+experienced by a worst-case training example.
+To evaluate how privacy leakage could change by removing
+the ability to insert a canary gradient, we run experiments in
+the White-box access with Input Space Canaries threat model,
+as described in Section 3. In particular, we use Algorithm 3
+to create the canaries. Note that for this experiment we only
+use the ﬁrst 250 iterations of DP-SGD to collect observations
+and estimate the per-step ε lower bound. We found that, in
+1642    32nd USENIX Security Symposium
+USENIX Association
+
+1.0
+2.0
+3.0
+4.0
+6.0
+9.0
+20.0
+Theoretical Epsilon
+0
+5
+10
+15
+20
+Empirical Epsilon
+Theoretical Upper bound
+CIFAR10 WRN
+CIFAR10 Conv
+Purchase
+Random
+(a) f-DP (CP)
+1.0
+2.0
+3.0
+4.0
+6.0
+9.0
+20.0
+Theoretical Epsilon
+0
+5
+10
+15
+20
+Empirical Epsilon
+Theoretical Upper bound
+CIFAR10 WRN
+CIFAR10 Conv
+Purchase
+Random
+(b) f-DP (ZB)
+Figure 10: Comparison of the empirical lower bounds on epsilon with 95% (conﬁ-
+dence or credible interval), where the adversary has access to every intermediate
+model and the adversary can insert a canary in input space (white-box setting).
+Table 2: Comparison of the empirical
+lower bounds on ε (using f-DP (ZB)) in
+the black-box threat model where the ad-
+versary inserts a canary point at the begin-
+ning of training, and only gradient clipping
+is applied on CIFAR-10.
+Clipping norm C
+ε lower bound
+0.1
+23.4
+1.0
+26.8
+10.0
+41.0
+Maximum ε lower bound at
+this number of observations
+44.0
+this threat model, the ﬁrst few hundred iterations of DP-SGD
+leaks more privacy than the entire training run; in other words,
+the lower bound we compute using the ﬁrst 250 steps is larger
+than the lower bound we compute over the entire training run
+(2,500 update steps). In general, we ﬁnd that auditing in the
+input space becomes weaker if the observations are collected
+from updates towards the end of training. We discuss this
+further in Appendix C.1.
+As shown in Figure 10, even if the attacker can only insert
+canary samples (rather than gradients), we can compute tight
+bounds for ε < 10. We also observe that the choice of the
+model architecture has an impact on auditing in input space.
+Speciﬁcally, we can get an (almost) tight lower bound when
+using Wide Resnet architecture regardless of the datasets.
+Moreover, when we compare the CIFAR-10 dataset results
+between Wide Resnet and ConvNet models, we see a large
+gap which further emphasizes the signiﬁcance of the model
+architecture on privacy leakage.
+Does clipping alone help?
+It has been conjectured that
+clipping individual gradients can provide some privacy even
+without adding noise [6]. Technically, these models are not
+differentially private but we can measure the privacy that clip-
+ping provides by computing an ε lower bound. Of course, it
+doesn’t make sense to audit clipping alone in a white-box
+access threat model; no noise is added and so the dot-product
+value we compute to ﬁnd type I and type II error rates (as
+described in Section 5.1 and Section 5.2) will not be masked
+by any noise. Instead, we audit in the black-box threat model
+by creating a canary point, inserting it into the training set,
+and then training a CIFAR-10 WRN-16 model. We then mea-
+sure the loss after training on the canary image. We do this
+1,000 times when the canary image was included in training
+and when it wasn’t, and record the loss of the canary image in
+each case. We experimented with a range of different canary
+inputs, but found that blank (white) and mislabeled images
+produced the strongest lower bounds for ε. In other words,
+these two canary types had losses that were easily separable
+depending on if they were included in training or not.
+In total, we train 2,000 models: 1,000 when the canary input
+was in training and 1,000 when the canary wasn’t included.
+Our results are shown in Table 2, where we see that clipping
+alone provides no privacy. The lower bounds for a clipping
+norm of 10 are close to the maximum possible lower bound
+at this number of observations.
+How much privacy is leaked in a black-box threat model?
+To measure the impact of switching to a black-box threat
+model on privacy leakage estimation, we follow a similar
+auditing procedure as set out by Nasr et al. [24]. We select a
+canary example, then we train 1,000 models with the canary
+point (+ training set), and 1,000 models with only the training
+set (canary excluded). We then measure the log(
+p
+1−p) for
+each model, where p is the probability of the canary point
+with respect to its label. We take the distribution of log(
+p
+1−p)
+when the canary point was and wasn’t in the training set, and
+compute ε lower bounds using our f-DP method.
+Results are shown in Fig. 11, where all models are trained
+up to ε = 8. On CIFAR-10 with a Wide ResNet architecture
+we are able to ﬁnd a lower bound of ∼1.6 using f-DP (ZB)
+auditing. However, it is difﬁcult to separate the effects of the
+black-box threat model from the effect that sub-sampling has
+on privacy leakage estimation, as we saw in Figure 5, both
+GDP and PLD tend to overestimate the observed trade-off
+between type I and type II errors in the sub-sampled Gaussian
+mechanism (with composition over multiple iterations). Ad-
+ditionally, the auditing results on other datasets/architectures
+are signiﬁcantly lower compared to those obtained with the
+Wide ResNet architecture on the CIFAR-10 dataset. Specif-
+ically, when examining the random dataset, no non-trivial
+lower bounds for auditing can be achieved. One of the key
+factors that distinguishes these experiments is the ﬁnal accu-
+racy the model is able to attain. At ε = 8, the Wide ResNet
+architecture for CIFAR-10 is able to achieve a test dataset
+accuracy of greater than 70%, compared to less than 50% for
+the ConvNet architecture and less than 50% for the Purchase
+USENIX Association
+32nd USENIX Security Symposium    1643
+
+1
+2
+3
+4
+5
+6
+7
+8
+Theoretical Epsilon (upper bound)
+0.0
+0.5
+1.0
+1.5
+2.0
+Empirical Epsilon (lower bound)
+Blank example, f-DP (ZB)
+Blank example, f-DP (CP)
+Mislabeled example, f-DP (ZB)
+Mislabeled example, f-DP (CP)
+(a) CIFAR-10, WRN-16
+1
+2
+3
+4
+5
+6
+7
+8
+Theoretical Epsilon (upper bound)
+0.0
+0.5
+1.0
+1.5
+2.0
+Empirical Epsilon (lower bound)
+Blank example, f-DP (ZB)
+Blank example, f-DP (CP)
+Mislabeled example, f-DP (ZB)
+Mislabeled example, f-DP (CP)
+(b) CIFAR-10, ConvNet
+1
+2
+3
+4
+5
+6
+7
+8
+Theoretical Epsilon (upper bound)
+0.0
+0.5
+1.0
+1.5
+2.0
+Empirical Epsilon (lower bound)
+Blank example, f-DP (ZB)
+Blank example, f-DP (CP)
+Mislabeled example, f-DP (ZB)
+Mislabeled example, f-DP (CP)
+(c) Purchase
+1
+2
+3
+4
+5
+6
+7
+8
+Theoretical Epsilon (upper bound)
+0.0
+0.5
+1.0
+1.5
+2.0
+Empirical Epsilon (lower bound)
+Blank example, f-DP (ZB)
+Blank example, f-DP (CP)
+Mislabeled example, f-DP (ZB)
+Mislabeled example, f-DP (CP)
+(d) Random dataset, WRN-16
+Figure 11: Auditing the black-box threat model with f-DP. We train 1,000 models with and without the canary sample that we
+insert at the beginning of training. We either use a blank or mislabeled image as the canary input.
+2
+3
+4
+5
+6
+7
+8
+Epsilon (upper bound)
+0
+2
+4
+6
+8
+Epsilon (lower bound)
+BlackBox
+WhiteBox-Input
+WhiteBox-Gradient
+Theoretical
+Figure 12: Comparison of attacks on CIFAR10 WRN-16 in
+different settings
+dataset. Our results suggest that there remains a gap between
+the theoretical privacy upper bound and the empirical lower
+bound that can be achieved in a black-box setting, but the
+size of this gap is highly dependent on the dataset and model
+architecture.
+7
+Discussion and Future Directions
+As demonstrated in our work, our gradient attacks achieve
+highly tight results in the majority of settings. These ﬁnd-
+ings suggest that in practice, the bounds of DP-SGD are not
+excessively loose, thereby requiring practitioners to exercise
+caution when selecting their parameters. This is particularly
+crucial in settings like Federated Learning, where an adver-
+sary may have white-box access to the model.
+When looking at the comparison of our attack in different
+settings (e.g, Figure 12), we can observe that our attacks are
+still weak in the fully black-box setting. A signiﬁcant direc-
+tion for future research in the area of auditing differential
+privacy methods lies in improving tightness in a black-box
+setting. Although our results substantially outperform existing
+approaches, we observe a large gap, particularly in end-to-end
+settings, between practical attacks in this threat model and
+the theoretical upper bounds. Future work should strive to
+enhance results in these settings. We believe that important
+steps towards this goal include comprehending the speciﬁc
+model parameters that can inﬂuence such results and design-
+ing superior attacks for black-box settings.
+8
+Conclusion
+As differentially private machine learning becomes more pop-
+ular and fewer expert users begin to implement such meth-
+ods, the possibility of bugs and implementation errors will
+increase. We provide a simple auditing technique that can
+achieve tight estimates of privacy leakage on standard ML
+benchmark datasets. Our method can be easily integrated
+with privacy preserving libraries (TF-privacy, Opacus, JAX
+privacy) to give online estimation of the private mechanism
+parameters and provide an empirical test for the assumed pri-
+vacy budget, and only increases the computational overhead
+by a factor of two.
+References
+[1] ﬁx prng key reuse in differential privacy exam-
+ple by mattjj · Pull Request #3646 · google/jax
+— github.com. https://github.com/google/jax/
+pull/3646. [Accessed 28-Jan-2023].
+[2] ABADI, M., CHU, A., GOODFELLOW, I., MCMAHAN,
+H. B., MIRONOV, I., TALWAR, K., AND ZHANG, L.
+Deep learning with differential privacy. In Proceedings
+1644    32nd USENIX Security Symposium
+USENIX Association
+
+of the 2016 ACM SIGSAC conference on computer and
+communications security (2016), pp. 308–318.
+[3] ALTSCHULER, J. M., AND TALWAR, K. Privacy of
+noisy stochastic gradient descent: More iterations with-
+out more privacy loss. arXiv preprint arXiv:2205.13710
+(2022).
+[4] BALLE, B., CHERUBIN, G., AND HAYES, J. Recon-
+structing training data with informed adversaries. arXiv
+preprint arXiv:2201.04845 (2022).
+[5] BICHSEL, B., STEFFEN, S., BOGUNOVIC, I., AND
+VECHEV, M. Dp-sniper: Black-box discovery of differ-
+ential privacy violations using classiﬁers. In 2021 IEEE
+Symposium on Security and Privacy (SP) (2021), IEEE,
+pp. 391–409.
+[6] CARLINI, N., CHIEN, S., NASR, M., SONG, S.,
+TERZIS, A., AND TRAMER, F. Membership inference
+attacks from ﬁrst principles. In 2022 IEEE Symposium
+on Security and Privacy (SP) (2022), IEEE, pp. 1897–
+1914.
+[7] CARLINI, N., IPPOLITO, D., JAGIELSKI, M., LEE, K.,
+TRAMER, F., AND ZHANG, C.
+Quantifying memo-
+rization across neural language models. arXiv preprint
+arXiv:2202.07646 (2022).
+[8] CARLINI, N., LIU, C., ERLINGSSON, Ú., KOS, J., AND
+SONG, D. The secret sharer: Evaluating and testing un-
+intended memorization in neural networks.
+In 28th
+USENIX Security Symposium (USENIX Security 19)
+(2019), pp. 267–284.
+[9] DE, S., BERRADA, L., HAYES, J., SMITH, S. L., AND
+BALLE, B. Unlocking high-accuracy differentially pri-
+vate image classiﬁcation through scale. arXiv preprint
+arXiv:2204.13650 (2022).
+[10] DING, Z., WANG, Y., WANG, G., ZHANG, D., AND
+KIFER, D. Detecting violations of differential privacy.
+In Proceedings of the 2018 ACM SIGSAC Conference
+on Computer and Communications Security (2018),
+pp. 475–489.
+[11] DONG, J., ROTH, A., AND SU, W. J. Gaussian differ-
+ential privacy. arXiv preprint arXiv:1905.02383 (2019).
+[12] DWORK, C., MCSHERRY, F., NISSIM, K., AND SMITH,
+A. Calibrating noise to sensitivity in private data anal-
+ysis.
+In Theory of cryptography conference (2006),
+Springer, pp. 265–284.
+[13] JAGIELSKI, M., THAKKAR, O., TRAMER, F., IP-
+POLITO, D., LEE, K., CARLINI, N., WALLACE, E.,
+SONG, S., THAKURTA, A., PAPERNOT, N., ET AL.
+Measuring forgetting of memorized training examples.
+arXiv preprint arXiv:2207.00099 (2022).
+[14] JAGIELSKI, M., ULLMAN, J., AND OPREA, A. Audit-
+ing differentially private machine learning: How private
+is private sgd? Advances in Neural Information Process-
+ing Systems 33 (2020), 22205–22216.
+[15] JAYARAMAN, B., AND EVANS, D. Evaluating differen-
+tially private machine learning in practice. In USENIX
+Security Symposium (2019).
+[16] KAIROUZ, P., OH, S., AND VISWANATH, P. The com-
+position theorem for differential privacy. In Interna-
+tional conference on machine learning (2015), PMLR,
+pp. 1376–1385.
+[17] KATZ, D., BAPTISTA, J., AZEN, S., AND PIKE, M.
+Obtaining conﬁdence intervals for the risk ratio in cohort
+studies. Biometrics (1978), 469–474.
+[18] KOSKELA, A., JÄLKÖ, J., AND HONKELA, A. Com-
+puting tight differential privacy guarantees using fft. In
+International Conference on Artiﬁcial Intelligence and
+Statistics (2020), PMLR, pp. 2560–2569.
+[19] LU, F., MUNOZ, J., FUCHS, M., LEBLOND, T.,
+ZARESKY-WILLIAMS, E., RAFF, E., FERRARO, F.,
+AND TESTA, B. A general framework for auditing dif-
+ferentially private machine learning.
+arXiv preprint
+arXiv:2210.08643 (2022).
+[20] MADDOCK, S., SABLAYROLLES, A., AND STOCK,
+P.
+Canife: Crafting canaries for empirical privacy
+measurement in federated learning.
+arXiv preprint
+arXiv:2210.02912 (2022).
+[21] MIRONOV, I. Rényi differential privacy. In 2017 IEEE
+30th computer security foundations symposium (CSF)
+(2017), IEEE, pp. 263–275.
+[22] NASR, M., HAYES, J., STEINKE, T., BALLE, B.,
+TRAMÈR, F., JAGIELSKI, M., CARLINI, N., AND
+TERZIS, A.
+Tight auditing of differentially private
+machine learning. arXiv preprint arXiv:2302.07956
+(2023).
+[23] NASR, M., SHOKRI, R., AND HOUMANSADR, A. Com-
+prehensive privacy analysis of deep learning: Passive
+and active white-box inference attacks against central-
+ized and federated learning. In 2019 IEEE symposium
+on security and privacy (SP) (2019), IEEE, pp. 739–753.
+[24] NASR, M., SONGI, S., THAKURTA, A., PAPERNOT,
+N., AND CARLINI, N. Adversary instantiation: Lower
+bounds for differentially private machine learning. In
+2021 IEEE Symposium on security and privacy (SP)
+(2021), IEEE, pp. 866–882.
+[25] SHOKRI, R., STRONATI, M., SONG, C.,
+AND
+SHMATIKOV, V. Membership inference attacks against
+USENIX Association
+32nd USENIX Security Symposium    1645
+
+machine learning models. In 2017 IEEE symposium on
+security and privacy (SP) (2017), IEEE, pp. 3–18.
+[26] STEVENS, T., NGONG, I. C., DARAIS, D., HIRSCH, C.,
+SLATER, D., AND NEAR, J. P. Backpropagation clip-
+ping for deep learning with differential privacy. arXiv
+preprint arXiv:2202.05089 (2022).
+[27] TRAMÈR, F., TERZIS, A., STEINKE, T., SONG, S.,
+JAGIELSKI, M., AND CARLINI, N. Debugging differ-
+ential privacy: A case study for privacy auditing. arXiv
+preprint arXiv:2202.12219 (2022).
+[28] TRAMER, F., TERZIS, A., STEINKE, T., SONG, S.,
+JAGIELSKI, M., AND CARLINI, N. Debugging differ-
+ential privacy: A case study for privacy auditing. arXiv
+preprint arXiv:2202.12219 (2022).
+[29] WANG, J. T., MAHLOUJIFAR, S., WU, T., JIA, R., AND
+MITTAL, P. A randomized approach for tight privacy
+accounting. arXiv preprint arXiv:2304.07927 (2023).
+[30] WANG, Y., DING, Z., KIFER, D., AND ZHANG, D.
+Checkdp: An automated and integrated approach for
+proving differential privacy or ﬁnding precise counterex-
+amples.
+In Proceedings of the 2020 ACM SIGSAC
+Conference on Computer and Communications Secu-
+rity (2020), pp. 919–938.
+[31] WASSERMAN, L., AND ZHOU, S. A statistical frame-
+work for differential privacy. Journal of the American
+Statistical Association 105, 489 (2010), 375–389.
+[32] YE, J., AND SHOKRI, R. Differentially private learning
+needs hidden state (or much faster convergence). arXiv
+preprint arXiv:2203.05363 (2022).
+[33] YEOM, S., GIACOMELLI, I., FREDRIKSON, M., AND
+JHA, S. Privacy risk in machine learning: Analyzing the
+connection to overﬁtting. In 2018 IEEE 31st computer
+security foundations symposium (CSF) (2018), IEEE,
+pp. 268–282.
+[34] ZAGORUYKO, S., AND KOMODAKIS, N. Wide residual
+networks. In British Machine Vision Conference 2016
+(2016), British Machine Vision Association.
+[35] ZANELLA-BÉGUELIN, S., WUTSCHITZ, L., TOPLE,
+S., SALEM, A., RÜHLE, V., PAVERD, A., NASERI, M.,
+AND KÖPF, B. Bayesian estimation of differential pri-
+vacy. arXiv preprint arXiv:2206.05199 (2022).
+A
+Using PLD to approximate the trade off
+function
+PLD does not have a closed-form trade-off function, but we
+can evaluate empirically a lower bound for a given FPR. We
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Type I Error (FPR)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Type II Error (FNR)
+Optimal bound
+DP bound
+PLD approximated bound (n=10)
+Figure 13: Comparison of the trade-off functions when using
+an approximation of PLD compared to the optimal curve.
+approximate the trade-off function using Algorithm 4, which
+will give us a looser bound for ε, however, the difference is
+in the order of 10−1. Figure 13 compares the approximation
+approach in Algorithm 4 to the optimal trade-off function, as
+we can see, even with 10 approximations we can get a good
+estimation of the trade-off function. In Section 6, we will
+present experiments that provide lower bounds for a single
+step of DP-SGD and multiple steps, they will use the GDP
+and PLD formulations, respectively.
+Algorithm 4 Approximating a lower bound on trade-off func-
+tion using PLD
+Args: fM privacy analysis function (outputs ε for a given
+δ), n number of approximation lines, δ target delta in pri-
+vacy analysis
+∆←n linearly spaced points between [δ,1−δ]
+for δ′ ∈∆do
+ˆε ←fM (δ′)
+lδ′(x) := max(0,1−δ′ −(xeˆε),e−ˆε(1−δ′−x))
+end for
+l(x) := minδ′∈∆lδ′(x)
+return l
+B
+Effect Of Auditing Choices
+B.1
+Choosing a Canary Gradient
+We ﬁrst investigate how the canary gradient affects the es-
+timated privacy bound. We construct the canary gradient in
+three ways:
+1. Dirac canary: All gradient values are zero except at a
+single index.
+2. Constant canary: All gradient values have the same
+value.
+3. Random canary: Gradient sampled from a Gaussian.
+1646    32nd USENIX Security Symposium
+USENIX Association
+
+Constant
+canary
+Dirac
+canary
+Random
+canary
+0.0
+0.5
+1.0
+1.5
+Empirical Epsilon
+Upper bound
+(a) We compare three different ways to create a canary gradient.
+The Dirac canary gradient, with zeros everywhere except for
+a single position which has a value set to the clipping norm,
+slightly outperforms other approaches.
+Moving canary
+Static canary
+0.0
+0.5
+1.0
+1.5
+Empirical Epsilon
+Upper bound
+(b) At each iteration we can either insert the same (static) canary
+gradient, or compute a new canary gradient (moving). There is
+little difference between these two approaches in terms of the ε
+lower bound we can ﬁnd.
+Figure 14: How design decisions for the canary gradient
+change the lower bound we compute for ε with f-DP.
+In each setting, gradient values are re-scaled such that the
+canary gradient has a maximum norm equal to the clipping
+norm. We also measure if there is a difference between using
+the same canary gradient at each iteration of DP-SGD or
+creating a new canary gradient. For example, in the Dirac
+canary we would randomly sample a new index to set to the
+clipping norm at each update. Results are shown in Fig. 14;
+using a Dirac canary that is reset at each update performs best.
+B.2
+Choosing a Canary Input in The White-
+box Setting
+We evaluate how different types of input canaries can affect
+auditing in a white-box setting. We construct the canaries in
+four different ways:
+1. Mislabeled example: We select a random example from
+the test dataset of the model and we select a random label
+(that is not equal to the original label).
+2. Blank example: We craft an input where all dimensions
+of the input are equal to zero.
+3. Adversarial example: We apply Projected Gradient De-
+scent (PGD) to generate adversarial example on a ran-
+dom example from the test dataset.
+Mislabel
+Blank
+Adv
+Crafted
+0.0
+0.5
+1.0
+1.5
+Empirical Epsilon
+Upper bound
+Figure 15: Comparison of the different canary crafting ap-
+proaches in input space for CIFAR-10 dataset using WRN
+architecture.
+4. Crafted example: We use Algorithm 3 to generate an
+input example.
+As we saw from our gradient experiment using the dot
+product between the privatized gradient and the canary gra-
+dient is a sufﬁcient metric for auditing DP-SGD. Therefore
+we use the same idea in our crafting algorithm (Algorithm 3)
+in input space. We look for a canary such that its gradient is
+orthogonal to other gradients in the training batch. However,
+we cannot use the example in the training batch directly to
+craft such an example as it will violate the DP-assumptions
+(the adversary cannot have access to non-noisy gradients).
+Therefore, we assume the adversary has access to an example
+from the same distribution as the training dataset and uses
+that data to estimate the gradient of the model on the training
+example. Then, it crafts an example such that its gradient is
+orthogonal to the estimated gradient. Thus, creating a gradient
+that is signiﬁcantly different from other examples in the batch
+and its presence can be detected.
+Figure 15 compares the effectiveness of different input ca-
+naries in the white-box setting. As can be seen, using our
+canary crafting approach we can achieve signiﬁcantly tighter
+bounds on DP-SGD compared to other canary crafting strate-
+gies. Unfortunately, it is not trivial to extend either the ad-
+versarial example or our crafting approach to the black-box
+setting and therefore we do not use them in the black-box
+experiments.
+C
+The effect of model related parameters
+C.1
+Do earlier training steps leak more infor-
+mation?
+Recent work on measuring the amount of privacy leaked
+when training convex models with DP has shown that the true
+amount of leakage plateaus as the model converges [3, 32].
+This means that after a certain number of steps, training for
+more iterations does not consume any more of the privacy
+USENIX Association
+32nd USENIX Security Symposium    1647
+
+0
+500
+1000
+1500
+2000
+Observed Iterations
+2
+4
+6
+8
+Empiricial Epsilon
+= 8.6
+= 4.3
+= 1.9
+(a) CIFAR-10 dataset with a WRN-16 model.
+0
+500
+1000
+1500
+2000
+Observed Iterations
+2
+4
+6
+8
+Empiricial Epsilon
+= 8.6
+= 4.3
+= 1.9
+(b) Random dataset with a WRN-16 model.
+Figure 16: Lower bounding ε with the input space attack (white-box setting) for different number of iterations of training and
+values of ε, using f-DP (ZB).
+budget. The analysis for this result is speciﬁc to convex mod-
+els; and we cannot prove such properties for the deep models.
+However, when can evaluate if a similar phenomenon holds
+empirically. We measure the lower bounds when we only use
+the ﬁrst n iterations of the training in the White-box access
+with Input Space Canaries threat model. Results are shown in
+Figure 16. We ﬁnd that indeed, the ﬁrst part of training does
+leak more information than later in training on the CIFAR-10
+dataset. However, when we evaluate the random dataset we
+do not see the same behavior (please note that, if we only look
+at a very small number (<100) of the iterations we get a very
+loose bound on ε because we do not have enough observations
+to have a sufﬁciently conﬁdent estimation). Understanding
+why we cannot lower bound from our audit becomes looser in
+later iterations requires further investigation which we leave
+for future work. Nevertheless, the results suggest that when
+we limit the adversary to canaries in the input space then
+model architecture, underlying dataset and the how well a
+model has been trained all have an effect on privacy leakage.
+C.2
+Do larger models leak more privacy?
+Recent work has shown the larger models have a greater capac-
+ity to memorize training data verbatim [7]. We investigate if
+the same trend holds when training with DP-SGD by compar-
+ing lower bounds on a WRN-16 and WRN-40 model. Results
+are shown in Figure 17. Interestingly, if one was to use a non
+f-DP auditing method, one would make an incorrect conclu-
+sion that the WRN-16 leaks more than the WRN-40. Using
+our f-DP auditing method, we identify that, indeed, the larger
+WRN-40 model leaks slightly more than the WRN-16 model.
+C.3
+Does augmentation multiplicity affect pri-
+vacy lower bounds?
+In De et al. [9], data augmentation was a key ingredient in
+achieving state-of-the-art results on CIFAR-10. In particu-
+f-DP
+(ZB)
+f-DP
+(CP)
+( ,
+)-DP
+(ZB)
+-DP
+(Katz)
+( ,
+)-DP
+(CP)
+0.0
+0.5
+1.0
+1.5
+Empirical Epsilon
+Upper bound
+WRN-40
+WRN-16
+Figure 17: Comparison of how model architecture (WRN-16
+and -40) affects the ε lower bound.
+1
+2
+4
+8
+16
+Augmult
+0.0
+0.5
+1.0
+1.5
+Empirical Epsilon
+Upper bound
+Figure 18: How the value for Augmult [9] affects the ε lower
+bound.
+lar, De et al. use a data augmentation technique they term
+augmentation multiplicity (Augmult), where they augment
+a single example multiple times and compute the average
+gradient over these augmentations before clipping. They ﬁnd
+that increasing the Augmult value (number of augmentations)
+improves performance; increasing this value does not increase
+the privacy cost as it does not change the sensitivity of the pri-
+vatized gradient to any single example in the batch. In Fig. 18,
+we measure lower bounds at different Augmult values, and
+observe no clear trend between lower bounds and the value
+for Augmult.
+1648    32nd USENIX Security Symposium
+USENIX Association
+

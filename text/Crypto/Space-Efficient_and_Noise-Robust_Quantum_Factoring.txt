@@ -1,0 +1,1948 @@
+Space-Eﬃcient and Noise-Robust
+Quantum Factoring
+Seyoon Ragavan(B)
+and Vinod Vaikuntanathan
+MIT CSAIL, Cambridge, USA
+{sragavan,vinodv}@mit.edu
+Abstract. We provide two improvements to Regev’s quantum factor-
+ing algorithm (arXiv:2308.06572), addressing its space eﬃciency and its
+noise-tolerance.
+Our ﬁrst contribution is to improve the quantum space eﬃciency of
+Regev’s algorithm while keeping the circuit size the same. Our main
+result constructs a quantum factoring circuit using O(n log n) qubits and
+O(n3/2 log n) gates. We achieve the best of Shor and Regev (upto a log-
+arithmic factor in the space complexity): on the one hand, Regev’s cir-
+cuit requires O(n3/2) qubits and O(n3/2 log n) gates, while Shor’s circuit
+requires O(n2 log n) gates but only O(n) qubits. As with Regev, to factor
+an n-bit integer N, we run our circuit independently ≈√n times and
+apply Regev’s classical postprocessing procedure.
+Our optimization is achieved by implementing eﬃcient and reversible
+exponentiation with Fibonacci numbers in the exponent, rather than the
+usual powers of 2, adapting work by Kaliski (arXiv:1711.02491) from the
+classical reversible setting to the quantum setting. This technique also
+allows us to perform quantum modular exponentiation that is eﬃcient
+in both space and size without requiring signiﬁcant precomputation, a
+result that may be useful for other quantum algorithms. A key ingre-
+dient of our exponentiation implementation is an eﬃcient circuit for a
+function resembling in-place quantum-quantum modular multiplication.
+This implementation works with only black-box access to any quantum
+circuit for out-of-place modular multiplication, which we believe is yet
+another result of potentially broader interest.
+Our second contribution is to show that Regev’s classical postpro-
+cessing procedure can be modiﬁed to tolerate a constant fraction of the
+quantum circuit runs being corrupted by errors. In contrast, Regev’s
+analysis of his classical postprocessing procedure requires all ≈√n runs
+to be successful. In a nutshell, we achieve this using lattice reduction
+techniques to detect and ﬁlter out corrupt samples.
+1
+Introduction
+Shor’s landmark result from 1994 [Sho97] showed us how to factor numbers
+in quantum polynomial time. In particular, he constructed an O(n2 log n)-
+size quantum circuit that uses O(n log n) qubits (including ancilla qubits),
+c
+⃝International Association for Cryptologic Research 2024
+L. Reyzin and D. Stebila (Eds.): CRYPTO 2024, LNCS 14925, pp. 107–140, 2024.
+https://doi.org/10.1007/978-3-031-68391-6_4
+
+108
+S. Ragavan and V. Vaikuntanathan
+such that O(1) runs of his circuit followed by polynomial-time classi-
+cal postprocessing suﬃces to factor an n-bit integer. A number of fol-
+lowup works [BCDP96,VBE96,Sei01,Cop02,CW00,Bea03,TK06,Zal06,EH17,
+Gid17,HRS17,Gid19a,GE21,KMY24] improved the Shor circuit in several ways,
+for example by constructing a log-depth implementation [CW00], reducing the
+number of ancilla qubits to a mere ≈1.5n [Zal06], or reducing the number of
+gates to O(n2) [Gid19b].
+Polynomial improvements to the size of Shor’s circuit remained elu-
+sive for nearly three decades, until Regev [Reg23] recently demonstrated an
+O(n1.5 log n)-size quantum circuit for factoring. Regev shows how to factor n-bit
+integers using ≈√n (parallel) runs of his factoring circuit. While the total num-
+ber of operations remains the same, the hope is that the smaller Regev circuit
+(or a future modiﬁcation of it) is easier to build and that it resists decoherence
+noise better.
+However, Regev’s factoring algorithm (that is, his quantum circuit together
+with the classical postprocessing algorithm) has two key limitations, the ﬁrst
+being its space (in)eﬃciency and the second its noise (in)tolerance.
+In a nutshell, our work provides algorithms addressing both of these prob-
+lems. Both are simple and independent plug-and-play modiﬁcations to Regev’s
+algorithm [Reg23]. We reduce the space complexity to O(n log n) by modifying
+the modular arithmetic part of Regev’s quantum circuit, and we improve the
+tolerance to quantum errors by only modifying Regev’s classical postprocessing
+procedure. We next discuss each of these problems in some more detail, and then
+outline our techniques and results.
+Space Complexity. A key eﬃciency consideration in the construction of quan-
+tum circuits is their space complexity, namely, the number of qubits includ-
+ing the ancilla qubits used by the circuit. (For more discussion on the impor-
+tance of reducing space complexity in certain quantum computing architec-
+tures, e.g. superconducting architectures, see [GE21,Gid23].) The number of
+qubits used in the original Shor circuit was O(n log n). Several works [BCDP96,
+VBE96,Bea03,TK06,Zal06,Gid17,HRS17,Gid19a,KMY24] optimized the space
+complexity down to O(n) qubits (and in fact, even ≈1.5n) albeit at the cost of
+a larger circuit. However, none of these optimizations seems to apply to Regev’s
+circuit whose space complexity stands at O(n1.5).
+To explain why, we start by reminding the reader that a key step in Shor’s
+algorithm is the computation of the map |x⟩→|ax mod N⟩in superposition,
+where a is a ﬁxed base. The fact that a is ﬁxed allows one to precompute its
+powers a, a2, . . . , a2j, . . . classically. Once this is done, exponentiation in super-
+position can be done with space O(n log n) using fast multiplication [HvdH21]
+and in-place exponentiation by multiplying together the appropriate subset of
+the precomputed values. However, using this technique appears to prevent us
+from improving the size of the circuit beyond the O(n2) barrier essentially real-
+ized by Shor’s algorithm; in the case of Regev’s algorithm, we would have to
+precompute a2j
+i
+mod N for Θ(√n) values of i and Θ(√n) values of j. This is
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+109
+hence Θ(√n · √n · n) = Θ(n2) bits of precomputed information; a quantum
+circuit using all of these values would hence be expected to require Ω(n2) gates.
+Instead, if one tries to implement the map |x⟩|a⟩→|x⟩|ax mod N⟩via
+the classic square-and-multiply algorithm, one runs into the conundrum of
+implementing the squaring circuit modulo N, as observed by Ekerå and Gid-
+ney [Gid23]. On the one hand, doing this reversibly and in-place seems as hard
+as factoring N. On the other hand, writing the squared result to a new register
+consumes extra space; indeed, this is the source of the O(n3/2) space requirement
+for Regev’s circuit [Reg23]. This state of aﬀairs raises a natural question:
+Can we achieve the best of Shor and Regev?
+Concretely, can we construct a quantum factoring circuit with ˜O(n1.5) gates and
+O(n) ancilla qubits?
+Error Tolerance. Quantum decoherence noise is a central and ubiquitous
+obstacle to realizing quantum circuits in practice that achieve functionality that
+we cannot already perform classically [AAB+19,GE21,CCHL22,Cai23]. For the
+speciﬁc case of factoring, it appears that the associated error correction proce-
+dures are both necessary and costly. Cai [Cai23] shows that Shor’s algorithm
+breaks down in the presence of uncorrected noise, even if one restricts to very
+small and structured noise in only the ﬁnal QFT part of the circuit. Addition-
+ally, Gidney and Ekerå [GE21] analyze the concrete cost of factoring 2048-bit
+integers using Shor’s algorithm while correcting for quantum errors throughout,
+and show that even for carefully chosen parameters, this would take 8 h with 20
+million physical qubits, a signiﬁcant overhead relative to the costs of running
+Shor’s circuit in the absence of errors.
+How much error correction does one need to factor? In the case of Shor’s
+algorithm [Sho94], a circuit with ˜O(n2) gates is run O(1) times. For all of these
+runs to work, the error probability per logical gate would have to be brought
+down to ˜O(1/n2). While it initially appears that the situation with Regev [Reg23]
+would be better because of the smaller circuit, this is actually not the case upon a
+closer look. Indeed, Regev’s circuit comprises of ˜O(n1.5) gates and is run O(n0.5)
+times. Regev’s analysis of his classical postprocessing only applies in the case
+where every run of the circuit is successful. Hence the logical error probability
+per logical gate would still have to be the same ˜O(1/n2). The natural question
+that arises is:
+Can we achieve better noise-tolerance than both Shor and Regev?
+Indeed, there is a natural opportunity to improve the noise-tolerance in the
+case of Regev’s algorithm [Reg23]: if only the classical postprocessing could be
+modiﬁed to tolerate a constant fraction of unsuccessful runs, then the per-gate
+error threshold would only have to be ˜O(1/n1.5), improving on both Shor’s and
+Regev’s algorithms.
+We now proceed to describe our results for quantum factoring in more detail.
+
+110
+S. Ragavan and V. Vaikuntanathan
+Table 1. Comparison of our results with previous work. Asymptotically best-known
+results for either space or size are highlighted in bold. Note, importantly, that all values
+here are just for one run of the circuit. They do not account for the fact that a circuit
+for Shor’s algorithm only requires O(1) independent runs, while a circuit for Regev’s
+algorithm as well as ours requires √n + 4 independent runs. The constant ϵ can be
+made arbitrarily close to 0 and arises from the multiplication circuits by [KMY24].
+The number of qubits in the last two lines is derived from Corollary 3 assuming that
+the constant C in Regev’s number-theoretic assumption is 1 + o(1).
+Algorithm
+Mult. algorithm Number of qubits
+Circuit size
+Shor [Sho97]
+[HvdH21]
+O(n log n)
+O(n2 log n)
+Shor
+Schoolbook
+O(n)
+O(n3)
+Shor
+[Gid19a,KMY24]
+O(n)
+Oϵ(n2+ϵ)
+Optimized Shor
+Schoolbook
+(1.5 + o(1))n
+O(n3)
+[Bea03,TK06,Zal06,Gid17,HRS17]
+Regev’s algorithm [Reg23]
+[HvdH21]
+O(n3/2)
+O(n3/2 log n)
+Our optimization of Regev
+[HvdH21]
+O(n log n)
+O(n3/2 log n)
+Our optimization of Regev
+[Gid19a,KMY24] (10.32 + o(1))n
+Oϵ(n3/2+ϵ)
+Our optimization of Regev
+Schoolbook
+(10.32 + o(1))n O(n5/2 log n)
+[RNSL17]
+1.1
+Our Results for Optimizing Space
+Regev’s algorithm [Reg23] achieves a smaller circuit of O(n1.5 log n) gates in
+comparison to Shor’s O(n2 log n) [Sho94]; however, for reasons discussed earlier
+it requires at least ≈3n1.5 qubits1 as opposed to the ˜O(n) qubits in Shor and
+optimized implementations of it. In this work, we construct a quantum circuit
+that asymptotically achieves the best of both worlds: it has a size of O(n1.5 log n)
+matching Regev’s circuit; and it requires O(n log n) qubits, nearly matching what
+is known for optimized versions of Shor’s circuit. We compute the concrete num-
+ber of qubits required (see our Theorem 1 below) which, using schoolbook multi-
+plication, leads us to (10.32+o(1))n qubits and O(n2.5) gates, vis-a-vis the results
+of [BCDP96,VBE96,Bea03,TK06,Zal06,Gid17,HRS17] which use ≈1.5n qubits
+and O(n3) gates. Our space improvement on Regev’s circuit [Reg23] is substan-
+tial not only asymptotically but also for cryptographically relevant problem sizes;
+when n = 2048, our circuit uses at least ≈13× fewer qubits than Regev’s circuit.
+(See Table 1 for a full list of our results and comparison to prior work.)
+As discussed earlier, approaches to modular exponentiation via precomputa-
+tion or repeated squaring do not appear to yield the best-of-both-worlds results
+we seek. We avoid these issues with the key technique of Fibonacci exponen-
+tiation, a method of exponentiation that avoids modular squaring and instead
+1 In more detail, using the notation in Sect. 2, Regev’s circuit requires at least log2 D ·
+n ≈An1.5 qubits. The calculation in Appendix F.1 of the full version together with
+observations in Sect. 3.3 implies that we should take A = 3 + o(1).
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+111
+relies solely on modular multiplication. Previous works have considered using
+Fibonacci numbers rather than powers of two in the exponent for particular
+applications [BMT+07,Kle08,Mel07]. Additionally, Kaliski [Kal17b] explicitly
+shows how to use this Fibonacci technique to achieve eﬃcient modular exponen-
+tiation in the setting of classical reversible computation.
+We show that these ideas can be adapted to the quantum setting (see Sect. 1.3
+for a more detailed comparison of our work with [Kal17b]). While Fibonacci
+exponentiation seems to not be of much use in Shor’s circuit, it turns out to
+be quite powerful in optimizing the space usage of Regev’s circuit. As noted
+by Kaliski [Kal17b], it also oﬀers a general way to eﬃciently compute modular
+exponents on quantum computers in cases where precomputation is impossible
+or ineﬃcient; we discuss this in Appendix D of the full version [RV24].
+We begin by stating our main theorem for qubit complexity, and compare the
+result to Regev [Reg23] and optimizations of Shor’s algorithm [Sho97,BCDP96,
+VBE96,Bea03,HRS17,TK06,Gid17,Gid19a,KMY24]. In a nutshell, the algo-
+rithm by [Reg23] requires O(n3/2) qubits, which we bring down to O(n log n)
+while retaining the O(n3/2 log n) quantum circuit size. Optimizations of Shor’s
+algorithm that retain the O(n2 log n) circuit size require O(n log n) qubits to the
+best of our knowledge; thus, compared to these results, our algorithm works with
+the same number of qubits but achieves a O(√n) factor saving in the circuit size
+(just as [Reg23] does).
+Main Theorem 1. Assume there is a quantum circuit that implements the
+operation
+|a⟩|b⟩|t⟩|0S⟩→|a⟩|b⟩|(t + ab) mod N⟩|0S⟩
+with G gates where N, a, b, t are all n-bit integers with 0 ≤a, b, t < N and
+2n−1 ≤N < 2n, and S here is the number of ancilla qubits.2
+Under conjecture 1 (a number-theoretic assumption proposed by [Reg23]),
+there exists a classical polynomial-time algorithm that outputs a non-trivial factor
+of N using √n + 4 calls to a quantum circuit on
+S +
+C + 2
+log φ + 6 + o(1)
+
+n ≈S + (1.44C + 8.88) · n
+qubits using O(n1/2 · G + n3/2) gates, where φ = (1 +
+√
+5)/2 is the golden ratio.
+Here, C is the absolute constant from conjecture 1.
+We now state three corollaries of this general theorem by plugging in diﬀer-
+ent known results for integer multiplication. Some of these multiplication results
+do not have the speciﬁc structure Theorem 1 requires e.g. they may be classical
+rather than quantum, or multiply integers over Z rather than modulo N. How-
+ever, it turns out that all these can be readily adapted to our setting; we discuss
+this in detail in Appendix A of the full version.
+Using the classical O(n log n) multiplication algorithm due to [HvdH21]
+allows us to set G = S = O(n log n) and obtain the following corollary:
+2 We do not make any assumptions about the circuit’s behavior on inputs where any
+of a, b, t are ≥N.
+
+112
+S. Ragavan and V. Vaikuntanathan
+Corollary 1. Under the same assumption as in Theorem 1, there is a quantum
+circuit for factoring that uses O(n log n) qubits and O(n3/2 log n) gates.
+If we want to push the number of qubits needed all the way down to
+O(n), we can employ the space-eﬃcient quantum implementation of Karat-
+suba’s algorithm [KO62] due to Gidney [Gid19a] which uses S = O(n) ancilla
+qubits and G = O(nlog2 3) gates. Alternatively, we can use the recent result by
+Kahanamoku-Meyer and Yao [KMY24] which combines ideas by Draper [Dra00]
+with Toom-Cook multiplication [CA69,Too63] to obtain a multiplication circuit
+using S = Oϵ(log n) ancilla qubits and G = Oϵ(n1+ϵ) gates3 for any ϵ > 0,
+yielding the following corollary:
+Corollary 2. Under the same assumption as in Theorem 1, for any ϵ > 0, there
+is a quantum circuit for factoring that uses
+C + 2
+log φ + 6 + oϵ(1)
+
+n ≈(1.44C + 8.88) · n
+qubits and Oϵ(n3/2+ϵ) gates, where C is the constant from Conjecture 1.
+This latter result achieves the same asymptotic space complexity as Shor’s algo-
+rithm using the same multiplication circuit, except with O(√n) factor smaller
+number of gates.
+Finally, if we want to use schoolbook multiplication because of its eﬃ-
+ciency for integers of practical length, we can slightly modify the space-eﬃcient
+quantum implementation of schoolbook multiplication due to [RNSL17] (see
+Appendix A of the full version for details about our modiﬁcation). This algo-
+rithm uses S = 2 ancilla qubits and G = O(n2 log n) gates, yielding the following
+corollary:
+Corollary 3. Under the same assumption as in Theorem 1, there is a quantum
+circuit for factoring that uses
+C + 2
+log φ + 6 + o(1)
+
+n ≈(1.44C + 8.88) · n
+qubits and O(n5/2 log n) gates, where C is the constant from Conjecture 1.
+We compare these results with previous work on quantum circuits for factor-
+ing in Table 1. We also detail the various sources of space cost in our algorithm
+and potential areas for further optimizations in Sect. 5.4.
+As we discuss in Sect. 3.3, following a heuristic argument by Regev [Reg23]
+suggests that taking C = 1 + ϵ should be suﬃcient for conjecture 1 to hold.
+Plugging this into the statement of Theorem 1 tells us that the space complexity
+of our circuit should be ≈S + (10.32 + o(1))n.
+3 We note that the multiplication circuit by [KMY24] already has exactly the form
+we need; we do not need to incur any overheads from compiling it into the form we
+need using our results in Appendix A of the full version.
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+113
+1.2
+Our Results on Error-Correction
+We show that Regev’s classical postprocessing [Reg23] can be modiﬁed to tol-
+erate a constant fraction of unsuccessful runs of the quantum circuit, thus only
+requiring a ˜O(1/n1.5) bound on the probability of logical error per logical gate.
+Main Theorem 2 (Informal, see Sect. 4.2 and Theorem 3 for formal state-
+ment) Assume the probability of error in one run of Regev’s circuit is a suﬃ-
+ciently small constant p > 0. Then there exists a classical polynomial-time algo-
+rithm that, given m = Ω(√n) potentially corrupt samples from Regev’s quantum
+circuit, outputs a non-trivial factor of N with probability Ω(1).
+Our algorithm is conceptually simple. As we will explain in Sect. 3, uncor-
+rupted samples from Regev’s circuit will essentially be random samples from
+L∗/Zd, where L is a lattice depending on the integer N that needs to be fac-
+tored. For simplicity, assume that corrupted samples are uniform from the torus
+Rd/Zd. Then the main idea is that a small linear combination of samples that
+includes even one corrupt sample will also be uniform and hence should not be
+close to the dual lattice. Based on this, we devise a ﬁltering procedure using
+lattice reduction techniques to detect and ﬁlter out corrupt samples. This gives
+us a collection of uncorrupted samples, which can now be plugged into Regev’s
+classical postprocessing procedure [Reg23] as-is.
+However, we also extend our results beyond the case where the corrupt sam-
+ples are uniform over Rd/Zd. We deﬁne a formal model in terms of a general error
+distribution D and clearly state a general condition on D that suﬃces for our
+ﬁltering procedure to go through. We defer the formal models and statements
+to Sect. 4.2.
+1.3
+Related Work
+On Kaliski’s Work and Quantum-Quantum Multiplication. We com-
+pare our techniques to achieve our space-complexity result with those of
+Kaliski [Kal17b].
+At its core, the beautiful work of Kaliski [Kal17b] constructs classical
+reversible and space-eﬃcient algorithms for modular exponentiation i.e. the map
+(1, a, z) →(1, a, z, az mod N). (Kaliski also then shows how to “forget” a, thereby
+obtaining (1, 1, z, az mod N), but this is neither useful nor applicable to our sit-
+uation because these additional results assume the algorithm knows the order
+ϕ(N) of the group, which we do not.)
+While Kaliski’s algorithm is reversible in the classical world, it is not directly
+applicable to quantum computation. The key arithmetic operation used by
+Kaliski is the mapping (a, b) →(a, ab mod N). This is classically reversible
+assuming gcd(a, N) = 1, but it is not trivial to implement this on a quantum
+computer.4 Indeed, it is at least as diﬃcult as inversion modulo N: the inverse of
+4 We note that Kaliski does consider applications of his Fibonacci exponentiation idea
+to quantum computation [Kal17a,Kal17b], but does not appear to identify or address
+the problem of implementing (a, b) →(a, ab mod N) on a quantum computer.
+
+114
+S. Ragavan and V. Vaikuntanathan
+a circuit computing this mapping would map (a, b) →(a, a−1b mod N). Taking
+b = 1 would immediately yield a circuit for modular inversion, which we cur-
+rently only know how to implement using O(n2) gates via the extended Euclidean
+algorithm [PZ03].
+This problem is often referred to as in-place quantum-quantum modular multi-
+plication [RC18]. “In-place” speciﬁes that the output ab mod N should overwrite
+the input register b, and “quantum-quantum” speciﬁes that a and b are both in
+superposition. In contrast, “quantum-classical” multiplication would be when a
+is a classical constant. This is a more straightforward task, and was addressed
+in Shor’s original paper [Sho97].
+Previous work by Rines and Chuang [RC18] on quantum modular multipli-
+cation constructs a very careful white-box implementation of schoolbook mul-
+tiplication using Montgomery multipliers with O(n2) gates and O(n) qubits.
+Their circuits can be used for out-of-place quantum-quantum multiplication
+or in-place quantum-classical multiplication, but do not appear adaptable to
+in-place quantum-quantum multiplication without using the costly extended
+Euclidean algorithm to coherently compute inverses [PZ03].5 Moreover, their
+method does not appear to be adaptable to arbitrary multiplication algorithms,
+and in particular, does not match state-of-the-art classical algorithms using O(n)
+gates [HvdH21,SS71].
+Our algorithm approaches the problem of in-place quantum-quantum mul-
+tiplication by sidestepping the cost of inversion modulo N. We start by replac-
+ing each register a in Kaliski’s procedure with the tuple (a, a−1 mod N), so
+that our goal is now to implement the map (a, a−1 mod N, b, b−1 mod N) →
+(a, a−1 mod N, ab mod N, (ab)−1 mod N). In Lemma 9, we show that this map
+can be implemented using O(1) black-box calls to any quantum circuit for out-
+of-place quantum-quantum modular multiplication. This allows us to utilize
+any classical multiplication algorithm in our quantum circuit, including those
+by [HvdH21] or [SS71] (after applying the necessary procedures in Appendix A
+of the full version).
+On the Work of [EG24]. Subsequent to a public posting of our work containing
+only our space complexity result, Ekerå and Gärtner [EG24] showed how to
+adapt both Regev’s algorithm [Reg23] and our space optimization of it to obtain
+quantum circuits for the discrete logarithm problem over Zp that achieve an
+analogous improvement over Shor [Sho97]. Second, concurrent to our results on
+error-tolerance, they also address the question of improving the error tolerance of
+Regev, but in a diﬀerent way; instead of ﬁrst detecting and ﬁltering out corrupt
+samples like we do, they show under a diﬀerent assumption on the distribution of
+corrupt samples that Regev’s classical postprocessing [Reg23] as-is can withstand
+a constant fraction of samples being corrupted.
+While the algorithm arising from their result is hence conceptually simpler
+than ours, it relies on a stronger assumption. For example, in the case that
+the corrupted samples are uniform from the torus Rd/Zd, we are able to prove
+5 We thank Martin Ekerå and Joel Gärtner for pointing out to us that the results
+by [RC18] do not easily handle in-place quantum-quantum multiplication.
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+115
+correctness of our algorithm assuming nothing more than the same Conjecture 1
+needed by [Reg23], namely that there exists one short vector in a lattice L that
+gives rise to a nontrivial square root mod N. On the other hand, the assumption
+by [EG24] which depends on both L and the distribution of errors requires at
+the very least that L has a short basis, which is a stronger assumption. For
+this reason, we view both the analysis by [EG24] and our result as distinct
+and important contributions towards achieving robust and eﬃcient quantum
+factoring.
+We note that our result described in Sect. 4.2 on detecting errors also readily
+adapts to the discrete logarithm algorithm by [EG24]. We provide an outline in
+Appendix E of the full version.
+Other Follow-Up Work. Subsequent to postings of both our work and that
+by [EG24], it was shown by Pilatte [Pil24] that a variant of our space-eﬃcient
+implementation of Regev’s factoring algorithm [Reg23] and its adaptation to dis-
+crete logarithms by [EG24] can be proven to be unconditionally correct, at the
+expense of polylogarithmic factors in the qubit and gate complexity. Speciﬁcally,
+it is shown by [Pil24] that if we allow the bases in Regev’s circuit [Reg23] to be
+as large as exp( O(√n)) rather than just poly(n), we can prove the analogue
+of Conjecture 1 and thus obtain an unconditionally correct quantum factoring
+algorithm that makes O(√n) calls to a quantum circuit that uses O(n3/2 log3 n)
+gates and O(n log2 n) qubits. While this algorithm is likely undesirable in prac-
+tice for cryptographically relevant problem sizes because of its use of larger
+bases, the result by Pilatte [Pil24] still serves to increase conﬁdence in conjec-
+ture 1, and hence the correctness of Regev’s algorithms [Reg23] and its variants
+in [EG24,Rag24] and this work.
+In another follow-up work [Rag24], we carefully analyze the prefactor in the
+gate count of our space-eﬃcient circuit. We provide methods to substantially
+improve the prefactor in the number of gates, as well as to lower the prefactor
+in the space complexity from ≈10.32 to 9 + ϵ for any ϵ > 0, by working with
+more general sequences of integers than the Fibonacci numbers.
+Organization of the Paper. We start with an overview of Regev’s factoring
+algorithm in Sect. 3. We follow this up with a formal statement of our results
+in Sect. 4, the space-eﬃciency result in Sect. 5, and the error-tolerance result in
+Sect. 6.
+2
+Setup and Notation
+We retain all notation from [Reg23] and restate it here for convenience. Let
+N < 2n be an n-bit number. Let d = ⌊√n⌋and b1, . . . , bd be some small O(log n)-
+bit integers (e.g. bi is the ith prime number) and let ai = b2
+i mod N. For any
+integer t, let [t] denote the set {1, 2, . . . , t}. We use log to denote the base-2
+logarithm throughout this paper. Also, let φ denote the golden ratio. Regev’s
+algorithm uses a number of parameters:
+
+116
+S. Ragavan and V. Vaikuntanathan
+– Let C > 0 be an absolute constant given by conjecture 1;
+– Let A > C be another constant we specify later. For Regev’s factoring algo-
+rithm and our space optimization, we will take A = C +2+o(1), but a larger
+constant A may be needed in order to be compatible with our error detection
+results (see Sect. 4.2 for details);
+– Let R = 2(A+o(1))√n; and
+– Let D be a power of 2 in [2
+√
+d · R, 4
+√
+d · R]. Note that D is also 2(A+o(1))√n.
+These are the same parameters R and D deﬁned by [Reg23].
+Regev deﬁnes the following lattices in d dimensions:
+L =
+
+(z1, . . . , zd) ∈Zd :
+d
+
+i=1
+azi
+i ≡1 mod N
+
+, and
+L0 =
+
+(z1, . . . , zd) ∈Zd :
+d
+
+i=1
+bzi
+i ≡±1 mod N
+
+⊆L.
+We will also work closely with the dual lattice
+L∗=
+
+y ∈Rd : ⟨x, y⟩∈Z ∀x ∈L
+	
+⊇Zd.
+3
+Overview of Regev’s Factoring Algorithm
+Regev’s algorithm [Reg23] starts by ruling out simple possibilities where factor-
+ing is easy i.e. if N is even, a prime power, or shares a common factor with any
+of the bi. For the remainder of this paper, we assume none of these is the case.
+The goal of Regev’s algorithm [Reg23] is to ﬁnd one vector z = (z1, . . . , zd)
+in L\L0. Given such a vector, one can construct b = 
+d
+i=1 bzi
+i mod N. Since
+z ∈L, b must be a square root of 1 modulo N, moreover it must be a nontrivial
+square root of 1 since z /∈L0. Hence N divides (b −1)(b +1) but not either term
+individually, so gcd(b −1, N) will be a nontrivial divisor of N.
+Regev’s algorithm can be broken down into two distinct pieces. First, there is
+a quantum circuit that essentially produces one noisy sample from L∗/Zd. This
+circuit is run d + 4 times. Secondly, there is a classical postprocessing procedure
+that takes these samples and essentially recovers a basis for all vectors in L of
+norm at most T = 2C√n. Under a heuristic assumption made by [Reg23], at
+least one of these vectors will belong to L\L0.
+3.1
+Overview of Regev’s Quantum Circuit
+We give an overview of Regev’s quantum factoring circuit, just enough to
+understand our results; for more details, we refer the reader to the original
+work [Reg23]. To help keep track of space usage, all lemmas will clearly specify
+the number of ancilla qubits needed (if any).
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+117
+Constructing a Superposition over Vectors z. For s > 0, deﬁne the Gaus-
+sian function ρs : Rd →R as
+ρs(z) = exp(−π||z||2/s2).
+Then in this step, the algorithm constructs a discrete Gaussian state |ψ⟩within
+1/poly(d) trace distance of the state proportional to:
+
+z∈{−D/2,...,D/2−1}d
+ρR(z)|z⟩.
+The complexity of this step can be summarized in the following lemma from
+[Reg23].
+Lemma 1. |ψ⟩can be constructed in-place (i.e., without any ancilla qubits) with
+O(d(log D + poly(log d))) = O(n)
+gates. The number of qubits needed to store the vector |z⟩is d log D = (A+o(1))n.
+Proof. We restate the outline by [Reg23] here and then explain why this
+can be done without ancilla qubits. We refer the reader to [GR02,Reg09] for
+details. Firstly, it suﬃces to compute a one-dimensional discrete Gaussian state
+over scalars z ∈{−D/2, . . . , D/2 −1} in-place using O(log D + poly(log d))
+gates (since our d-dimensional discrete Gaussian is a tensor product of d one-
+dimensional discrete Gaussian states).
+As explained by [Reg23], this can be achieved (up to an error of 1/ poly(d)
+trace distance) by adapting a standard procedure as in [GR02,Reg09]. For the
+O(log d) most signiﬁcant qubits, one can apply the appropriate rotation to that
+qubit conditioned on the values of the previous qubits, using poly(log d) gates.
+For the remaining qubits, the correct rotation will be very close to the |+⟩state,
+so we can simply apply Hadamard gates in-place to all of them. (This is where
+the 1/ poly(d) trace distance error is incurred.) This takes at most log D gates.
+To address the space consideration, observe that computing the O(log d) most
+signiﬁcant qubits requires poly(log d) ancilla qubits. These ancilla qubits simply
+store the angles for each rotation, which is a classical function of the bits of z
+and can hence be uncomputed. After uncomputation, these ancilla qubits will
+be back in the |0⟩state, and can be reused as low-order qubits for the discrete
+Gaussian state (since we need ≈log D ≫poly(log d) lower-order qubits).
+⊓⊔
+A Quantum Oracle to Compute 
+d
+i=1 azi +D/2
+i
+mod N. Next, the algo-
+rithm computes (in superposition)
+d
+
+i=1
+azi+D/2
+i
+(mod N)
+(1)
+(the oﬀset by D/2 in the exponent is to make all exponents non-negative).
+
+118
+S. Ragavan and V. Vaikuntanathan
+Recall that we use G to denote the number of gates used by our n-bit mul-
+tiplication circuit; see the statement of Theorem 1 for a precise description.
+Then, Regev achieves this step by ﬁrst constructing a classical circuit with
+O(log D · G) = O(n1/2 · G) gates for this computation, then implementing this
+quantumly. For details on “compiling” classical circuits into quantum circuits,
+see Appendix A.1 of the full version.
+Regev’s classical circuit uses a repeated squaring procedure, while also
+exploiting the fact that the ai’s are small to reduce the number of large-integer
+multiplications required. After compiling this into a quantum oracle and making
+some minor optimizations,6 Regev obtains the following lemma:
+Lemma 2. As in Theorem 1, let G and S be the number of gates and ancilla
+qubits respectively for our multiplication circuit on n-bit integers. Then there
+exists a quantum circuit mapping
+|z⟩|0M⟩→|z⟩
+
+d
+
+i=1
+azi+D/2
+i
+mod N
+
+|ψ⟩.
+Here,
+M = S + O(n3/2)
+is the initial number of ancilla qubits, and |ψ⟩is some possibly nonzero state on
+M −n qubits. Moreover, this circuit uses O(n1/2 · G) gates.
+We note that this step is the performance bottleneck in Regev’s algorithm
+both in terms of gates and qubits. One of our main contributions is ﬁnding a
+diﬀerent way to implement this oracle that only requires S + O(n) qubits while
+retaining the same asymptotic gate complexity. We discuss our improvement in
+more detail in Sect. 4.1.
+Measurement and QFT. The ﬁnal stage of the quantum part of Regev’s
+algorithm [Reg23] ﬁrst measures the register storing 
+d
+i=1 azi+D/2
+i
+(mod N) to
+collapse the |z⟩register to a superposition over some coset from Zd/L. Then
+the algorithm applies the inverse of the circuit in Lemma 2 to uncompute the
+nonzero state |ψ⟩.
+Now the algorithm applies an approximate QFT [Cop02] modulo D i.e. over
+Zd
+D to the |z⟩register, measures, and divides by D to obtain a vector close to
+a uniform sample from the dual lattice L∗/Zd. More formally, with probability
+1−1/ poly(d), we obtain a sample of the form wi = vi +δi. Here, vi is a uniform
+sample from L∗/Zd and δi is some error of magnitude at most 2(−A+o(1))n/d.
+The sample wi is the ﬁnal output of each run of the quantum circuit.
+6 In particular, Regev does not quite just take his classical circuit (for computing
+Eq. 1) and black-box convert it into quantum, which would result in O(n3/2 log n)
+space complexity (as explained in Appendix A.1 of the full version). However, he
+is able to reuse the ancilla qubits used for multiplications, resulting in just O(n3/2)
+qubits.
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+119
+To understand the complexity of this part of the quantum circuit, what we
+need is the following lemma from [Cop02,Reg23].
+Lemma 3. The approximate QFT can be computed in-place with circuit size
+O(d log D(log log D + log d)) = O(n log n)
+gates. The space usage here is the number of qubits needed to store |z⟩, which is
+d log D = (A + o(1))n qubits.
+3.2
+Overview of Regev’s Classical Postprocessing
+Regev’s classical postprocessing procedure [Reg23] works with the lattice L, but
+it can really be viewed as an algorithm for any lattice Λ ⊆Zd. We state Regev’s
+result in these terms below:
+Lemma 4. Let Λ ⊆Zd be a lattice, and let m = d + 4. Additionally, let T > 0
+be some norm bound. Assume we are given as input m independent samples of
+the form
+wi = vi + δi,
+where each vi is a uniform sample from Λ∗/Zd and δi is some additive error of
+magnitude at most δ. Additionally, assume the following inequality:
+(m + d)1/2 · 2(m+d)/2 · (m + 1)1/2 · T < δ−1 · (4 det Λ)−1/m/6.
+Then there exists a classical polynomial-time algorithm that, with probability at
+least 1/4, outputs a ﬁnite sequence of vectors z1, z2, . . . , zl ∈Λ such that any
+u ∈Λ with ||u||2 ≤T can be written as an integer linear combination of the zi’s.
+We note that the algorithm is deterministic; the success probability is taken
+over the randomness of the wi’s.
+For the factoring algorithm, [Reg23] takes L = Λ and T = 2C√n and uses
+the bound that det L ≤N < 2n. Plugging in and solving implies that we require
+A ≥C+2+o(1) (see Appendix F.1 of the full version for this simple calculation).
+We remark here that our other main contribution in this paper is extending
+the algorithm in Lemma 4 to handle cases where a small constant fraction of the
+m samples may be completely corrupted. Our algorithm uses Regev’s classical
+postprocessing procedure [Reg23] as its ﬁnal step, but we need to modify the
+analysis by [Reg23] to obtain a result slightly diﬀerent from Lemma 4. We defer
+a discussion of this algorithm and its analysis to Appendix B of the full version.
+3.3
+Regev’s Number-Theoretic Assumption
+Regev’s choice of the parameter T arises from the following heuristic number-
+theoretic assumption [Reg23]:
+Conjecture 1. There exists a vector in L\L0 of ℓ2 norm at most T = 2C√n, for
+some given constant C > 0.
+
+120
+S. Ragavan and V. Vaikuntanathan
+As observed by [Reg23], a simple pigeonhole principle argument shows that
+there exists a nonzero vector in L with norm at most 2(1+o(1))√n. Following
+Regev’s heuristic argument suggests that taking C = 1 + ϵ should be suﬃcient.
+Under this assumption, there exists some nonzero vector u ∈L\L0 of ℓ2
+norm at most T. By Lemma 4, u is expressible as an integer linear combination
+of z1, z2, . . . , zl. Since u /∈L0, there exists some i ∈[l] such that zi /∈L0 ⇒zi ∈
+L\L0. Hence at least one of z1, . . . , zl is an element of L\L0, so we can simply
+try the aforementioned gcd calculation for each of them one at a time.
+Finally, we note that follow-up work by Pilatte [Pil24] shows that if we allow
+the bases b1, . . . , bd to be as large as exp(O(d log d)), then the analogue of Conjec-
+ture 1 can be proven unconditionally, thus providing an unconditionally correct
+variant of Regev’s algorithm that improves asymptotically on Shor’s algorithm.
+This completes our overview of Regev’s factoring algorithm.
+4
+Our Improvements to Regev’s Algorithm
+4.1
+Reducing the Number of Qubits
+Here, we formally state our space improvement to Lemma 2, thus yielding The-
+orem 1.
+Lemma 5. (Compare with Lemma 2). As in Theorem 1, let G and S be the
+number of gates and ancilla qubits respectively for our multiplication circuit on
+n-bit integers. Then there exists a quantum circuit mapping
+|z⟩|0M⟩→
+
+d
+
+i=1
+azi+D/2
+i
+mod N
+
+|ψz⟩.
+Here,
+M = S +
+ A
+log φ −A + 6 + o(1)
+
+n
+is the initial number of ancilla qubits, and |ψz⟩is some possibly nonzero state on
+M + An −n qubits that could depend on z. Moreover, this circuit uses O(n1/2 ·
+G+n3/2) gates. Therefore, the total number of qubits used (i.e. the space usage)
+is
+S +
+ A
+log φ + 6 + o(1)
+
+n.
+4.2
+Tolerating Quantum Errors
+Regev’s algorithm assumes that all quantum gates and qubits exist without
+error in every run of the circuit. This may not be the case in practice; indeed,
+the diﬃculty of detecting and correcting quantum errors is a signiﬁcant bar-
+rier to constructing quantum computers at scale [FMMC12,CKM19,GE21]. We
+introduce a model for such errors and state our results formally.
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+121
+The Error Model. We model errors by assuming that an additional Ham-
+ming error is applied to each sample from the quantum circuit with constant
+probability. Concretely, let D be a noise distribution over Rd/Zd, η ∈{0, 1} an
+integer, and p = Θ(1) the probability of a quantum error in one run of the cir-
+cuit. Instead of sampling wi = vi + δi directly, we will assume that the following
+corruption procedure is applied to it:
+1. With probability 1 −p, we observe the sample wi = vi + δi. In this case, we
+say the sample is uncorrupted.
+2. With probability p, we obtain the following corrupted sample:
+(a) Sample ϵi ←D. This sampling is independent for each i (this is a reason-
+able assumption since each run of the circuit is independent).
+(b) The sample we observe is now wi = η(vi + δi) + ϵi.
+We comment on the role of the parameter η in this model:
+– If η = 1, then we are dealing with additive errors: the sample we expect to
+see is perturbed by a sample from D.
+– If η = 0, then we are dealing with overwrite errors: we directly see a sample
+from D.
+Our results will hold for either choice of η, and hence either error model. We
+note that, in the important special case where D is uniform over Rd/Zd, the
+two possibilities for η yield the same distribution. Moreover, we remark that
+the overwrite error model is extremely general, and subsumes the additive error
+model. For example, suppose we let D1 be the distribution of vi + δi (i.e. an
+output from Regev’s circuit [Reg23] without any quantum errors) and D2 some
+independent noise distribution over Rd/Zd, so that the output of a corrupt run
+of Regev’s circuit would be the sum of a sample vi + δi from D1 and a sample
+ϵi from D2. The natural way to view this distribution is using our additive error
+model, with D = D2. However, we could also view this using the overwrite error
+model, by simply taking D to sample independently from D1 and D2 and sum the
+results (equivalently, we are taking the convolution of D1 and D2). (We remark
+that we do not require the existence of eﬃcient or even ineﬃcient algorithms,
+classical or quantum, for sampling from D; we just need the distribution D to
+exist for this model to make sense.)
+This then begs the question of why we are considering the additive error
+model at all. The reason for this is that our results will require a special property
+of the distribution D, that we refer to as being “well-spread”. We deﬁne this
+formally in Deﬁnition 1. It may in some cases be easier to verify this “well-spread”
+condition when working with the additive error model than with the overwrite
+error model. For instance, in the example provided in the above paragraph, it
+will typically be easier to prove that D2 is well-spread than proving that the
+convolution of D1 and D2 is well-spread (due to the additional noise that comes
+from the δi’s in D1).
+
+122
+S. Ragavan and V. Vaikuntanathan
+Our Results. Let α > 0 and γ ∈(0, α −1) be constants that we will specify
+later. We will run Regev’s quantum circuit m = αd times.
+Our results will need to depend in some way on the structure of the noise
+distribution D, which we capture in the following deﬁnition which, in words, says
+that a distribution D is well-spread with respect to a lattice if there is no way to
+take small (non-zero) integer linear combinations (i.e. linear combinations with
+small integer coeﬃcients) of samples from D that results in a point close to the
+lattice.
+Deﬁnition 1. Let dist(·, ·) denote the distance on the torus Rd/Zd i.e. mod 1,
+and let Λ ⊆Zd be a lattice. Then we say D is (α, γ, A)-well-spread with respect
+to a lattice Λ∗if the following holds for any positive integer k ≤(α −γ −1)d:
+For i.i.d. ϵ1, . . . , ϵk ←D, with probability 1 −o(1), there do not exist integers
+a1, a2, . . . , ak such that:
+– |ai| ≤2
+(α−γ+3+o(1))n
+2d
+for all i.
+– ai ̸= 0 for at least one index i.
+– dist
+ k
+i=1 aiϵi, Λ∗/Zd
+≤2
+(−2A+α−γ+3+o(1))n
+2d
+.
+Informally, there is a reasonable chance (over the choice of k samples from D)
+that no non-zero linear combination of the samples is very close to Λ∗/Zd.
+To justify this deﬁnition, we observe that this holds for the uniform distribution
+on the torus Rd/Zd:
+Lemma 6. If A >
+(α−γ)(α−γ+3)+2
+2
+, the uniform distribution on Rd/Zd is
+(α, γ, A)-well-spread with respect to Λ∗.
+Proof. In a nutshell, this follows from a union bound and volume argument. We
+defer the details of the calculation to Appendix G of the full version.
+⊓⊔
+We can now formally state our result for detecting and handling errors in a
+constant fraction of runs in Regev’s circuit. We ﬁrst formulate this in terms of
+an arbitrary lattice Λ ⊆Zd:
+Lemma 7. (Compare with Lemma 4) Let Λ ⊆Zd and n be a positive integer
+such that det Λ < 2n. Additionally, let m = αd and let T > 0 be some norm
+bound. Assume we are given potentially corrupt samples w1, . . . , wm constructed
+according to the error model in Sect. 4.2 with the following speciﬁcations:
+– The initial vectors v1, . . . , vm are independent uniform samples from Λ∗/Zd.
+– The small perturbations δi have magnitude at most δ.
+– The errors ϵi are sampled from a noise distribution D on Rd/Zd. (Recall
+that we see the uncorrupted sample wi = vi + δi with probability 1 −p and a
+corrupted sample wi = η(vi + δi) + ϵi with probability p.)
+Let γ > 0 be a constant such that all of the following inequalities hold:
+– p < 1 −(γ + 1)/α. Note that this implicitly requires γ < α −1.
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+123
+– A ≥α−γ+3
+2
++ o(1).
+–
+ eα
+α−γ
+α−γ · 2−γ+1 < 1.
+Additionally, assume the following “special inequality”:
+(γd + d)1/2 · 2(γ+1)d/2 · (γd + 1)1/2 · T < δ−1 · (4 det Λ)−1/(γd) · 2−α/γ/6.
+Also, assume D is (α, γ, A)-well-spread with respect to Λ∗. Then there exists
+a classical polynomial-time algorithm that, with probability at least 1/4 −o(1),
+outputs a ﬁnite sequence of vectors z1, z2, . . . , zl ∈Λ such that any u ∈Λ with
+||u||2 ≤T can be written as an integer linear combination of the zi’s.
+We note that the algorithm is deterministic; the success probability is taken
+over the randomness of the wi.
+For example, we can select the parameters α = 7 and γ = 5.9, which then require
+p < 1/70. We brieﬂy comment on the role of each of the stated constraints on
+the parameters in Lemma 7:
+– The ﬁrst inequality is to limit the number of corrupted samples.
+– The second inequality is needed for Lemma 15 and ultimately places a lower
+bound on the radius of the initial discrete Gaussian superposition one needs
+to construct (as in Sect. 3.1).
+– The third inequality is needed in Appendix C of the full version; our algorithm
+will ultimately select some subset of γd samples and we need to take a union
+bound over all possible choices of this subset, necessitating an upper bound
+on
+αd
+γd
+
+.
+– Finally, the special inequality arises from analysis in Appendix B of the full
+version (based on that by [Reg23]) and places an additional lower bound on
+the Gaussian radius; intuitively, it says that the small additive errors δi that
+appear in both uncorrupted and corrupted samples cannot be too large.
+To apply Lemma 7 in the speciﬁc case of Regev’s factoring circuit [Reg23],
+we may once again take Λ = L and note that det L < 2n, then take T = 2C√n
+and δ = 2(−A+o(1))n/d and solve the special inequality. This is a straightforward
+calculation, which we defer to Appendix F.2 of the full version. Combined with
+the observations in Sect. 3.3, this yields the following theorem.
+Theorem 3. Assume Conjecture 1, and let γ > 0 be a constant such that the
+hypotheses of Lemma 7 (except for the special inequality) hold for the lattice L.
+Additionally, assume A ≥max(C + γ2+γ+2
+2γ
+, α−γ+3
+2
+) + o(1). Then there exists a
+polynomial-time algorithm that, given m = αd samples from Regev’s quantum
+circuit corrupted according to the error model in Sect. 4.2, outputs a non-trivial
+factor of N with probability 1/4 −o(1).
+In the special case where D is the uniform distribution over Rd/Zd, combining
+Theorem 3 with Lemma 6 implies that one should take
+A ≥max
+
+C + γ2 + γ + 2
+2γ
+, (α −γ)(α −γ + 3) + 2
+2
+
++ o(1) .
+
+124
+S. Ragavan and V. Vaikuntanathan
+As mentioned earlier, our algorithm and analysis in Lemma 7 are also directly
+applicable to the recent adaptation by Ekerå and Gärtner [EG24] of Regev’s
+factoring algorithm [Reg23] to the discrete logarithm problem modulo prime p.
+We provide an outline in Appendix E of the full version.
+5
+Reducing Qubits via Space-Eﬃcient Exponentiation
+In this section, we construct a quantum oracle that computes the desired map-
+ping in Lemma 5.
+5.1
+Reversible Fibonacci Exponentiation
+This is the key idea used by Kaliski [Kal17b] for space-eﬃcient and reversible
+classical exponentiation; we restate it here and explain its applicability to our
+optimization. The bottleneck in [Reg23]’s construction of this oracle is in the use
+of repeated squaring. As a simple example, suppose we have some n-bit integer
+|a⟩and we wish to compute |a2k mod N⟩for some k. The natural classical-
+inspired approach would be to use repeated squaring as follows:
+|a⟩→|a2 mod N⟩→|a4 mod N⟩→. . . →
+a2k mod N
+
+.
+The problem is that none of these operations are easily reversible; computing
+square roots mod N is hard, and there is also the fact that squaring mod N
+is not one-to-one. Thus carrying out this computation requires storing all of
+these quantities in separate registers. This leads to an O(k) blow-up in the space
+complexity, which appears wasteful.
+To get around this, we use the fact that it is much easier to implement
+reversible multiplication than squaring. Concretely, if we could implement an
+operation resembling |a⟩|b⟩→|a⟩|ab mod N⟩, we could proceed as follows:
+|a⟩|a⟩→|a⟩|a2 mod N⟩→|a3 mod N⟩|a2 mod N⟩
+→|a3 mod N⟩|a5 mod N⟩→. . .
+We now ﬁnd Fibonacci numbers rather than powers of 2 in the exponent. For this
+reason, previous works have also considered using Fibonacci numbers rather than
+powers of 2 in the exponent for fast and reversible exponentiation [BMT+07,
+Kal17b,Kle08,Mel07].
+Notice that when using this idea, we will have an extra register lingering
+around. For example, if our goal is to compute |a5 mod N⟩in one register, this
+would give us |a3 mod N⟩in the other register. We would like to be able to
+clean this up if needed, but fortunately this is straightforward; we can copy the
+ﬁnal output to a new register, and then uncompute our circuit to clean up all
+intermediate qubits. This will just leave us with the inputs and outputs of our
+computation. We will use this idea repeatedly in our algorithm.
+If we could actually implement |a⟩|b⟩→|a⟩|ab mod N⟩, we could directly
+apply Algorithm FibExp from [Kal17b] (with a straightforward adaptation to
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+125
+computing a product of multiple exponents rather than one exponent). This task
+is known as “in-place quantum-quantum modular multiplication”. (See Sect. 1.3
+for deﬁnitions of these terms.) The issue is that this appears diﬃcult to do on
+a quantum computer for arbitrary multiplication algorithms, to the best of our
+knowledge. Rines and Chuang [RC18] show that this operation can be done on a
+quantum computer in O(n2) gates with a careful implementation of schoolbook
+multiplication using Montgomery multipliers. However, we would like to be able
+to cleanly adopt and use any classical multiplication algorithm in our circuit, for
+example to improve asymptotic gate complexity.
+To achieve this, we show how to implement an “abstract form” of in-place
+quantum-quantum modular multiplication in the next two lemmas, using only
+black-box access to a multiplication circuit. As in Theorem 1, we assume through-
+out that this multiplication circuit maps
+|a⟩|b⟩|t⟩|0S⟩→|a⟩|b⟩|(t + ab) mod N⟩|0S⟩
+where a, b, t are all n-bit integers and 0 ≤a, b, t < N. S hence denotes the
+number of ancilla qubits used by the circuit, and we also use G to denote the
+number of gates in this circuit. In other words, this circuit implements out-of-
+place quantum-quantum modular multiplication.
+Our lemmas will also make use of some “dirty ancilla qubits” that may not
+necessarily be in the |0⟩state. This will allow us to reuse qubits from other parts
+of our algorithm and cut down on the number of qubits needed in our circuit.
+The idea of using dirty ancilla qubits to achieve space savings was introduced
+by [HRS17] in relation to implementing Shor’s algorithm with fewer qubits.
+The ﬁrst lemma we need is essentially due to Shor [Sho97]. Using the ter-
+minology introduced in Sect. 1.3, this addresses the task of in-place quantum-
+classical modular multiplication.
+Lemma 8. Let a ∈[0, N −1] be an integer coprime to N. Then there exists a
+circuit using O(G + n) gates mapping
+|x⟩|0S+n⟩|g⟩→|ax mod N⟩|0S+n⟩|(−a−1g) mod N⟩
+for any integers x, g that are reduced mod N.
+Note that this computation uses and restores S +n clean ancilla qubits, while
+applying some reversible transformation to n dirty ancilla qubits that initially
+store the state |g⟩.
+Proof. We can classically precompute a−1 mod N eﬃciently using the extended
+Euclidean algorithm. Now proceed as follows using our quantum multiplication
+circuit given in Theorem 1:
+
+126
+S. Ragavan and V. Vaikuntanathan
+|x⟩|0n⟩|g⟩|0S⟩
+→|x⟩|a⟩|g⟩|0S⟩(writing in a classical constant using bit-ﬂips)
+→|x⟩|a⟩|(g + ax) mod N⟩|0S⟩
+→|x⟩|−a−1 mod N⟩|(g + ax) mod N⟩|0S⟩
+(writing in a classical constant again)
+→|(x + (−a−1 · (g + ax))) mod N⟩|−a−1 mod N⟩|(g + ax) mod N⟩|0S⟩
+= |(−a−1g) mod N⟩|−a−1 mod N⟩|(g + ax) mod N⟩|0S⟩
+→|(−a−1g) mod N⟩|a⟩|(g + ax) mod N⟩|0S⟩
+(writing in a classical constant again)
+→|(−a−1g) mod N⟩|a⟩|(g + ax + (−a−1g · a)) mod N⟩|0S⟩
+= |(−a−1g) mod N⟩|a⟩|ax mod N⟩|0S⟩
+→|(−a−1g) mod N⟩|0n⟩|ax mod N⟩|0S⟩
+(writing in a classical constant again)
+→|ax mod N⟩|0n⟩|(−a−1g) mod N⟩|0S⟩
+This runs our multiplication circuit three times and does O(n) bit ﬂips and bit
+swaps, for a total of O(G + n) gates. This completes our proof.
+⊓⊔
+In the next lemma, we adapt this idea to the quantum-quantum case i.e. where a
+may be a superposition of integers rather than a classical constant. Note that this
+lemma does not exactly implement quantum-quantum modular multiplication,
+but rather an abstracted form of it where we view |a⟩|a−1 mod N⟩as an abstract
+representation of a.
+Lemma 9. There exists a quantum circuit using O(G + n) gates such that, for
+all n-bit integers a, b, g ∈[0, N −1] such that a and b are coprime to N, it will
+map7
+|a⟩|a−1 mod N⟩|b⟩|b−1 mod N⟩|g⟩|0S⟩
+→|a⟩|a−1 mod N⟩|ab mod N⟩|(ab)−1 mod N⟩|g⟩|0S⟩.
+Note that this computation uses and restores S clean ancilla qubits and n dirty
+ancilla qubits.
+Proof. The quantum multiplication circuit assumed in Theorem 1 allows us the
+following computation when 0 ≤t < N:
+|a⟩|b⟩|t⟩|0S⟩→|a⟩|b⟩|(t + ab) mod N⟩|0S⟩.
+7 We are not concerned about the circuit’s behavior on other basis states.
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+127
+We can also hence use the inverse of this circuit, which will behave as follows
+when 0 ≤t < N:
+|a⟩|b⟩|t⟩|0S⟩→|a⟩|b⟩|(t −ab) mod N⟩|0S⟩.
+We can use these two circuits to proceed as follows. (All the computations below
+are modN, which we omit for compactness. For example, when we say a−1, we
+mean a−1 mod N.)
+|a⟩|a−1⟩|b⟩|b−1⟩|g⟩|0S⟩
+→|a⟩|a−1⟩|b⟩|b−1⟩|g + ab⟩|0S⟩
+→|a⟩|a−1⟩|b −(a−1 · (g + ab))⟩|b−1⟩|g + ab⟩|0S⟩
+= |a⟩|a−1⟩|−a−1g⟩|b−1⟩|g + ab⟩|0S⟩
+→|a⟩|a−1⟩|−a−1g⟩|b−1⟩|(g + ab) + a · (−a−1g)⟩|0S⟩
+= |a⟩|a−1⟩|−a−1g⟩|b−1⟩|ab⟩|0S⟩
+→|a⟩|a−1⟩|−a−1g + a−1b−1⟩|b−1⟩|ab⟩|0S⟩
+→|a⟩|a−1⟩|−a−1g + a−1b−1⟩|b−1 −(a · (−a−1g + a−1b−1))⟩|ab⟩|0S⟩
+= |a⟩|a−1⟩|−a−1g + a−1b−1⟩|g⟩|ab⟩|0S⟩
+→|a⟩|a−1⟩|(−a−1g + a−1b−1) + a−1 · g⟩|g⟩|ab⟩|0S⟩
+= |a⟩|a−1⟩|(ab)−1⟩|g⟩|ab⟩|0S⟩
+→|a⟩|a−1⟩|ab⟩|(ab)−1⟩|g⟩|0S⟩.
+This runs our multiplication circuit four times and its inverse twice and then
+does a constant number of swaps of n-bit registers at the end, for a total of
+O(G + n) gates. This completes our proof.
+⊓⊔
+The next lemma essentially plugs Lemma 9 into Kaliski’s algorithm [Kal17b],
+while taking care to optimize space usage. We quickly set up some notation.
+Deﬁne the Fibonacci numbers by F0 = 0, F1 = 1, and then Fk = Fk−1 + Fk−2
+for k ≥2. Let K be maximal such that FK ≤D. We have:
+K = (1 + o(1)) · log D
+log φ = (1 + o(1)) · (A + o(1))√n
+log φ
+= (α + o(1))√n,
+where we let α =
+A
+log φ.
+Also, let |ψ(a)⟩denote the state |a⟩|a−1 mod N⟩for an n-bit integer a
+coprime to and reduced modulo N. Each |ψ(a)⟩hence requires 2n qubits to
+store.
+Lemma 10. [Kal17b] There exists a quantum circuit using O(K(G + n)) =
+O(n1/2(G + n)) gates such that, for all n-bit integers c1, . . . , cK coprime to and
+reduced modulo N, it will map
+
+128
+S. Ragavan and V. Vaikuntanathan
+|ψ(c1)⟩. . . |ψ(cK)⟩|0S+5n⟩
+→|ψ(c1)⟩. . . |ψ(cK)⟩
+
+ψ
+⎛
+⎝
+K
+
+j=2
+cFj−1
+j
+⎞
+⎠
+
+ψ
+⎛
+⎝
+K
+
+j=1
+cFj
+j
+⎞
+⎠
+
+|0S+n⟩.
+(All registers throughout this lemma and its proof work with integers mod N, so
+we drop the mod N everywhere for convenience.)
+Proof. We will use 4n of our ancilla qubits to store two states |ψ(x1)⟩and
+|ψ(x2)⟩. Thus the state at any given point in our algorithm will be
+|ψ(c1)⟩|ψ(c2)⟩. . . |ψ(cK)⟩|ψ(x1)⟩|ψ(x2)⟩|0S+n⟩.
+We will update the values of x1 and x2 throughout the algorithm.
+Lemma 9 tells us that we can perform the operation |ψ(x)⟩|ψ(y)⟩|0S+n⟩→
+|ψ(x)⟩|ψ(xy)⟩|0S+n⟩using O(G + n) gates. We denote this as updating y ←xy
+and will iteratively use this, as described in Algorithm 5.1.
+Algorithm 5.1: Fibonacci multi-exponentiation
+Data: Initial state |ψ(c1)⟩|ψ(c2)⟩. . . |ψ(cK)⟩|0S+5n⟩
+Result: Final state |ψ(c1)⟩|ψ(c2)⟩. . . |ψ(cK)⟩|ψ(K
+j=2 c
+Fj−1
+j
+)⟩|ψ(K
+j=1 c
+Fj
+j )⟩|0S+n⟩
+1. Initialize x1 ←1 and x2 ←1. This is just a matter of copying some qubits into
+ancilla qubits, and the state is now |ψ(c1)⟩|ψ(c2)⟩. . . |ψ(cK)⟩|ψ(x1)⟩|ψ(x2)⟩|0S+n⟩=
+|ψ(c1)⟩|ψ(c2)⟩. . . |ψ(cK)⟩|ψ(1)⟩|ψ(1)⟩|0S+n⟩.
+2. Repeat the following for j = K, K −1, . . . , 1 in that order:
+– Update x1 ←x1x2 using Lemma 9.
+– Update x1 ←x1cj using Lemma 9.
+– Swap x1 and x2 (i.e. swap |ψ(x1)⟩and |ψ(x2)⟩).
+Before we show the correctness of our algorithm, let us quickly analyze its
+complexity. The initialization takes O(n) gates. Within the loop, there are O(G+
+n) gates from calls to Lemma 9 and then O(n) gates to swap x1 and x2. The loop
+has K iterations, so the total number of gates is O(K(G+n)) = O(n1/2(G+n)).
+To show that the algorithm runs correctly, we claim that for all j ≤K −1,
+at the end of round j, we will have x1 = 
+K
+i=j+1 cFi−j
+i
+and x2 = 
+K
+i=j cFi+1−j
+i
+.
+This will follow by a straightforward induction, which we present in Appendix
+H of the full version.
+⊓⊔
+Note, importantly, that we would not want to use Lemma 10 directly in our
+algorithm; storing c1, . . . , cK at the same time is an undesirable space overhead.
+Instead, we will compute c1, . . . , cK on an as-needed basis and apply the same
+idea; this way, we only need to store one of them at any given time. We explain
+how to do this and how we deﬁne the cj’s in the next section.
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+129
+5.2
+Combining Fibonacci Exponentiation with Regev’s
+Optimization
+To use the results from Sect. 5.1, we want to decompose each of our exponents as
+a sum of distinct Fibonacci numbers. Concretely, recall that we want to compute
+the expression 
+d
+i=1 azi+D/2
+i
+. So for each i ∈[d], we would like to write:
+zi + D/2 =
+K
+
+j=1
+zi,jFj,
+for zi,j ∈{0, 1}. It is well-known that this can be achieved with a simple greedy
+algorithm; see Appendix I of the full version for details. Our ﬁrst task is to
+compute these coeﬃcients:
+Lemma 11. There exists a quantum circuit using O(n3/2) gates mapping the
+state
+|z⟩|0dK−d log D⟩|0O(√n)⟩→|zi,j : i ∈[d], j ∈[K]⟩|0O(√n)⟩.
+Proof. We repeat the following greedy procedure for each i ∈[d]. Note that
+integers here are computed in absolute terms, rather than modulo N. We need
+the ability to compute in-place additions and subtractions on O(√n)-bit integers
+with O(√n) ancilla qubits; it was shown by [Dra00] that this is possible. We also
+need to be able to compare integers of length O(√n), but this need not be in-
+place so can also be done with O(√n) ancilla qubits.
+1. Let t denote the number in the register currently holding zi. First update
+t ←t + D/2 (so that this register now holds zi + D/2).
+2. Set aside K ancilla qubits to hold zi,j for j ∈[K], so that zi,j = 0 for all j
+initially.
+3. Now for each j = K, K −1, . . . , 1, check whether t ≥Fj and write the
+output of this comparison to the qubit zi,j. Then use zi,j as a control qubit
+to conditionally update t ←t −Fj.
+4. By Lemma I.1 of the full version, this greedy algorithm will correctly decom-
+pose zi + D/2 as a sum K
+j=1 zi,jFj of distinct Fibonacci numbers, and we
+will have t = 0 at the end. Hence we have freed up those log D bits as ancilla
+qubits to use in later steps.
+We have already observed that correctness follows from Lemma I.1 of the full
+version. For the runtime, each step of the innermost loop over j uses O(log D) =
+O(√n) gates. So, each step of the outer loop over i uses O(K log D) = O(n)
+gates. Finally, multiplying by d = √n yields a gate complexity of O(n3/2).
+Finally, we address space. All individual steps in the loop can clearly be
+done using O(√n) ancilla qubits (which we can then reuse). Other than that,
+each step of the loop consumes K ancilla qubits but then frees up log D ancilla
+qubits. The total initial ancilla requirement is hence d(K −log D) + O(√n) as
+desired.
+⊓⊔
+
+130
+S. Ragavan and V. Vaikuntanathan
+Now that we can calculate the zi,j’s, let us write our desired expression in those
+terms:
+d
+
+i=1
+azi+D/2
+i
+=
+d
+
+i=1
+K
+
+j=1
+azi,jFj
+i
+=
+K
+
+j=1
+ d
+
+i=1
+azi,j
+i
+Fj
+.
+We can calculate each 
+d
+i=1 azi,j
+i
+eﬃciently following the idea by [Reg23] to
+exploit the fact that the ai’s are very small integers:
+Lemma 12. [Reg23] There exists a quantum circuit using O(√n log3 n) gates
+mapping
+|t1⟩. . . |td⟩|0
+
+O(√n)⟩→|t1⟩. . . |td⟩
+
+d
+
+i=1
+ati
+i
+
+|0
+
+O(√n)⟩.
+Here, the ti ∈{0, 1} for all i.
+Proof. [Reg23] shows that such a computation can be done classically with
+O(d log3 d) = O(√n log3 n) gates. We can implement this using unitary gates
+(as explained in Appendix A.1 of the full version) and just use O(√n log3 n) =
+O(√n) ancilla qubits for all intermediate values in the circuit. Then we copy
+the ﬁnal output |
+d
+i=1 ati
+i ⟩to a fresh register; each ai is O(log d) bits so we need
+O(d log d) = O(√n) ancilla qubits and O(d log d) = O(√n log n) gates to do this.
+Finally, we can just uncompute the original circuit to restore all ancilla qubits
+to |0⟩. In total, we have used O(√n) ancilla qubits and O(√n log3 n) gates, as
+desired.
+⊓⊔
+Combining these ideas allows us to outline the algorithm. For each j ∈[K],
+deﬁne cj = 
+d
+i=1 azi,j
+i
+. Then we have:
+d
+
+i=1
+azi+D/2
+i
+=
+K
+
+j=1
+ d
+
+i=1
+azi,j
+i
+Fj
+=
+K
+
+j=1
+cFj
+j .
+We can use Lemma 12 to compute each cj, and Lemma 10 to ﬁnally compute
+this product. The only missing detail is that of computing c−1
+j , which we do as
+follows:
+c−1
+j
+=
+d
+
+i=1
+a−zi,j
+i
+=
+ d
+
+i=1
+a−1
+i
+
+·
+d
+
+i=1
+a1−zi,j
+i
+.
+We can compute the latter expression using Lemma 12 since the exponents are
+now in {0, 1}. Then we can apply Lemma 8 using the classical constant 
+d
+i=1 a−1
+i
+to ﬁnish computing c−1
+j . We formally detail all of this in the next section.
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+131
+Algorithm 5.2: Quantum oracle for 
+d
+i=1 azi+D/2
+i
+mod N
+Data: Initial state |z⟩and S + (α −A + 6 + o(1))n ancilla qubits in the |0⟩state.
+Result: Final state comprising |d
+i=1 azi+D/2
+i
+mod N⟩and S + (α + 5 + o(1))n
+qubits in some state (which may not be |0⟩and could depend on z).
+1. Use Lemma 11 to compute and store the values |zi,j⟩for all i ∈[d] and j ∈[K].
+Note that this step also “overwrites” the qubits storing |z⟩. (This consumes
+dK −d log D = (α −A + o(1))n qubits, leaving S + (6 + o(1))n ancilla qubits.)
+2. Set aside 4n ancilla qubits. These will store our states |ψ(x1)⟩and |ψ(x2)⟩. Initialize
+x1 ←1 and x2 ←1. (This leaves S + (2 + o(1))n ancilla qubits.)
+3. Repeat the following for j = K, K −1, . . . , 1 in that order:
+(a) Consider the qubits zi,j′ for i ∈[d] and j′ ̸= j. There are
+d(K −1) ≥(α −o(1))n ≥(
+2
+log φ −o(1))n > 2n such qubits, and we will not use
+any of them for this iteration of the loop. Hence we may take n −1 of these
+qubits and pre-pend one clean qubit in the |0⟩state to obtain n dirty ancilla qubits.
+We now have S + 2n clean ancilla qubits available.
+(b) Update x1 ←x1x2 using Lemma 9. (This temporarily uses and restores S clean
+ancilla qubits and n dirty ancilla qubits, which we have.)
+(c) Now we prepare the state |ψ(cj)⟩:
+i. Calculate the state |d
+i=1 a
+1−zi,j
+i
+mod N⟩using Lemma 12 and store it in
+another n-bit register. (We now have S + n clean ancilla qubits.)
+ii. Use Lemma 8 with the classical constant d
+i=1 a−1
+i
+mod N to update the
+register from the above step to contain |c−1
+j
+mod N⟩. (This will use and
+then restore all S + n of our remaining clean ancilla qubits, as well as
+modifying our n dirty ancilla qubits.)
+iii. Calculate the state |cj⟩using Lemma 12 and store it in an n-bit register.
+(We now have S clean ancilla qubits.)
+(d) We now have the state |ψ(cj)⟩, so we can update x1 ←x1cj using Lemma 9.
+(This will use and then restore S clean ancilla qubits and n dirty ancilla
+qubits.)
+(e) Now we uncompute the state |ψ(cj)⟩, returning all qubits to |0⟩. This can be
+done by just applying in reverse order the inverses of the circuits used to
+construct this state. (This will use S of our available clean ancilla qubits and
+then also free up the 2n ancilla qubits containing |ψ(cj)⟩, so we are now back
+to S + 2n clean ancilla qubits. Additionally, this will return all dirty ancilla
+qubits to their original value, since the dirty ancilla qubits are only modiﬁed
+in the construction of |ψ(cj)⟩when we use Lemma 8.)
+(f) Swap x1 and x2 (i.e. swap the registers |ψ(x1)⟩and |ψ(x2)⟩).
+5.3
+Proof of Lemma 5
+Our procedure is detailed in Algorithm 5.2. We track the use of ancilla qubits
+in the algorithm description.
+First we address the correctness of our algorithm. We make some important
+observations to justify our use of dirty ancilla qubits:
+– At step j in the loop, our algorithm only uses qubits zi,j′ for j′ ̸= j as dirty
+ancilla qubits, so the fact that these qubits might change value during the
+loop will not aﬀect how x1 and x2 are updated.
+– We also need to check that our dirty ancilla qubits are usable in Lemmas 8
+and 9 i.e. that g ∈[0, N −1], where |g⟩is the value stored by these ancilla
+
+132
+S. Ragavan and V. Vaikuntanathan
+qubits. Initially, this is ensured by the fact that the ﬁrst bit of g is 0 i.e.
+g < 2n−1 ≤N. Additionally, even though Lemma 8 modiﬁes g, it replaces g
+with some other value that is reduced mod N. So g will always be in [0, N −1].
+– Any application of Lemma 9 will preserve the value of these dirty ancilla
+qubits.
+– The one application of Lemma 8 when constructing |ψ(cj)⟩will modify the
+dirty ancilla qubits, but this will be reversed at the end of step j in the
+loop when uncomputing |ψ(cj)⟩. Hence the value of these qubits is ultimately
+restored at the end of the loop.
+Now that we have shown that our use of dirty ancilla qubits does not aﬀect
+anything, correctness follows from the proof of Lemma 10; at the end of step 3,
+we will have |x2⟩= |
+K
+j=1 cFj
+j
+mod N⟩= |
+d
+i=1 azi+D/2
+i
+mod N⟩.
+Finally, we check the size of our circuit. The steps before the loop use O(n3/2)
+gates. Now, for each step of the loop over j:
+1. Each application of Lemma 9 uses O(G + n) gates.
+2. Computing and later uncomputing the state |ψ(cj)⟩uses O(G + n) gates.
+3. The ﬁnal swap uses O(n) gates.
+The loop runs for K iterations, so the total circuit size from the loop will be
+O(K(G + n)) = O(n1/2(G + n)) gates. Combining this with the initialization
+steps yields a circuit of size O(n1/2 · G + n3/2), thus completing the proof of
+Lemma 5.
+⊓⊔
+5.4
+Potential Future Space Optimizations
+We have shown that Regev’s factoring algorithm can be implemented using just
+S +
+ A
+log φ + 6 + o(1)
+
+n
+qubits, while retaining the asymptotic O(n1/2 ·G+n3/2) circuit size. We remind
+the reader that here G and S denote the number of gates and the number of
+ancilla qubits respectively for our multiplication circuit on n-bit integers.
+A natural question is whether this can be optimized further, particularly the
+constant
+A
+log φ + 6 in the linear term. To this end, we describe the various space
+costs incurred by our algorithm below:
+1. αn =
+
+A
+log φ + o(1)
+
+n qubits are used to store the qubits zi,j for i ∈[d] and
+j ∈[K]. This is a slight blow-up from the (A+o(1))n bits that we really need
+to store all the zi’s.
+This does appear ineﬃcient, because at any given point in our algorithm we
+are only interested in one particular value of j. However, the natural way
+to compute the zi,j’s involves iterating through each value of i (since we
+decompose zi + D/2 as a sum of Fibonacci numbers to obtain the zi,j’s). A
+potential workaround would be to ﬁnd a way to compute zi,j given i and j
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+133
+in a more eﬃcient way than actually calculating the entire representation of
+zi + D/2 as a sum of Fibonacci numbers, but we are not aware of how to do
+this.
+In follow-up work [Rag24], we take a diﬀerent approach to show that this
+space cost can be driven down to (A + ϵ)n for any ϵ > 0. The idea is to work
+with more general sequences of integers than the Fibonacci numbers that yield
+encodings zi,j that are less redundant than the Zeckendorf representation.
+2. S + n clean ancilla qubits are needed for the multiplication operations given
+in Lemmas 8 and 9. This is already quite optimized due to our use of dirty
+ancilla qubits in these lemmas. However, under certain conditions this can be
+brought down to S (which is necessary for us to be able to use our multipli-
+cation circuit).
+The only reason we need the extra n ancilla qubits is in Lemma 8, which
+we use with a = (
+d
+i=1 a−1
+i ) mod N. These n qubits are used to write in a
+and −a−1 so that we can use our multiplication circuit to multiply by these
+integers. Note however that a and −a−1 are classical constants and can hence
+be precomputed classically.
+If the quantum multiplication circuit is just an implementation of a classical
+multiplication circuit with unitaries (e.g. when we use the O(n log n) multi-
+plication algorithm by [HvdH21]), then we can save n clean ancilla qubits
+as follows. Following ideas by Shor [Sho97], one can bake the values a and
+−a−1 into the given classical circuit architecture to obtain hardwired classical
+circuits for “multiplication by a” and “multiplication by −a−1”. Then these
+hardwired classical circuits can be implemented with unitary gates. Now we
+no longer require a and −a−1 to be explicitly written down in another regis-
+ter.
+For general quantum multiplication circuits, we are not aware of a way to
+achieve this hardwiring.
+3. 4n ancilla qubits are needed to store the “accumulator” states |ψ(x1)⟩and
+|ψ(x2)⟩. We are not aware of any approaches to bypass this requirement.
+4. 2n ancilla qubits are used to store the state |ψ(cj)⟩= |cj⟩|c−1
+j
+mod N⟩, but n
+of these qubits are reused from the aforementioned S +n clean ancilla qubits.
+This is still potentially unnecessary; cj = 
+d
+i=1 azi,j
+i
+is a product of at most d
+integers of O(log d) bits each, so cj only comprises O(d log d) = O(√n) bits.
+While the same cannot be said of c−1
+j
+mod N, it might be possible to instead
+store 
+d
+i=1 a1−zi,j
+i
+(which also only comprises O(√n) bits) in its place, and
+bake the ﬁxed multiplier (
+d
+i=1 a−1
+i ) mod N into the circuit architecture.
+Once again, we used n qubits for each of these registers so that we could
+maintain a clean abstraction for multiplication operations, namely multiply-
+ing two n-bit integers that are reduced mod N. It may be possible to improve
+this if the multiplication algorithm being used can multiply a small integer
+with an n-bit integer without padding to make both integers n bits.
+
+134
+S. Ragavan and V. Vaikuntanathan
+6
+Error-Resilience for Regev’s Classical Postprocessing
+In this section, we prove Lemma 7, our main error correction lemma for Regev’s
+postprocessing algorithm. We start by introducing our error detection and ﬁl-
+tering algorithm. The intuition behind it is that uncorrupted samples will be
+very close to Λ∗/Zd, so it should be easy to ﬁnd small integer relations between
+them. Moreover, it should be much harder to ﬁnd a small integer relation between
+our uncorrupted samples and even one corrupted sample. We formalize this as
+a shortest-vector problem in a suitably constructed lattice, and will see that
+the approximate solution to this via LLL [LLL82] is suﬃcient for our purposes.
+Using this idea, we can identify suﬃciently many uncorrupted samples and apply
+Regev’s postprocessing procedure [Reg23] to these. Our algorithm is described
+in Algorithm 6.1.
+Our analysis proceeds in three steps:
+1. In Sect. 6.1, we show that with probability 1 −o(1), Algorithm 6.1 will add
+at least 1 sample to B in each iteration until |B| ≥γd, hence proving that it
+terminates in polynomial time.
+2. In Sect. 6.2, we formalize the above intuition and argue that none of the
+samples added to B will be corrupted, with probability 1 −o(1).
+3. Although we use Regev’s postprocessing procedure as-is, it turns out that
+Regev’s analysis is not directly applicable to our algorithm. In Sect. 6.3, we
+outline the necessary modiﬁcations and elaborate in Appendix B of the full
+version.
+6.1
+Proof that Our Algorithm Selects γd Samples
+Firstly, note that since p < 1 −(γ + 1)/α, with probability 1 −o(1) at most
+(α −γ −1)d of our samples from the quantum circuit will be corrupted. We now
+show an upper bound on the shortest vector of Λ′′ in the next two lemmas:
+Lemma 13. Given vectors v1, . . . , vd ∈Λ∗, there exist a1, a2, . . . , ad ∈Z, not
+all zero, such that |ai| ≤2n/d for all i and 
+i aivi ∈Zd.
+Proof. This follows from a pigeonhole principle argument similar to that
+observed by [Reg23], which we restate here. Consider the sums d
+i=1 aivi ∈Λ∗
+for all |ai| ≤2n/d−1. There are (2n/d + 1)d > 2n > det Λ = |Λ∗/Zd| such sums,
+so some two belong in the same coset of Λ∗/Zd. The diﬀerence between those
+sums will hence lie in Zd, and each coeﬃcient will have magnitude ≤2n/d. At
+least one coeﬃcient will be nonzero.
+⊓⊔
+Lemma 14. With probability 1 −o(1), for any E with |E| = (α −γ)d there
+exists a nonzero vector in the corresponding Λ′′ of length at most 2(1+o(1))n/d.
+Proof. Observe ﬁrstly that if |E| = (α −γ)d and we know that with probability
+1 −o(1) we have at most (α −γ −1)d corrupted samples in total, this implies
+that there are ≥d uncorrupted samples in E. By Lemma 13, it follows that there
+exist integers ai for i ∈E such that:
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+135
+Algorithm 6.1: Classical postprocessing of the outputs from Regev’s
+quantum circuit
+Data: Norm bound T and noisy samples w1, w2, . . . , wm ∈Rd/Zd from Λ∗/Zd
+corrupted according to the model in Section 4.2.
+Result: A ﬁnite list of elements of Λ, such that they generate any element u ∈Λ
+with ||u||2 ≤T.
+Initialize B = ∅. B will track the subset of samples that we select. Let S = 2An/d.
+Recall that m = αd.
+1. Repeat the following until |B| ≥γd:
+(a) Let E be a subset of [m] such that E ∩B = ∅and |E| = (α −γ)d. This exists
+because |B| ≤γd.
+(b) Deﬁne the matrix W ∈Rd×|E| to be the matrix with columns wi for i ∈E.
+(c) Deﬁne the lattice Λ′′ ⊆Rd+|E| as that spanned by the columns of
+H =
+SId×d
+SW
+0
+I|E|×|E|
+
+.
+We note that this is similar but not identical to the lattice construction used in
+Regev’s postprocessing procedure [Reg23].
+(d) Apply LLL basis reduction [LLL82] to Λ′′ to ﬁnd a 2(d+|E|−1)/2-approximate
+shortest vector in Λ′′.
+(e) This vector can be written as
+H
+
+β
+ai : i ∈E
+
+=
+S(β + 
+i∈E aiwi)
+ai : i ∈E
+
+,
+where β ∈Zd is some vector and ai : i ∈E denotes a column vector in Z|E|.
+(f) For each i ∈E, add i to B if and only if ai ̸= 0.
+2. Let B′ ⊆B be arbitrary with |B′| = γd. Apply Regev’s classical postprocessing
+(Algorithm B.1 of the full version) to the collection {wi : i ∈B′}.
+– 
+i∈E aivi ∈Zd.
+– |ai| ≤2n/d for all i.
+– ai is nonzero for at most d values of i, and these indices correspond to uncor-
+rupted samples.
+Hence we can set β = −
+i∈E aivi ∈Zd. Then consider the lattice element
+H
+
+β
+ai : i ∈E
+
+=
+S(β + 
+i∈E aiwi)
+ai : i ∈E
+
+.
+This is nonzero and an element of Λ′′. Moreover, we have:
+β +
+
+i∈E
+aiwi = β +
+
+i∈E
+aivi +
+
+i∈E
+aiδi =
+
+i∈E
+aiδi,
+which has norm at most m2n/d·2(−A+o(1))n/d = m2(−A+1+o(1))n/d. (Note that ai
+is 0 for any i corresponding to a corrupted sample). Finally, we have 
+i∈E a2
+i ≤
+d · 22n/d. It follows that the norm of this element in Λ′′ is at most:
+
+136
+S. Ragavan and V. Vaikuntanathan
+
+S2 m22(−2A+2+o(1))n/d + d · 22n/d =
+
+m22(2+o(1))n/d + d · 22n/d
+≤
+
+(m2 + d)2(2+o(1))n/d
+= 2(1+o(1))n/d.
+⊓⊔
+Lemma 15. With probability 1 −o(1), as long as |B| < γd, our algorithm will
+add at least one sample to B in each iteration.
+Proof. By Lemma 14, our algorithm will ﬁnd a nonzero vector in Λ′′ of ℓ2 norm
+at most
+2(d+|E|−1)/2 · 2(1+o(1))n/d ≤2(α−γ+3+o(1))n/(2d).
+We can write this vector as
+H
+
+β
+ai : i ∈E
+
+=
+S(β + 
+i∈E aiwi)
+ai : i ∈E
+
+.
+Suppose for the sake of contradiction that our algorithm adds no samples to B
+in this round. Then ai must be 0 for all i ∈E. It follows that β +
+i∈E aiwi = β
+must be a nonzero vector in Zd. It follows that the norm of this vector is at least
+S||β||2 ≥S = 2An/d, which is a contradiction for A ≥α−γ+3
+2
++ o(1).
+⊓⊔
+It follows that in each round of the algorithm, |B| will increase by at least 1. This
+implies that Algorithm 6.1 will terminate in polynomial time, and it will ﬁnd a
+subset of ≥γd samples to pass to Regev’s postprocessing procedure [Reg23].
+6.2
+Proof that Our Selected Samples Are Not Corrupted
+Our next step is to show that our algorithm will not select any corrupted samples
+to be passed to Regev’s postprocessing procedure. We address this in the next
+two lemmas.
+Lemma 16. With probability 1 −o(1), there do not exist integers a1, a2, . . . , am
+such that:
+– |ai| ≤2(α−γ+3+o(1))n/(2d) for all i.
+– ai ̸= 0 for at least one index i corresponding to a corrupted sample.
+– d(
+i corrupted aiϵi, Λ∗/Zd) ≤2(−2A+α−γ+3+o(1))n/(2d).
+Proof. We can argue by conditioning on the subset of our m samples that are
+corrupted. The terms from cases where there are > (α −γ −1)d corrupted
+samples contribute a probability of o(1). When there are ≤(α−γ−1)d corrupted
+samples, we can directly use the assumption that D (the distribution of each ϵi)
+is well-spread, with k ≤(α −γ −1)d set to the number of corrupted samples. ⊓⊔
+Lemma 17. With probability 1 −o(1), as long as |B| < γd, our algorithm will
+not add any corrupted samples to B in any iteration.
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+137
+Proof. As in the proof of Lemma 15, it follows from Lemma 14 that our algorithm
+will ﬁnd a nonzero vector in Λ′′ of ℓ2 norm at most
+2(d+|E|−1)/2 · 2(1+o(1))n/d ≤2(α−γ+3+o(1))n/(2d),
+and moreover we can write this vector as
+H
+
+β
+ai : i ∈E
+
+=
+S(β + 
+i∈E aiwi)
+ai : i ∈E
+
+.
+Both of the following must hence hold:
+– |ai| ≤2(α−γ+3+o(1))n/(2d) for all i ∈E.
+– ||β + 
+i∈E aiwi||2 ≤S−12(α−γ+3+o(1))n/(2d) = 2(−2A+α−γ+3+o(1))n/(2d).
+Letting C denote the set of corrupted samples, we can write the latter of these
+two expressions as follows:
+β +
+
+i∈E
+aiwi = β +
+
+i∈E∩C
+ai(vi + δi) +
+
+i∈E∩C
+ai(η(vi + δi) + ϵi)
+=
+
+β +
+
+i∈E∩C
+aivi +
+
+i∈E∩C
+ηaivi
+
++
+ 
+i∈E∩C
+aiδi +
+
+i∈E∩C
+ηaiδi
+
++
+ 
+i∈E∩C
+aiϵi
+
+Rearranging, we get
+
+i∈E∩C
+aiϵi =
+
+β +
+
+i∈E
+aiwi
+
+−
+ 
+i∈E∩C
+aiδi +
+
+i∈E∩C
+ηaiδi
+
+−
+
+β +
+
+i∈E∩C
+aivi +
+
+i∈E∩C
+ηaivi
+
+The last of these three terms is some element in Λ∗/Zd, noting that η and the
+ai’s are all integers and that β ∈Zd. We can bound the second term as follows:
+
+
+i∈E∩C
+aiδi +
+
+i∈E∩C
+ηaiδi
+
+2
+≤αd · max
+i
+|ai| · max
+i
+||δi||2
+≤αd · 2(α−γ+3+o(1))n/(2d) · 2(−A+o(1))n/d
+= 2(−2A+α−γ+3+o(1))n/(2d).
+Finally, we already observed that the ﬁrst term also has magnitude at most
+2(−2A+α−γ+3+o(1))n/(2d). It follows by the triangle inequality that
+d
+ 
+i∈E∩C
+aiϵi, Λ∗/Zd
+
+≤2(−2A+α−γ+3+o(1))n/(2d).
+By Lemma 16, this forces ai = 0 for all i ∈E such that sample i is corrupted.
+This implies that our algorithm will not add any corrupted samples to B.
+⊓⊔
+
+138
+S. Ragavan and V. Vaikuntanathan
+6.3
+Proof that Regev’s Postprocessing Works with Any γd
+Uncorrupted Samples
+Regev’s postprocessing argument [Reg23] works with d + 4 independent and
+uncorrupted samples from Λ∗/Zd and proceeds as follows:
+1. First, he applies a result due to Pomerance [Pom02] to argue that these d + 4
+elements will generate Λ∗/Zd with probability at least 1/2.
+2. He then argues that it is unlikely for there to exist u ∈Zd\Λ which is nearly
+orthogonal to all d + 4 samples. Thus these samples can be used to construct
+a suitable lattice such that applying LLL basis reduction [LLL82] yields a
+basis for short vectors in Λ.
+In our case, we do not quite have independence; instead, what we have is a
+subset of size γd out of αd independent samples from Λ∗/Zd. Our analysis in
+Sect. 6.2 implies that we can assume these samples are uncorrupted. Informally,
+we just need to argue that this subset is “close enough” to independent that all of
+Regev’s analysis still works. This largely mirrors the existing analysis in [Reg23],
+so we defer details to Appendix B of the full version.
+Acknowledgements. We thank Oded Regev for suggesting the noise-robustness
+problem to us and for outlining an approach that led to our solution. We thank Oded,
+Martin Ekerå, Joel Gärtner, and anonymous reviewers for their detailed comments on
+this manuscript, and Madhu Sudan for discussions about the noise-robustness problem.
+SR would also like to thank Ittai Rubinstein for helpful discussions about lattices and
+the noise-robustness problem, and Gregory D. Kahanamoku-Meyer and Katherine van
+Kirk for numerous discussions related to Regev’s algorithm and quantum multiplica-
+tion circuits. VV would like to thank Muli Safra, Subhash Khot, Dor Minzer and the
+Simons Foundation for organizing a stimulating workshop on lattices, and Oded Regev
+for his lecture at the workshop, which initiated our thinking on the problems in this
+paper. SR was supported by an Akamai Presidential Fellowship. VV was supported
+in part by DARPA under Agreement Number HR00112020023, NSF CNS-2154149, a
+grant from the MIT-IBM Watson AI, a Thornton Family Faculty Research Innovation
+Fellowship from MIT and a Simons Investigator Award. Any opinions, ﬁndings and
+conclusions or recommendations expressed in this material are those of the author(s)
+and do not necessarily reﬂect the views of the United States Government or DARPA.
+References
+[AAB+19] Arute, F., et al.: Quantum supremacy using a programmable supercon-
+ducting processor. Nature 574(7779), 505–510 (2019)
+[BCDP96] Beckman, D., Chari, A.N., Devabhaktuni, S., Preskill, J.: Eﬃcient networks
+for quantum factoring. Phys. Rev. A 54(2), 1034 (1996)
+[Bea03] Beauregard, S.: Circuit for Shor’s algorithm using 2n+3 qubits. Quant. Inf.
+Comput. 3(2), 175–185 (2003)
+[BMT+07] Byrne, A., Meloni, N., Tisserand, A., Popovici, E.M., Marnane, W.P.:
+Comparison of simple power analysis attack resistant algorithms for an
+elliptic curve cryptosystem. J. Comput. 2(10) (2007)
+
+Space-Eﬃcient and Noise-Robust Quantum Factoring
+139
+[CA69] Cook, S.A., Aanderaa, S.O.: On the minimum computation time of func-
+tions. Trans. Am. Math. Soc. 142, 291–314 (1969)
+[Cai23] Cai, J.-Y.: Shor’s algorithm does not factor large integers in the presence
+of noise. arXiv preprint arXiv:2306.10072 (2023)
+[CCHL22] Chen, S., Cotler, J., Huang, H.-Y., Li, J.: The complexity of NISQ. arXiv
+preprint arXiv:2210.07234 (2022)
+[CKM19] Campbell, E., Khurana, A., Montanaro, A.: Applying quantum algorithms
+to constraint satisfaction problems. Quantum 3, 167 (2019)
+[Cop02] Coppersmith, D.: An approximate Fourier transform useful in quantum
+factoring. arXiv preprint arXiv:quant-ph/0201067 (2002)
+[CW00] Cleve, R., Watrous, J.: Fast parallel circuits for the quantum Fourier trans-
+form. In: 41st Annual Symposium on Foundations of Computer Science,
+FOCS 2000, 12–14 November 2000, Redondo Beach, pp. 526–536. IEEE
+Computer Society (2000)
+[Dra00] Draper,
+T.G.:
+Addition
+on
+a
+quantum
+computer.
+arXiv
+preprint
+arXiv:quant-ph/0008033 (2000)
+[EG24] Ekerå, M., Gärtner, J.: Extending regev’s factoring algorithm to compute
+discrete logarithms. In: Saarinen, M.J., Smith-Tone, D. (eds.) PQCrypto
+2024. LNCS, vol. 14772, pp. 211–242. Springer, Cham (2024). https://doi.
+org/10.1007/978-3-031-62746-0_10
+[EH17] Ekerå, M., Håstad, J.: Quantum algorithms for computing short discrete
+logarithms and factoring RSA integers. In: Lange, T., Takagi, T. (eds.)
+PQCrypto 2017. LNCS, vol. 10346, pp. 347–363. Springer, Cham (2017).
+https://doi.org/10.1007/978-3-319-59879-6_20
+[FMMC12] Fowler, A.G., Mariantoni, M., Martinis, J.M., Cleland, A.N.: Surface codes:
+towards practical large-scale quantum computation. Phys. Rev. A 86(3),
+032324 (2012)
+[GE21] Gidney, C., Ekerå, M.: How to factor 2048 bit RSA integers in 8 hours
+using 20 million noisy qubits. Quantum 5, 433 (2021)
+[Gid17] Gidney, C.: Factoring with n+2 clean qubits and n−1 dirty qubits. arXiv
+preprint arXiv:1706.07884 (2017)
+[Gid19a] Gidney, C.: Asymptotically eﬃcient quantum Karatsuba multiplication.
+arXiv preprint arXiv:1904.07356 (2019)
+[Gid19b] Gidney, C.: Windowed quantum arithmetic (2019)
+[Gid23] Gidney, C.: Comment on Scott Aaronson’s blog (2023)
+[GR02] Grover, L., Rudolph, T.: Creating superpositions that correspond to eﬃ-
+ciently integrable probability distributions (2002)
+[HRS17] Häner, T., Roetteler, M., Svore, K.M.: Factoring using 2n + 2 qubits with
+Toﬀoli based modular multiplication. Quantum Inf. Comput. 17(7&8),
+673–684 (2017)
+[HvdH21] Harvey, D., van der Hoeven, J.: Integer multiplication in time O(n log n).
+Annal. Math. 193(2) (2021)
+[Kal17a] Kaliski, Jr., B.S.: A quantum “magic box” for the discrete logarithm prob-
+lem. Cryptology ePrint Archive (2017)
+[Kal17b] Kaliski, Jr., B.S.: Targeted Fibonacci exponentiation. arXiv preprint
+arXiv:1711.02491 (2017)
+[Kle08] Klein, S.T.: Should one always use repeated squaring for modular expo-
+nentiation? Inf. Process. Lett. 106(6), 232–237 (2008)
+[KMY24] Kahanamoku-Meyer, G.D., Yao, N.Y.: Fast quantum integer multiplication
+with zero ancillas (2024)
+
+140
+S. Ragavan and V. Vaikuntanathan
+[KO62] Karatsuba, A.A., Ofman, Y.P.: Multiplication of many-digital numbers by
+automatic computers. In: Doklady Akademii Nauk, vol. 145, pp. 293–294.
+Russian Academy of Sciences (1962)
+[LLL82] Lenstra, A.K., Lenstra, H.W., Lovász, L.: Factoring polynomials with
+rational coeﬃcients. Math. Annal. 261, 515–534 (1982)
+[Mel07] Meloni, N.: New point addition formulae for ECC applications. In: Carlet,
+C., Sunar, B. (eds.) WAIFI 2007. LNCS, vol. 4547, pp. 189–201. Springer,
+Heidelberg (2007). https://doi.org/10.1007/978-3-540-73074-3_15
+[Pil24] Pilatte, C.: Unconditional correctness of recent quantum algorithms for
+factoring and computing discrete logarithms (2024)
+[Pom02] Pomerance, C.: The expected number of random elements to generate a
+ﬁnite abelian group. Period. Math. Hungar. 43, 191–198 (2002)
+[PZ03] Proos, J., Zalka, C.: Shor’s discrete logarithm quantum algorithm for ellip-
+tic curves. Quantum Inf. Comput. 3(4), 317–344 (2003)
+[Rag24] Ragavan, S.: Regev factoring beyond Fibonacci: Optimizing prefactors.
+Cryptology ePrint Archive, Paper 2024/636 (2024). https://eprint.iacr.
+org/2024/636
+[RC18] Rines, R., Chuang, I.: High performance quantum modular multipliers.
+arXiv preprint arXiv:1801.01081 (2018)
+[Reg09] Regev, O.: On lattices, learning with errors, random linear codes, and
+cryptography. J. ACM 56(6), 34:1–34:40 (2009)
+[Reg23] Regev, O.: An eﬃcient quantum factoring algorithm. arXiv preprint
+arXiv:2308.06572 (2023)
+[RNSL17] Roetteler, M., Naehrig, M., Svore, K.M., Lauter, K.: Quantum resource
+estimates for computing elliptic curve discrete logarithms. In: Takagi,
+T., Peyrin, T. (eds.) ASIACRYPT 2017. LNCS, vol. 10625, pp. 241–270.
+Springer, Cham (2017). https://doi.org/10.1007/978-3-319-70697-9_9
+[RV24] Ragavan, S., Vaikuntanathan, V.: Space-eﬃcient and noise-robust quan-
+tum factoring. arXiv preprint arXiv:2310.00899 (2024)
+[Sei01] Seifert, J.-P.: Using fewer qubits in Shor’s factorization algorithm via simul-
+taneous diophantine approximation. In: Naccache, D. (ed.) CT-RSA 2001.
+LNCS, vol. 2020, pp. 319–327. Springer, Heidelberg (2001). https://doi.
+org/10.1007/3-540-45353-9_24
+[Sho94] Shor, P.W.: Algorithms for quantum computation: discrete logarithms and
+factoring. In: 35th Annual Symposium on Foundations of Computer Sci-
+ence, Santa Fe, 20–22 November 1994, pp. 124–134. IEEE Computer Soci-
+ety (1994)
+[Sho97] Shor, P.W.: Polynomial-time algorithms for prime factorization and dis-
+crete logarithms on a quantum computer. SIAM J. Comput. 26(5), 1484–
+1509 (1997)
+[SS71] Schönhage, A., Strassen, V.: Fast multiplication of large numbers. Com-
+puting 7, 281–292 (1971)
+[TK06] Takahashi, Y., Kunihiro, N.: A quantum circuit for Shor’s factoring algo-
+rithm using 2n+ 2 qubits. Quantum Inf. Comput. 6(2), 184–192 (2006)
+[Too63] Toom, A.L.: The complexity of a scheme of functional elements simulating
+the multiplication of integers. In: Doklady Akademii Nauk, vol. 150, pp.
+496–498. Russian Academy of Sciences (1963)
+[VBE96] Vedral, V., Barenco, A., Ekert, A.: Quantum networks for elementary arith-
+metic operations. Phys. Rev. A 54(1), 147 (1996)
+[Zal06] Zalka, C.: Shor’s algorithm with fewer (pure) qubits (2006)
+

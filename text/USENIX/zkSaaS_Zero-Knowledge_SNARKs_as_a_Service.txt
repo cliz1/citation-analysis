@@ -1,0 +1,2180 @@
+This paper is included in the Proceedings of the 
+32nd USENIX Security Symposium.
+August 9–11, 2023 • Anaheim, CA, USA
+978-1-939133-37-3
+Open access to the Proceedings of the 
+32nd USENIX Security Symposium 
+is sponsored by USENIX.
+zkSaaS: Zero-Knowledge SNARKs as a Service
+Sanjam Garg, University of California, Berkeley, and NTT Research; Aarushi Goel, 
+NTT Research; Abhishek Jain, Johns Hopkins University; Guru-Vamsi Policharla 
+and Sruthi Sekar, University of California, Berkeley
+https://www.usenix.org/conference/usenixsecurity23/presentation/garg
+
+zkSaaS: Zero-Knowledge SNARKs as a Service
+Sanjam Garg
+UC Berkeley and NTT Research
+Aarushi Goel
+NTT Research
+Abhishek Jain
+Johns Hopkins University
+Guru-Vamsi Policharla
+UC Berkeley
+Sruthi Sekar
+UC Berkeley
+Abstract
+A decade of active research has led to practical con-
+structions of zero-knowledge succinct non-interactive ar-
+guments of knowledge (zk-SNARKs) that are now being
+used in a wide variety of applications. Despite this as-
+tonishing progress, overheads in proof generation time
+remain significant.
+In this work, we envision a world where consumers
+with low computational resources can outsource the task
+of proof generation to a group of untrusted servers in
+a privacy-preserving manner. The main requirement is
+that these servers should be able to collectively gener-
+ate proofs at a faster speed (than the consumer). To-
+wards this goal, we introduce a framework called zk-
+SNARKs-as-a-service (zkSaaS) for faster computation
+of zk-SNARKs. Our framework allows for distributing
+proof computation across multiple servers such that each
+server is expected to run for a shorter duration than a sin-
+gle prover. Moreover, the privacy of the prover’s witness
+is ensured against any minority of colluding servers.
+We design custom protocols in this framework that
+can be used to obtain faster runtimes for widely used zk-
+SNARKs, such as Groth16 [EUROCRYPT 2016], Mar-
+lin [EUROCRYPT 2020] and Plonk [EPRINT 2019].
+We implement proof of concept zkSaaS for the Groth16
+and Plonk provers. In comparison to generating these
+proofs on commodity hardware, we can not only gen-
+erate proofs for a larger number of constraints (with-
+out memory exhaustion), but can also get ≈22× speed-
+up when run with 128 parties for 225 constraints with
+Groth16 and 221 gates with Plonk.
+1
+Introduction
+zk-SNARKs
+are
+zero-knowledge
+succinct
+non-
+interactive arguments of knowledge [10],
+that al-
+low a prover to non-interactively convince a verifier
+of the knowledge of a witness attesting to the va-
+lidity
+of
+an
+NP
+relation,
+without
+revealing
+any
+information about the witness.
+zk-SNARKs have
+been a topic of extensive research in recent years
+[18, 19, 78, 68, 20, 57, 56, 21, 48, 27, 37, 81]. Their
+flexibility and expressiveness make them applicable to
+a wide variety of scenarios such as private transactions
+[7, 63], roll-ups [84], private smart contracts [52, 22],
+access control in compliance with KYC regulations
+[65, 66], social networks with private reputation moni-
+toring [25], proving existence of bugs in zero-knowledge
+[47], static program analysis [35], zero-knowledge mid-
+dleboxes for enforcing network policies on encrypted
+traffic [50], verifiable inference of machine learning
+[80, 59, 58, 76] and verifiable database queries [82].
+Despite recent advances [11, 51, 14, 13, 48, 27, 37,
+29], generation of zk-SNARKs remains thousands of
+times [75, 61] slower than checking the relation directly
+for typical applications, with large memory usage — ef-
+fectively gate keeping users without access to large ma-
+chines. A natural way out for such users is to outsource
+proof generation to more powerful servers. While one
+could use a cloud server such as AWS, GCP or Azure to
+generate proofs, this approach requires sharing the wit-
+ness in the clear with the cloud server. As such, this
+solution offers no privacy against insider threats such
+as rogue administrators [31] who may compromise data
+privacy for financial gains.
+Even if the cloud service
+provider were trusted, the witness might consist of sensi-
+tive data such as patient medical records that legally can-
+not be placed off-premises due to data protection laws.
+To address the privacy problem, recently, Ozdemir et
+al. [61] introduced the idea of collaborative zk-SNARKs
+for distributed generation of zk-SNARKs. Collaborative
+zk-SNARKs are essentially secure multiparty computa-
+tion (MPC) protocols that allow a group of parties hold-
+ing shares of the witness to collectively generate a sin-
+gle succinct proof. The key security guarantee is that
+the witness remains hidden as long as only a subset of
+the parties collude. Ozdemir et al. design collaborative
+zk-SNARK analogs of Groth16 [48], Marlin [27] and
+USENIX Association
+32nd USENIX Security Symposium    4427
+
+Plonk [37]. In their protocols, all parties run in parallel
+and each of them performs as much work as the (single)
+prover of the underlying zk-SNARK. This results in ap-
+proximately the same runtime as the single prover.1
+We posit that requiring each of the parties running in
+parallel to do as much work as the zk-SNARK prover is
+an overkill. Indeed, a previous work of Wu et al. [77]
+leveraged parallelism to distribute proof computation
+across different machines in a compute cluster to achieve
+faster proof generation times. Their approach, however,
+requires leaking the witness to the cluster, resulting in a
+loss of privacy.
+In this work, we explore the possibility of combining
+the best features of collaborative zk-SNARKs [61] and
+the work of Wu et al. [77]. We ask:
+Is it possible to outsource zk-SNARK proof generation to
+a group of parties in a privacy-preserving manner for
+faster proof generation?
+Our Contributions. Our contributions are as follows:
+1. We present a general framework for zk-SNARKs-as-a-
+service (zkSaaS), where a client delegates proof com-
+putation to a group of untrusted servers in a privacy
+preserving manner. Each of these servers is expected
+to run for a shorter duration than a single local prover.
+2. We instantiate this framework with custom protocols
+to obtain faster runtimes than local provers for widely
+used zk-SNARKs, such as Groth16 [48], Marlin [27]
+and Plonk [37].
+3. Finally, we implement prototypes of zkSaaS for the
+Groth16 [48] and Plonk [37] proof systems.
+Con-
+cretely, we show that when creating a proof for 225
+constraints in the case of Groth16 (and 221 constraints
+with Plonk), the zkSaaS protocol with 128 servers is
+≈22× faster than a local prover. We also show that de-
+ploying more servers helps us get a further speed-up.
+For instance, when creating a Groth16 proof for 219
+constraints, we see an improvement from ≈1.9× to
+≈22× when the number of servers is increased from 8
+to 128. This is in contrast to collabortive zk-SNARKs
+[61] which do not obtain any speedup.
+4. We also estimate the financial cost of using zkSaaS to
+compute a Groth16 proof for an instance of size 219
+to be under $0.23 with 128 parties using a 64 Mbps
+link between servers.
+1This is interesting since they manage to avoid additional security
+parameter overhead that is usually incurred when securely computing
+a function.
+1.1
+Overview of Our Approach
+Similar to [61], our initial idea is to identify common
+building blocks within widely used zk-SNARKs and de-
+sign custom secure multiparty computation (MPC) pro-
+tocols to compute them efficiently. We then stitch them
+together to obtain zkSaaS, an efficient MPC protocol for
+the corresponding zkSNARK prover.
+An Important Observation.
+One of the key observa-
+tions made in [61] is that it is possible to directly secret
+share points on the elliptic curve and fields and apply
+MPC techniques on these shares, which avoids the large
+overheads incurred when using generic MPC techniques
+with very few rounds of communication.2 We go one
+step ahead and observe that these building blocks can be
+rewritten in a way that allows us to leverage significant
+SIMD structure that appears within their computation.
+To leverage this SIMD structure, we make use of a
+tool called packed secret sharing (PSS) [36].3 This is
+a more efficient sibling of Shamir’s polynomial-based
+secret sharing scheme [69], that allows secret-sharing a
+vector of values amongst a set of parties. In particular,
+at the cost of a slight reduction in the corruption thresh-
+old, using PSS we can “hide” ℓ= O(n)4 secrets (where n
+is the total number of servers) in a polynomial and each
+of the n servers receives an evaluation at a single point
+in this polynomial. Such sharings allow parties to ef-
+ficiently perform SIMD computations on secret shared
+data, while reducing the workload on each of them. We
+use this in the design of each of our sub-protocols.
+Multi-Scalar Multiplications (MSM). One of the main
+building blocks in the zkSNARKs we consider is MSM,
+which are operations of the form Πi∈[m]gαt
+i , where gi’s
+are points on an elliptic curve. This is by far the most ex-
+pensive component.5 We design a bespoke MPC proto-
+col where the total work (as well as the asymptotic space
+requirement) of each server is a factor of ℓless than that
+of a single prover.
+Next we discuss the remaining components i.e., Prod-
+uct Check, Fast Fourier Transform (FFT) and polynomial
+computations, which exclusively involve field operations
+that are much cheaper than elliptic curve operations.
+Product-Check.
+Product-Check requiring computa-
+tions of the form ∏j∈[i]xj, for all i ∈[m], which are re-
+ferred to as partial products. Similar to MSM, we design
+a special-purpose MPC protocol for partial products, that
+2This is mainly due to generic MPC techniques making non-black-
+box use of the elliptic curve.
+3This is also the main building block used in the design of all of
+general-purpose MPC protocols that support some division of work
+(See Section 1.3 for more details.)
+4In the implementation we set this to be n/4.
+5In Figure 1 we show the fraction of time spent computing MSMs
+for Groth16.
+4428    32nd USENIX Security Symposium
+USENIX Association
+
+allows us to divide the work of each server by a factor of
+ℓless than that of a single prover.
+Fast Fourier Transform.
+The standard description of
+the FFT algorithm on a polynomial with m coefficients
+can be divided into logm steps, with O(m) field multi-
+plications at each step. For the first logm/ℓsteps, we are
+able to divide the work of each server by a factor of ℓ.
+For the remaining logℓsteps, however, we require one of
+the parties to do O(m) field operations and have O(m)
+memory, while the work and memory requirement of the
+remaining parties gets divided by ℓ.
+Polynomial Multiplication and Division.
+Finally, we
+show how to combine standard packed secret sharing
+based subprotocols for addition and multiplication along
+with our custom MPC for FFT to enable secure dis-
+tributed polynomial computations.
+Composing different subprotocols based on packed se-
+cret sharing is not straightforward, and requires care.
+We show how to combine the above subprotocols to ob-
+tain zkSaaS for faster generation of zk-SNARKs such as
+Groth16, Marlin and Plonk.
+Communication over a Star Topology Network. Our
+distributed sub-protocols for all of the functions de-
+scribed above, do not require servers to communicate
+with all other servers. Aside from receiving shares of the
+extended witness from the client, we require the servers
+to only communicate with the one large server, through-
+out the rest of the computation. As a result, we only
+need communication channels between the client and
+each server and between the large server and every other
+server.
+Instantiating zkSaaS.
+As discussed above, the dis-
+tributed FFT protocol requires one party which has mem-
+ory proportional to the size of the relation but the com-
+putational resources demanded from all other parties is
+reduced by a factor of ℓ. Therefore, a zkSaaS deploy-
+ment requires one large server. While not ideal, we argue
+that this is still reasonable for two reasons — (1) even if
+the private view of this large server is leaked, it does not
+compromise a client’s secrets unlike when a client sim-
+ply rents a large server to generate the proof. (2) it is very
+easy and quite cheap to rent a large server from a cloud
+service provider.
+Finally, we remark that proof generation in the zk-
+SNARKs that we consider proceeds in two steps: first,
+the prover uses its (short) witness to evaluate the rela-
+tion circuit and obtain a corresponding extended witness,
+which is then used to generate the proof (See Section 3
+for a detailed discussion). Similar to collaborative zk-
+SNARKs [61], in this work, we focus on designing se-
+cure distributed protocols for proof generation and as-
+sume that the client computes and shares the extended
+witness with the servers. We view faster generation of
+the extended witness as an important orthogonal ques-
+tion but such protocols would need to essentially be re-
+designed for every application.
+Security. We now discuss the key aspects of our security
+model and the guarantees provided by zkSaaS.
+We assume that a majority of the servers are honest.
+Specifically, let n be the total number of servers and ℓbe
+the total number of secrets that we can pack in a single
+packed secret sharing. We require that at most t < n
+2 −ℓ
+of the servers can be corrupted. Further, we assume that
+the corruptions are semi-honest.
+Our zkSaaS framework retains the soundness property
+of the underlying zk-SNARK and provides the following
+completeness and zero-knowledge guarantees:
+— Completeness: For any true statement, an execu-
+tion of zkSaaS involving an honest client and honest
+servers outputs an accepting proof.6
+— t-Zero Knowledge: In any execution of zkSaaS, the
+view of the t corrupt servers can be efficiently sim-
+ulated without the client’s witness. This, in partic-
+ular, implies that the corrupt servers learn nothing
+about the client’s witness.
+We conclude with a few remarks on security against
+malicious servers. We first note that proofs output by
+zkSaaS remain sound even when all servers are mali-
+cious. Next, we conjecture that our protocols can be aug-
+mented to achieve t-zero knowledge against malicious
+servers by using highly efficient compilers from the re-
+cent MPC literature [40, 39, 6, 44, 45]. In essence, these
+compilers show that semi-honest MPC protocols that are
+“secure against malicious corruptions up to linear at-
+tacks” can be compiled into maliciously secure protocols
+with a small constant (typically, at most two) overhead.
+We conjecture that our semi-honest zkSaaS protocols al-
+ready satisfy the properties required for these efficient
+compilers; a formal treatment of the same, however, is
+outside the scope of this work.
+1.2
+Example Applications of zkSaaS
+We now discuss some real-world applications where we
+envision our zkSaas-framework to be useful.
+Private Transactions and Smart Contracts. A simple
+spend transaction on a private chain such as ZCash[7]
+already involves ≈130,000 R1CS constraints7 which
+takes roughly 10 seconds on a high-end laptop in single
+threaded mode. This would take even longer on weaker
+6The completeness property, in fact, holds even if the servers are
+semi-honest (since such servers follow protocol instructions.)
+7https://github.com/zcash/librustzcash
+USENIX Association
+32nd USENIX Security Symposium    4429
+
+devices such as smart phones making the process quite
+tedious for users.
+Private smart contracts are immutable programs run-
+ning on blockchains, which provide confidentiality of the
+computation carried out on blockchains [52, 22]. Al-
+though these chains can be designed more carefully to
+reduce the overhead for simple transactions, they aim
+to support general computation on the smart contracts
+which can blow up to a very large number of constraints
+as there may be very complicated logic that gets executed
+involving cryptographic functions such as signature veri-
+fication. With zkSaaS, users can potentially pay a tiny
+transaction fee in exchange for a seamless experience
+akin to current centralized payment methods.
+Statements involving Ethereum Wallets.
+Ethereum
+uses EdDSA signatures for authentication of transac-
+tions over the ed25519 elliptic curve which is not proof
+friendly. As a result, one needs to emulate non-native
+256-bit field arithmetic which is quite expensive. The
+verification circuit of an EdDSA signature costs over 2.5
+million R1CS constraints8 and the proving key itself is
+1.6 GB in size. Common tasks such as proof of member-
+ship viz. ”I own an Ethereum wallet out of these set of
+1024 wallets” become impractical on mobile devices as
+the statements are simply too large and lead to memory
+exhaustion.
+Combating Disinformation.
+It was shown that zero-
+knowledge proofs can be used to prove that images ap-
+pearing in news articles underwent an approved set of
+transformations from the time of creation [60]. This is
+particularly helpful in allowing reporters to hide sensi-
+tive content while at the same time proving authenticity
+of the image. While fast generation of zk-SNARKs is
+possible for images, doing the same for compute-heavy
+video files is currently far from practical and our zkSaaS-
+framework could aid in carrying out such a computation.
+Verifiable Private ML Inference. A user can commit
+to a machine learning model and provide a proof of infer-
+ence on this machine learning model, which can be used
+to verify accuracy of a machine learning model or to en-
+sure that a certain entity who claims to use AI for a task
+is actually producing predictions using a machine learn-
+ing model. Since circuits for inference can be quite large
+as the models grow in size, they quickly become imprac-
+tical to prove even on consumer grade laptops. Again,
+the data used to train this model could be patient health
+records for example which cannot be placed on servers
+that do not comply with HIPAA9. Hence, a solution is
+to use zkSaaS to compute proofs of inferences where no
+server sees sensitive information.
+8https://github.com/Electron-Labs/ed25519-circom
+9https://www.hipaajournal.com/
+1.3
+Related Work
+Some prior works [53, 30] have considered building
+MPC-as-a-service, which involves deploying MPC in a
+volunteer-operated network (like blockchains).
+How-
+ever, such protocols are built for generic functionalities
+and do not offer efficient solutions for our specific goal.
+In a different line of work (unrelated to our goal), MPC
+has been used to securely sample the common parame-
+ters used in zk-SNARKs [8, 23, 55].
+A different line of work has considered the problem
+of speeding-up the zk-SNARK prover time, but they ei-
+ther do not hide the witness [77, 67], or lead to [24]
+linear verification time with a security guarantee that is
+weaker than both our framework and the collaborative
+zk-SNARK framework
+[61]. Some prior works have
+also studied other distributed models of proof systems,
+including ones where the statement is shared amongst
+multiple verifiers [1, 16, 17], or where there are two (or
+more) non-colluding provers [4, 12].
+Our goal in some sense is very similar to the de-
+sign of MPC protocols, where the total computation and
+communication is independent of the number of parties,
+which has been the focus of a significant line of re-
+search [34, 33, 39, 43, 6, 44, 46]. However for arith-
+metic circuits, most of these require round complexity
+linear in the multiplicative depth of the circuit, which is
+not ideal in our setting since the prover algorithms in zk-
+SNARKs typically don’t have a constant multiplicative
+depth. Moreover, representing cryptographic operations
+such as group exponentiations as an arithmetic circuit
+and computing them inside an MPC is extremely inef-
+ficient. Therefore, na¨ıvely using these protocols in com-
+puting a zk-SNARK will result in inefficient solutions.
+More recently, in a concurrent and independent work,
+Chiesa et al. [28] also considered the problem of pri-
+vate delegation of zk-SNARKs for faster proof genera-
+tion. However, their model is quite different from ours.
+In particular, they assume that the client remains online
+throughout the computation and actively participates in
+the zk-SNARK computation along with the servers. For
+this, they design an MPC protocol (that is run between
+the servers and the clients) for zk-SNARK computation
+leveraging the fact that one of the parties (i.e., the client)
+is always honest and the witness need not be hidden from
+them. Their goal is to essentially “reduce” the work done
+by the client. In contrast, in our setting, after sharing the
+extended witness, the client does not need to do any work
+and can delegate the entire zk-SNARK computation to
+the servers.
+4430    32nd USENIX Security Symposium
+USENIX Association
+
+1.4
+Future Directions
+A promising direction for future work would be to elim-
+inate the need of a single large server in zkSaaS.
+In
+our current solution, this large server is only needed for
+our distributed protocol for FTT. Potential approaches
+for avoiding this could be – (1) Designing a more effi-
+cient subprotocol for for distributed computation of FFT
+or (2) designing zkSaaS for zk-SNARKs that do not use
+FFT operations e.g. Orion [79], Brakedown [42], Hyper-
+plonk [26]. Another interesting problem would be to en-
+able faster generation of the extended witness in a similar
+framework. Finally, as discussed in Section 1.1, it would
+be interesting to formally demonstrate how the protocols
+developed in this work can be augmented to achieve se-
+curity against malicious servers.
+Paper Organization. We start by establishing some no-
+tations in Section 2. We then formally define zkSaaS-
+in Section 3, and give an overview of the popular zk-
+SNARKs of interest (Groth, Marlin and Plonk) in Sec-
+tion 4. A detailed technical exposition of each of our
+distributed sub-protocols (FFT, MSM and sum of partial
+products) appears in Section 5, and we show how to build
+a zkSaaS for a specific class of zk-SNARKs in Section 6.
+Finally, we discuss the concrete efficiency of our scheme
+in Section 7.
+2
+Preliminaries
+For any n ∈N, we use [n] to denote the set {1,⋯,n}
+and for i, j ∈N with i < j, we use [i, j] to denote the
+set {i,i + 1,..., j}.
+We denote a vector of ℓelements
+from a field F, (x1,⋯,xℓ), by x. For any two vectors
+x and y, the component-wise multiplication is denoted
+by x ⊙y ∶= (x1 ⋅y1,⋯,xℓ⋅yℓ). We always use capital let-
+ters (e.g. X) to denote elements from a group G, and
+correspondingly X denotes a vector of ℓgroup elements
+(X1,⋯,Xℓ).
+We use a multiplicative notation for our
+group operations throughout the paper.
+Linear Secret Sharing Schemes. In this work we make
+use of polynomial based, regular threshold secret shar-
+ing scheme as well as a packed secret sharing scheme.
+For regular threshold secret sharing, we use [x], ⟨x⟩to
+denote shares of a value x, w.r.t. to a degree t and n−1
+polynomial respectively. For packed secret sharing, we
+use JxK, ⟪x⟫to denote shares of a vector x w.r.t. to a
+degree D and n −1 polynomial respectively, where we
+assume that the length of x is ℓ∈O(n) and D = t + ℓ.
+We use [x]i,⟨x⟩i,JxKi,⟪x⟫i to denotes shares held by a
+party Pi and [x]S,⟨x⟩S,JxKS,⟪x⟫S to denote the shares
+held by a subset S of the parties. Finally, we use func-
+tions [x] ←share(F,x,t) and JxK ←pshare(F,x,D) to
+compute shares and open(F,JxK,D) and open(F,[x],t)
+to reconstruct shares.
+3
+zkSaaS Framework
+As discussed earlier, zkSaaS is a collaborative zk-
+SNARK [61] framework, where a client delegates the
+task of computing a zk-SNARK to n-servers. To realize
+our goal of enabling fast computation of zk-SNARKs,
+the resultant zkSaaS protocol must ensure that – (1) the
+work done by the clients is minimized and (2) the work
+required to compute the zk-SNARK gets divided across
+all servers.
+RICS Format.
+Let us briefly recall the structure
+of existing zk-SNARKs.
+Different zk-SNARKs work
+with different representations of the relation R - e.g.,
+quadratic arithmetic programs [62, 67], low-depth cir-
+cuits [15, 32, 41, 71, 72, 73, 74, 78, 83], binary arith-
+metic circuits [37], etc. The most popular representation
+amongst state-of-the-art proof systems [9, 27, 48, 49] is
+known as the rank-1 constraint systems (R1CS) that gen-
+eralizes arithmetic circuits.
+Proof systems working with this representation pro-
+ceed in two steps: (1) First, extend the given (short)
+statement-witness pair (φ,w) into a satisfying assign-
+ment z for the RICS relation. The length of this satis-
+fying assignment is proportional to the size of the re-
+lation. (2) second, give an argument of knowledge for
+this satisfying assignment for the RICS relation. Step 1
+is inexpensive and only requires non-cryptographic field
+operations, while Step 2 requires more expensive crypto-
+graphic operations and is typically the bottleneck.
+Our Framework.
+zkSaaS
+is essentially a secure
+multiparty computation (MPC) protocol for computing
+zk-SNARKs, between a client and n-servers.
+Client.
+Since Step 1 of the proof generation is in-
+expensive, we assume that client performs this step and
+“securely” shares the resulting satisfying assignment z
+with the servers at the start of the protocol. To compute
+this satisfying assignment, the client essentially needs
+to represent the original relation R as an arithmetic
+circuit CR and compute all the values induced on the
+intermediate wires in circuit CR when evaluated on
+inputs (φ,w).
+These intermediate values form the
+satisfying assignment z for the corresponding RICS
+relation. Looking ahead, in our construction, the client
+(pack) secret shares [36] the vector z with the servers.
+Computing and sharing this satisfying assignment re-
+quires O(∣R∣logN) ≈O(∣R∣) field operations and very
+little space. Indeed, observe that the client can do this
+computation in a streaming fashion, where it computes a
+USENIX Association
+32nd USENIX Security Symposium    4431
+
+Definition 1 (zkSaaS). Let λ be the security parameter, n be the number of parties, R ∈Rλ be an NP-relation
+and ΣR = (Setup,Prove,Ver,Sim) be a zk-SNARK for R such that: the prover computation time is Tprover =
+Tfield +Tcrypto, where Tfield and Tcrypto are the times taken by the prover for the field operations and cryptographic
+operations, respectively; the prover space complexity is Sprover. Let (Preprocessing,Πonline) be a tuple defined as
+follows:
+— Preprocessing(crs,1n) →pre1,...,pren ∶This is a PPT algorithm that takes the crs output by Setup and the
+number of servers n as input and outputs correlated randomness prei for each server Pi (for i ∈[n]).
+— Πonline(crs,φ,w,pre1,...,pren) →π ∶This is an MPC protocol between a client C and n servers P1,...,Pn.
+The client has the statement φ and private input w. It sends messages to each of the n servers in a single
+round. Given these messages, φ and their respective correlated randomness pre1,...,pren, the servers then
+engage in an interactive protocol amongst each other to compute a proof π.
+We say that Π = (Preprocessing,Πonline) is a zkSaaS for ΣR, if the following properties are satisfied.
+1. Completeness: For all (φ,w) ∈R, the following holds:
+Pr
+⎡⎢⎢⎢⎢⎢⎣
+crs ←Setup(1λ)
+pre1,...,pren ←Preprocessing(crs,1n)
+π ←Πonline(crs,φ,w,pre1,...,pren)
+RRRRRRRRRRR
+Ver(crs,φ,π) = 0
+⎤⎥⎥⎥⎥⎥⎦
+≤negl(λ)
+2. t-zero-knowledge: Let crs ←Setup(1λ), pre1,...,pren ←Preprocessing(crs,1n). For all semi-honest PPT
+adversaries A controlling at most a t-sized subset Corr ⊂[n] of the servers, there exists an efficient Simulator
+SimzkSaaS, such that the following holds for all φ,w (where b ←R(φ,w) ∈{0,1}):
+{viewA
+Πonline[φ,w]} ≈c {SimzkSaaS(crs,φ,b,{prei}i∈Corr)}
+here viewA
+Πonline[φ,w] denotes the view of A in an execution of Πonline(crs,φ,w,pre1,...,pren), and we use ≈c
+to denote computational indistinguishability between the two distributions.
+3. Efficiency: Π = (Preprocessing,Πonline) satisfy the following efficiency requirements:
+Preprocessing: The computation complexity of the Preprocessing algorithm is o(Tfield). For each i ∈[n], size
+of the correlated randomness ∣prei∣∈O(Sprover/n).
+Client: Computation complexity of the client o(Tfield) field operations.
+Special Server P1: The first server has a computation complexity of o(Tfield) field operations and O(Tcrypto/n)
+cryptographic operations. It’s space and communication complexities are O(Sprover) and o(Tfield), resp.
+Other Servers P2,...,Pn: All other servers have computation complexity of o(Tfield/n) field and O(Tcrypto/n)
+cryptgraphic operations. Their space and communication complexities are O(Sprover/n) and o(Tfield/n), resp.
+fraction of the circuit at a time and secret shares the re-
+sulting wire values before proceeding with evaluating the
+next part of the circuit, thereby minimizing the required
+space. However, if the client is unwilling, this compu-
+tation can also be done via an MPC protocol, where the
+client only needs to share the original statement-witness
+pair (φ,w) with the servers, who then run a generic MPC
+to compute CR and obtain shares of z.
+In this work, we focus on designing an efficient
+protocol for Step 2, which is the main bottleneck in the
+computation of existing zk-SNARKs.
+Servers. Given shares of the extended witness, Step 2
+is executed via an MPC protocol between the servers.
+We want the total computation and space complexity
+of this protocol to be asymptotically identical to that of
+computing the zk-SNARK by a monolithic entity.
+Let the space complexity of the underlying zk-
+SNARK be Sprover and the computation complexity be
+Tfield field operations and Tcrypto cryptographic oper-
+ations.
+Then, our zkSaaS-framework guarantees the
+following efficiencies: first, in terms of space complex-
+ity, one of the servers requires a O(Sprover) space, while
+all others require a O(Sprover/n) space; second, in terms
+4432    32nd USENIX Security Symposium
+USENIX Association
+
+of computation, the cryptographic operations are almost
+equally divided amongst all the n servers, i.e., all the
+servers perform O(Tcrypto/n) cryptographic operations,
+and the remaining field operations are divided amongst
+the servers such that the server with more memory per-
+forms o(Tfield)10 field operations, while the remaining
+(n −1) low-memory servers each perform O(Tfield/n)
+field operations.
+Pre-Processing. Finally, we assume that the servers get
+access to some correlated-randomness at the start of this
+MPC protocol.
+This relation-independent correlated-
+randomness can be generated as part of a pre-processing
+step with o(Tfield) computation complexity (requiring
+only non-cryptographic operations). This can be either
+be generated by the client or by the servers themselves
+using a generic MPC protocol. Since the computation in
+this pre-processing phase is independent of the relation,
+it can be pre-computed by the servers during downtime.
+Communication and Round Complexity.
+Finally,
+we remark that in order to minimize the overhead from
+communication, we want to limit the total communi-
+cation to O(Tfield) and restrict the number of rounds
+of interaction between the servers to a constant value.
+zkSaaS-framework is formalized in Definition 1.
+4
+Overview of Groth, Marlin and Plonk
+In this section, we review the design of the prover al-
+gorithms in three widely used zk-SNARK construction:
+Groth16 [48], Marlin [27] and Plonk [37]. We start by
+discussing the key components (that are often the main
+bottleneck) used in the generation of Groth16-, Marlin-
+and Plonk-proofs.
+Fast Fourier Transform, Polynomial Multiplication
+and Division. One of the key components used to opti-
+mize prover computation is the Fast Fourier Transform
+(FFT), which helps evaluate a given polynomial at m
+points in O(mlogm) time. The prover computations also
+typically require additional FFT-based computations: (1)
+Inverse FFT (iFFT) is used to convert m evaluations of a
+polynomial to the coefficient representation of the poly-
+nomial in time O(mlogm); (2) Polynomial Multiplica-
+tion, which given the coefficient representation, can just
+be computed using one call each to FFT and iFFT along
+with m field multiplications and takes O(mlogm) time;
+(3) Polynomial Division, which can actually be run by
+making two calls to polynomial multiplication –takes
+O(mlogm) time, where m is the degree of the dividend.
+Multi-scalar Multiplications (MSMs).
+Multi-scalar
+10We note that here we are hiding a logarithmic factor in the n
+multiplications are of the form ∏j∈[m](Xj)y j, where
+y1,...,ym ∈F, and X1,...,Xm ∈G.
+Polynomial Commitments. In interactive oracle proofs
+(IOP)-based zkSNARKs, like Marlin and Plonk, in each
+round, the prover sends polynomial oracles to the veri-
+fier, which are essentially encodings of the witness, that
+the verifier can query.
+To convert these polynomial-
+IOPs to SNARKs, the prover commits to these poly-
+nomial oracles using the KZG polynomial commitment
+scheme [54]. These commitments allow a prover to com-
+mit to a univariate polynomial p(X) ∈F[X] and get a
+com, such that the prover can later open to an evaluation
+of p(X) at any point z, while giving a proof π of correct
+evaluation. In KZG commitment, to commit to a polyno-
+mial of degree d, MSM function is evaluated on d field
+and group elements, and to generate an opening proof
+the prover needs to perform one polynomial division fol-
+lowed by an MSM operation.
+Sumcheck Protocol.
+Marlin relies heavily on what is
+known as a sumcheck protocol for univariate polyno-
+mials.
+For a polynomial oracle p(X) ∈F[X] sent by
+the prover, this involves giving a proof of the fact that
+evaluations of p(X) on the set S ∶= {1,ω,...,ωm−1},
+sums to some value σ ∈F, where ω is the m-th prim-
+itive root of unity in the field F. It was shown in [9]
+that ∑x∈S p(x) = σ, if and only if p(X) can be written
+as q(X) ⋅X + σ/∣S∣, for some q(X) ∈F[X]. Thus, the
+prover in the polynomial-IOP first evaluates the polyno-
+mial q(X) by dividing the polynomial p(X)−σ/∣S∣by X
+and sends q(X) as an oracle. Hence, for running each
+sumcheck, the prover in Marlin invokes polynomial di-
+vision before committing to this polynomial using the
+polynomial commitment.
+Partial Products.
+In Plonk, the prover needs to com-
+pute (for reference, see round 2 of [37, Section 8.3]) par-
+tial products of the form ∏i∈[j] p(ωi−1) for all j ∈∣S∣,
+where p(X) ∈F[X] is some polynomial (which in turn is
+some encoding of the witness), and S ∶= {1,ω,...,ωm−1},
+where ω is the m-th primitive root of unity in the field
+F. The prover uses this in computing the polynomial
+z(X) obtained by additional polynomial multiplication
+and addition operations and sends it as an oracle in the
+polynomial-IOP protocol. In the final Plonk protocol z is
+committed using the polynomial commitment.
+4.1
+Groth16, Marlin, and Plonk Provers
+We now briefly describe how each of the three zk-
+SNARKs that we consider can be computed via some
+combination of the above functions. We defer the de-
+tails on how Groth and Plonk can be computed us-
+ing our zkSaaS framework to the full version [38].
+Groth [48].
+Groth16 is the smallest, non-interactive
+USENIX Association
+32nd USENIX Security Symposium    4433
+
+zk-SNARK, where the prover only sends 3 group ele-
+ments to the verifier.
+This construction makes use of
+a structured CRS consisting of group elements propor-
+tional to the number of constraints.
+To generate the
+proof, the prover needs to compute a polyomial multi-
+plication, polynomial division and a constant number of
+MSMs with the group elements in the CRS.
+Marlin [27].
+Marlin is a six round protocol, where
+overall, the prover generates the KZG polynomial com-
+mitments of 21 polynomials, and requires the following
+operations, each called for a small constant number of
+times: three sequential calls to the sumcheck protocol
+with each call additionally needing a call to polynomial
+division, all involving polynomials with a degree bound
+of the size of the relation, and polynomial additions. As
+a final step, this interactive protocol is converted to a
+SNARK using the Fiat-Shamir transformation.
+Plonk [37]. Plonk on the other hand is a five round pro-
+tocol, where overall the prover generates the KZG poly-
+nomial commitments of 9 polynomials, and requires the
+following operations, each called a small constant num-
+ber of times, to generate these polynomials: polynomial
+multiplication and division involving polynomials with
+a degree bound of the size of the relation, partial prod-
+ucts, and polynomial additions. This interactive protocol
+is also converted to a SNARK in the RO model.
+5
+Distributed
+Sub-Protocols
+for
+the
+zkSaaS Framework
+For each of the sub-functions (FFT, MSM, Sum of Par-
+tial Products) discussed in section 4, we build custom
+MPC protocols. Looking ahead, we show how to com-
+pose these protocols, to design a zkSaaS for a specific
+subclass of zk-SNARKs. The full description of these
+protocols is deferred to the full version of our paper [38].
+5.1
+Distributed Fast Fourier Transform
+The fast Fourier transform (FFT) algorithm is a recur-
+sive divide and conquer algorithm that helps evaluate a
+polynomial at multiple points efficiently. In particular, to
+evaluate a polynomial p(x) ∈F[X] of degree m−1 at the
+points S = {ωi ∶i ∈[m]}, where ω is the m-th primitive
+root of unity in the field F, FFT does the following: At
+level i = logm, each of the m polynomials will be eval-
+uated at a single point, which is the identity element in
+1 ∈F. Subsequently, given the evaluations at level i (for
+any i ∈[log(m),1]), the FFT algorithm gives us evalu-
+ations at the level i −1 in the following way: For each
+j ∈[2i−1], and each k ∈[m/2i], xi−1,k
+j
+∶= xi,k
+2 j−1 + ωk2i−1 ⋅
+xi,k
+2 j
+and xi−1,(m/2i)+k
+j
+∶= xi,k
+2j−1 + ω((m/2i)+k)2i−1 ⋅xi,k
+2j. At
+the end (i = 0), the algorithm outputs all the m evalua-
+tions of p at S. We represent the recursion by the follow-
+ing function defined for each i = logm,...,1:
+Fi
+FFT({xi,k
+j }j∈[2i],k∈[m/2i]) ∶= {xi−1,k
+j
+}j∈[2i−1],k∈[m/2i−1],
+(1)
+Here, the input to Flogm
+FFT
+are the values xj = xlogm,1
+j
+for each j ∈[m], representing the evaluations11 of each
+of the m polynomials of level i = logm at the single
+point 1.
+Note that F1
+FFT outputs the required evalua-
+tions {p(1), p(ω),..., p(ωm−1)}. Using this notation,
+the FFT algorithm can be written as FFFT(x1,...,xm) =
+F1
+FFT(F2
+FFT(...Flogm
+FFT (x1,...,xm))).
+An Alternate View of the FFT algorithm.
+Our goal
+is to compute FFFT via a secure MPC protocol. Notice
+that FFT is a logarithmic step algorithm, while we want
+a constant round MPC protocol for computing it. To-
+wards designing such a protocol, we begin by making
+some key observations about FFT, and abstracting the
+main idea behind our final MPC protocol. For ease of
+exposition, consider an example where the input size is
+m = 32. We want to convert the linear function evalu-
+ation on each pair of values (at each recursive level i),
+into a linear function evaluation on a pair of vectors (of
+say ℓ= 4 values) and be able to recurse on these vectors.
+Looking ahead, this will help us to pack share these vec-
+tors together and locally compute on them.
+1. FFT Step I: Since logm = log32 = 5, the inputs to
+the FFT algorithm will be x5,1
+1 ,...,x5,1
+32 .
+The next
+level i = 4 of the recursion is computed as: x4,1
+j
+=
+x5,1
+2j−1 +ω16 ⋅x5,1
+2j and x4,2
+j
+= x5,1
+2j−1 +ω32 ⋅x5,1
+2j , for each
+j ∈[16]. We now look at the same step as being com-
+puted on a vector instead of individual values. Sup-
+pose we group ℓ= 4 elements to get the following 8
+vectors at level i = 5: x5,1
+1
+= (x5,1
+1 ,x5,1
+3 ,x5,1
+5 ,x5,1
+7 ), x5,1
+2
+=
+(x5,1
+2 ,x5,1
+4 ,x5,1
+6 ,x5,1
+8 ), ...,x5,1
+8
+= (x5,2
+26 ,x5,2
+28 ,x5,2
+30 ,x5,2
+32 ).
+Observation I. The key observation here is that, each
+pair of vectors x5,1
+2j and x5,1
+2j−1 are used to compute two
+vector evaluations x4,1
+j
+(which uses ω16) and x4,2
+j
+at
+the level i = 4 (which uses ω32), for each j ∈[4]. In
+other words:
+∀j ∈[4], x4,1
+j
+=x5,1
+2j +ω16⋅x5,1
+2j−1 & x4,2
+j
+=x5,1
+2j +ω32⋅x5,1
+2j−1.
+2. FFT Step II: We want to continue to compute on
+pairs of vectors linearly to obtain the next recur-
+sive step i = 3.
+However, note that now x4,1
+2j−1 and
+11 For p(X) = ∑i∈[m] ci−1xi−1, the xi’s are just a rearrangement of the
+ci’s, obtained by recursively reordering the ci’s as: put the even indexed
+terms at each level on the left and the odd indexed terms on the right.
+Continue the recursion for logm steps.
+4434    32nd USENIX Security Symposium
+USENIX Association
+
+x4,1
+2 j do not contain the values that are linearly com-
+bined in the next recursive step of FFT. For instance
+we have vectors x4,1
+1
+= (x4,1
+1 ,x4,1
+2 ,x4,1
+3 ,x4,1
+4 ) and x4,1
+2
+=
+(x4,1
+5 ,x4,1
+6 ,x4,1
+7 ,x4,1
+8 ), while the values that we want to
+combine are x4,1
+1
+with x4,1
+2 , and x4,1
+3
+with x4,1
+4 .
+Observation II. The key observation that we make
+to resolve this issue is that, if at level i = 5, we had
+started with vectors: x5,1
+1
+= (x5,1
+1 ,x5,1
+5 ,x5,1
+9 ,x5,1
+13 ), x5,1
+2
+=
+(x5,1
+2 ,x5,1
+6 ,x5,1
+10 ,x5,1
+14 ), etc., then Step 1 would have led
+to the vectors (at i = 4): x4,1
+1
+= (x4,1
+1 ,x4,1
+3 ,x4,1
+5 ,x4,1
+7 ),
+x4,1
+2
+= (x4,1
+2 ,x4,1
+4 ,x4,1
+6 ,x4,1
+8 ), etc. These vectors x4,1
+1
+and
+x4,1
+2
+can now be combined using a linear combination,
+the same way as we did in step 1, to get x3,1
+1
+and x3,2
+1
+(and similarly others) of level i = 3. But, this reorder-
+ing will only help us for this level and we run into the
+same issue when computing the next level i = 2.
+Our Main Idea: The key point from observations I and
+II above is that in order to continue doing the FFT com-
+putations for each recursive level as a linear combination
+of vectors, instead of individual values, we must take the
+initial vectors at level i = 5 to be such that the values x5,k
+j ’s
+in the same vector have the j’s as far away as possible–
+this ensures that we push our problem down to as far a
+recursive layer as possible. However, even with the best
+ordering that we start with, we would reach a recursive
+level beyond which we cannot hope to compute on the
+vectors through a linear combination. Our MPC protocol
+combines the above key idea of packing the inputs into
+vectors such that local computations can be performed
+on them for as long as possible, along with additional
+techniques to overcome the challenge in computing the
+remaining recursive layers.
+MPC for FFT. For m inputs, we start with a packed
+sharing of ℓ-sized vectors at level i = logm: xlogm,1
+j
+=
+(xlogm,1
+j
+,xlogm,1
+m
+ℓ+j ,...,xlogm,1
+m(ℓ−1)
+ℓ
++j), for each j ∈[m/ℓ].
+As
+discussed in our main idea, this allows us to locally com-
+pute on the shares at each recursive layer (as in Steps 1
+and 2) until level i = logℓ+1, beyond which we cannot
+do a local computation.
+Beyond i = logℓ: One approach that comes to mind is
+to rearrange the elements packed together (using some
+interaction) in such a way that a similar local computa-
+tion can be done. However, one can observe that doing
+such a rearrangement actually leads to another problem–
+each pair of vectors are combined now using a vector
+of the ωi’s (instead of a single one), which leads to an
+“interactive” multiplication protocol at each level. This
+approach does give a feasible solution, but requires the
+parties to communicate at each of the remaining logℓlev-
+els. Furthermore, the total communication in each round
+is O(m) which will become a bottleneck when dealing
+with a large constraint size.
+We minimize the number of communication rounds
+and give a more efficient solution than the above by
+making use of our all powerful server and just two
+rounds of communication.
+On a high level, this uses
+the fact that FFT (and each of its recursive layer)
+is a linear function, i.e.:
+Fi
+FFT((x1 + r1),...,(xm +
+rm)) = Fi
+FFT(x1,...,xm) + Fi
+FFT(r1,...,rm).
+Suppose
+that the parties get packed shares of random values
+(r1,...,rm) and packed shares of (s1,...,sm) generated
+as: (s1,...,sm) = F1
+FFT(F2
+FFT(...Flogℓ
+FFT (r1,...,rm))).
+Then, the packed shares of the level i = logℓare
+masked using the packed shares of (r1,...,rm) locally,
+and sent to the powerful party P1. Now, P1 reconstructs,
+computes the remaining recursive levels of FFT until
+i = 1, and sends the packed shares of the output to all
+parties.
+By virtue of linearity, the parties can obtain
+packed shares of the FFT output by locally subtracting
+the packed shares of (s1,...,sm). This securely reduces
+the communication rounds to two12.
+Complexity of our distributed FFT. Our protocol
+runs in two rounds, where in the first round each party
+communicates O(m/ℓ) field elements and in the sec-
+ond round, party P1 communicates O(m/ℓ) field el-
+ements to each of the remaining parties.
+P1 does
+O((logℓ+logn)m+m(logm−logℓ)/ℓ) field operations
+and has a space complexity of O(m). The remaining par-
+ties perform O(m(logm−logℓ)/ℓ) field operations and
+require O(m/ℓ) space.
+5.2
+Distributed Partial Products
+In this section, we discuss our ideas for securely
+computing functions of the form Fpart(x1,...,xm) =
+(∏j∈[i]x j)i∈[m], in a distributed way. When computing
+on a single machine, this function requires computing the
+x[1,i] ∶= x1⋯xi values for each i ∈[m] in a sequential order.
+Simply implementing this approach inside an MPC pro-
+tocol will require O(m) rounds. Moreover, since each
+step only requires multiplying two values at a time (i.e.,
+x[1,i−1] and xi), it is unclear how to leverage packed shar-
+ing to get a division of work amongst the parties.
+Our goal is to design a computation mechanism that is
+more amenable to parallelism and where we can mean-
+ingfully use an approach based on packed secret sharing.
+The key idea to achieve this comes from rewrit-
+ing Fpart in the following way:
+Fpart(xi,...,xj) =
+(xi,x[i,i+1],...,x[i,j]) = (Fpart(x (i−1)m
+ℓ
++1,
+...,x im
+ℓ) ⋅
+12A curious reader might wonder why the linearity doesn’t help us
+use the powerful server to compute all the recursive levels. For input
+size m (which is as large as the constraint size), this solution leads to
+a O(mlogm) compute time for both the pre-processing step and the
+server time, as opposed to our demand of O(m) compute time for both.
+USENIX Association
+32nd USENIX Security Symposium    4435
+
+x[1, (i−1)m
+ℓ
+])i∈[ℓ].
+Observe that the Fpart(x (i−1)m
+ℓ
++1,...,
+x im
+ℓ)’s depend on disjoint subsets of the input xi’s. Thus,
+they can all be computed in parallel.
+In fact, since
+each of these Fpart(x (i−1)m
+ℓ
++1,...,x im
+ℓ) are computed
+identically, albeit on a different set of inputs, this is
+exactly the kind of SIMD computation for which packed
+secret sharing is most helpful.
+MPC for Fpart.
+We start with a packed secret
+sharing of vectors x1,...,xm/ℓ, where xj is an ℓ-
+sized vector consisting of the jth inputs i.e., xj =
+(xj,x m
+ℓ+j,...,x m(ℓ−1)
+ℓ
++j), for each j ∈[m/ℓ].
+We now
+compute Fpart(Jx1K,...,Jxm/ℓK) to obtain packed shares
+of (yj = (x[ (i−1)m
+ℓ
++1, (i−1)m
+ℓ
++j])i∈[ℓ]) j∈[m/ℓ] using known
+techniques with O(m) total computation and communi-
+cation.
+A careful reader might have observed that while the
+above idea allows us to compute {yj}j∈[m/ℓ] simulta-
+neously, doing this na¨ıvely will still require O(m/ℓ)
+rounds. To avoid this, we observe that a slightly mod-
+ified version of Bar-Ilan and Beaver’s [5] constant-round
+MPC for unbounded multiplication can be used to com-
+pute this in a constant number of rounds.13 We defer
+more details about this protocol and the modification to
+the technical sections.
+Finally, to compute Fpart(x1,...,xm), given the packed
+secret sharings of {yj}j∈[m/ℓ] from the previous step,
+we note that while computing these packed shares of
+{yj}j∈[m/ℓ], the parties also inevitably end up com-
+puting a packed secret sharing of the vector z =
+(x[1,m/ℓ],x[ m
+ℓ+1, 2m
+ℓ],...,x[ m(ℓ−1)
+ℓ
+,m]).
+Given {JyjK}j∈[m/ℓ] and JzK, our final step computes the
+shares of desired output:
+(1) Convert a packed sharing of z into regular thresh-
+old shares of the individual elements in z,
+i.e.,
+[x[1,m/ℓ]],...,[x[ m(ℓ−1)
+ℓ
+,m]].
+(2) Use the above modified version of Bar-Ilan and
+Beaver’s protocol on these shares to compute shares
+[x[1,m/ℓ]],[x[1,2m/ℓ]]...,[x[1,m]].
+(3) Finally, for each j ∈[m/ℓ], compute an inner
+product between Jy jK and packed shares of vector
+(1,x[1,m/ℓ],x[1,2m/ℓ], ...,x[1, m(ℓ−1)
+ℓ
+]).
+Complexity of our distributed Partial Products Proto-
+col. Our protocol runs in constant rounds, where each of
+the small servers communicate O(m/ℓ) field elements.
+They perform O(m/ℓ) field operations and require a
+space complexity of O(m/ℓ). While the big server, P1
+has a space complexity of O(m) and performs O(m)
+13We note that this protocol crucially relies on the fact that none of
+the values being multiplied are zero. Which is indeed the case (w.h.p.)
+for our use-case in Plonk.
+field operations and communicates O(m) field elements.
+This is because of the sub-protocol that we adapt from
+Bar-Ilan and Beaver’s [5] constant-round MPC for un-
+bounded multiplication. Since our distributed FFT pro-
+tocol already assumes that one of the servers has more
+memory and computational resources, this is the version
+we use in our implementation of Plonk. However, in the
+full version [38], we present an alternate protocol for dis-
+tributed computation of partial products, where the total
+work gets equally divided amongst all parties. In particu-
+lar, each server in that protocol requires O(m/ℓ) field op-
+erations, a space complexity of O(m/ℓ), and each server
+communicates O(m/ℓ+n) field elements.
+5.3
+Distributed Multi-Scalar Multiplica-
+tions
+Polynomial-based secret sharing schemes typically only
+support arithmetic operations over a finite field. Several
+zk-SNARKs perform many elliptic curve group opera-
+tions, such as multiplying group elements or group ex-
+ponentiations. Representing these group operations as
+an arithmetic circuit over a finite field and computing it
+inside an MPC protocol is not feasible.
+Prior works [70, 61] have explored generalizations of
+polynomial-based secret sharing schemes for group op-
+erations. Let G be a group of order p, with generator g,
+such that each element A ∈G can be represented as ga,
+where a ∈Zp. The main idea in these works is to first
+compute secret shares (say s1,...,sn) of the field element
+a, and then compute the shares of A as gs1,...,gsn. This
+allows us to perform arithmetic field operations in the ex-
+ponent which can be used for group exponentiation and
+for multiplying group elements.
+(1) Addition in the exponent. Given packed secret shares
+of another vector B = (B1,...,Bℓ) ∈Gℓ, each party Pi can
+locally multiply their shares JAKi ⋅JBKi, to get a valid
+packed secret sharing of C = (A1 ⋅B1,...,Aℓ⋅Bℓ).
+(2) Multiplication in the exponent.
+Given packed se-
+cret shares of another vector of field elements b =
+(b1,...,bℓ) ∈Zℓ
+p,
+each party Pi can locally com-
+pute JAK
+JbKi
+i
+to get a packed secret sharing of C =
+(Ab1
+1 ,...,Abℓ
+ℓ). However, in this case, since the shares of
+a and b get multiplied in the exponent, the degree of the
+resulting sharing will be twice that of the original shar-
+ings. To reduce the degree, we can use the standard ideas
+for degree reduction, albeit in the exponent.
+MPC for MSM.
+Given the above observations, our
+idea for computing multi-scalar multiplications of
+the form FMSM(A1,b1...,Am,bm) = ∏i∈[m]Abi
+i
+is to
+first observe that this decomposes as is quite intu-
+itive. Observe, this computation can be decomposed as:
+4436    32nd USENIX Security Symposium
+USENIX Association
+
+∏i∈[ℓ](FMSM(Ai,bi,Aℓ+i,bℓ+i,...,A( m
+ℓ−1)ℓ+i,b( m
+ℓ−1)ℓ+i)).
+This is essentially equivalent to computing ℓinstances
+of FMSM in parallel and then multiplying the ℓoutputs.
+We compute this using PSS as follows: (1) Assuming
+that the parties have packed secret shares of vectors
+A j = (A(j−1)ℓ+i)i∈[ℓ] and bj = (b(j−1)ℓ+i)i∈[ℓ] for each
+j ∈[m/ℓ], the parties compute FMSM function on these
+packed shares to get packed shares of a vector C. (2)
+Convert JCK to regular threshold shares [C1],...,[Cℓ]
+of the individual elements in C. (3) Finally, the parties
+locally multiply these shares to get a sharing of the
+desired output.
+Complexity of distributed MSM. Our protocol runs in
+constant rounds, where each party communicates O(1)
+group elements. All parties perform O(m/ℓ) group ex-
+ponentiations and have a space complexity of O(m/ℓ).
+6
+zkSaaS for Admissible zk-SNARKs
+In this section, we formally define a notion of admissible
+zk-SNARKs and show that our techniques from Section
+5 can be used to obtain a zkSaaS for them.
+Admissible zk-SNARKs.
+We start by formaliz-
+ing a class of zk-SNARKs that are amenable to our
+zkSaaS framework, and refer to them as admissible
+zk-SNARKs.
+Informally speaking, we say that a zk-
+SNARK with computation complexity Tfield + Tcrypto is
+admissible if the prover algorithm is composed of some
+combination of a subset or all of the following six types
+of operations on the satisfying assingment z for the RICS
+relation R — (1) multi-scalar multiplications (MSMs),
+(2) Fast Fourier Transforms (FFT), (3) sum of partial-
+products, (4) multiplication/Hadamard product, (5) addi-
+tions and (6) permutations.
+To formally capture this, our initial idea is to say that
+the prover algorithm in admissible zk-SNARKs can be
+represented as a polynomial-sized circuit consisting of
+special gates with “multi-ary” inputs and outputs, where
+each of these special gates correspond to one of the above
+six operations. However, this is alone is not sufficient.
+To capture the efficiency requirements of a zkSaaS (as
+discussed in Section 3), we need to further restrict the
+number of times a particular gate with a certain ari-ty
+can appear in this circuit.
+Indeed, consider for instance a circuit, where two-
+input multiplication gates appear O(Tfield) times in the
+circuit.
+Since the only distributed protocol that we
+can use for evaluating such gates is πmult (c.f. Figure
+??), which requires a total communication and compu-
+tation of O(n), the total communication and computa-
+tion incurred in evaluating O(Tfield) such gates would be
+O(n.Tfield). This clearly violates the efficiency require-
+ment of zkSaaS. Therefore, we must limit the number of
+such gates with low-ary inputs that appear in this circuit
+to ensure that the cost of computing them does not sur-
+pass the asymptotic bound that we have on the total com-
+putation complexity of zkSaaS. More concretely, in or-
+der to use our packed secret sharing based sub-protocols,
+we must limit the number of gates with o(n) inputs.
+Hence, we define the notion of admissibility w.r.t. the
+number of parties n. This is formalized in Definition 2.
+We now present our main composition theorem and
+show that the three zk-SNARKs that we discussed in
+Section 4.1 are admissible.
+Theorem 1. Let λ be the security parameter, R ∈Rλ
+be an NP-relation and Σ = (Setup,Prove,Ver,Sim)
+be
+an
+n-admissible
+zk-SNARK
+for
+relation
+R.
+Then,
+there
+exists
+a
+secure
+n-server
+zkSaaS
+Π
+for
+Σ,
+which
+securely
+computes
+Prove
+in
+the
+fdouble−prand, fprand, fpack−mult, frand, fpsstoss, fmult, fsstopss,
+fFFT, fMSM, fpermute, fpart−product, fpoly−mult, fpoly−divide-
+hybrid model.
+We give the formal proof of this theorem along with
+a formal description of all the ideal functionalities in the
+full version [38] of our paper.
+Instantiation. We note that, as discussed in Section 4.1,
+the provers of Groth16 [48], Marlin [27] and Plonk [37]
+only call the functionalities listed in defintion 2. Further-
+more, the number of gates with o(n)-inputs in each of
+these is at most a constant number. Hence, using Theo-
+rem 1 we can directly get a zkSaaS for Groth16, Marlin
+and Plonk. Note here that Marlin and Plonk are described
+as interactive protocols, but as mentioned in Section 4.1
+they can be converted to non-interactive protocols in the
+random oracle model, by using the Fiat-Shamir transfor-
+mation. Specifically, this would require the prover to
+make random oracle queries on parts of the transcript–
+in our zkSaaS this translates to each party reconstruct-
+ing shares of the transcript, to make these random ora-
+cle queries locally. The protocol clearly remains zero-
+knowledge.
+7
+Implementation and Evaluation
+To evaluate the concrete performance of our techniques,
+we implemented a proof-of-concept zkSaaS framework
+supporting Groth16 [48] and Plonk [37] in Rust.
+We
+use the arkworks [3] library for finite field, pairing-
+friendly curves and, FFT implementations and the mpc-
+net crate from the collaborative-snarks implementation
+[2] to facilitate communication between parties.
+Our
+code is available on Github.14 All of our experiments are
+14https://github.com/guruvamsi-policharla/zksaas
+USENIX Association
+32nd USENIX Security Symposium    4437
+
+Definition 2 (n-Admissible zk-SNARKs). Let λ be the security parameter, R ∈Rλ be an NP-relation and
+Σ = (Setup,Prove,Ver,Sim) be a zk-SNARK for R. We say that Σ is n admissible if n < Tfield, n < Tcrypto and the
+Prove algorithm can be represented as a circuit C comprising of gates implementing the following functionalities:
+Multi-Scalar Multiplication: FMSM(y1,...,ym,X1,...,Xm) = ∏j∈[m](Xj)y j.
+Fast Fourier Transform: FFFT(x1,...,xm) = F1
+FFT(F2
+FFT(...Flogm
+FFT (x1,...,xm))), where each Fi
+FFT is the recursive
+function described in equation 1.
+Sum of Partial Products: Fpart−prod(x1,...,xm) = ∑j∈[m]∏i∈[j]xi.
+Multiplication/Hadamard Product: Fprod(x1,...,xm,y1,...,ym) = (x1 ⋅y1),...,(xm ⋅ym).
+Addition: Fsum(x1,...,xm,y1,...,ym) = (x1 +y1),...,(xm +ym).
+Permutation: Fperm(x1,...,xm) ∶= (xperm(1),...,xperm(m)), where perm is a permutation function on [m].
+Furthermore, the total number of MSM gates with m ∈o(n) inputs is limited to O(Tcrypto/n) and all
+other types of gates m ∈o(n) inputs are limited to O(Tcrypto/n).
+run on the Google Cloud Platform (GCP) using two types
+of machines – all servers with low memory requirements
+are custom N1 instances with 1 vCPU and 2GB of mem-
+ory, while the powerful server is a custom N1 instance
+with 96 vCPUs and 128 GB of RAM.
+We compare the performance of our zkSaaS protocol
+against a prover running locally on an N1 instance with
+1 vCPUs and 4 GB of RAM, emulating a mid tier con-
+sumer laptop and hence refer to this as the consumer ma-
+chine. Our VM configuration choices aim to reflect real-
+istic deployment scenarios for zkSaaS, where one pow-
+erful instance is hired to aid many weak — volunteer-run
+nodes, often on outdated and older hardware. Through-
+out the analysis when the zkSaaS protocol is run with n
+parties, the corruption threshold is set to be t = n/4 −1
+and the number of secrets packed together to be ℓ= n/4.
+All numbers reported are the average of five trials.
+We view our implementation as a proof-of-concept to
+estimate running times and network delays and do not
+implement multi-threading on the powerful server. In
+a production-level implementation, we expect the pow-
+erful server to use multi-threading in the FFT protocol
+which includes packing/opening shares and communi-
+cating with parties. The data we present takes this into
+account by dividing the time taken during computation
+by the number of threads on the server and the time spent
+during communication by min(n,# of threads). Finally,
+we implement a variant of our distributed partial prod-
+ucts protocol which avoids all-to-all communication but
+the king party does linear work. This does not affect
+our speedup as we assume the king is multi-threaded and
+simplifies the communication to a star like structure.
+Pre-processing. Our goal is to analyze the online work
+carried out by the servers. In both the single prover base-
+line and the zkSaaS protocol, we do not benchmark the
+time taken to prepare the witness, since we assume this
+is given to the zkSaaS servers by the clients. We do not
+evaluate pre-processing as it can be carried out during pe-
+riods of low demand when spare compute and bandwidth
+are available. Prior work [61] also omits this analysis.
+Evaluation.
+We now evaluate the performance of our
+zkSaaS framework against a prover running locally on a
+consumer machine for Groth16 and Plonk. In particular,
+we aim to answer three main questions: (1) How does
+the performance of zkSaaS compare to a Groth16/Plonk
+prover running on a single consumer machine? We are
+interested in two main metrics — (a) the largest number
+of constraints that can be supported without memory ex-
+haustion and (b) the time required to generate the proof.
+(2) Does the performance of zkSaaS improve as we in-
+crease the number of servers? (3) How does the perfor-
+mance of zkSaaS vary with network bandwidth?
+Varying Constraints.
+For our first experiment, we
+run benchmarks on a high speed network (4Gbps). We
+compare the running time of zkSaaS with 128 parties
+against a local execution of Groth16/Plonk prover on a
+single consumer machine, by varying the number of con-
+straints. We summarize our results in Figure 1.
+The performance of our zkSaaS for larger constraints
+is approximately 22× better better than the consumer ma-
+chine. Here, we incur a loss from the theoretically ex-
+pected savings of 32× due to a few factors:
+— Pippenger’s algorithm [64] provides a way to com-
+pute a multi-scalar multiplication ΠN
+i=1gαi
+i
+using
+O(N/logN) group operations as opposed to O(N)
+in the naive strategy.
+However, Pippenger’s algo-
+rithm is not conducive to our packed secret sharing
+MPC techniques as it lacks sufficient SIMD struc-
+ture. With an optimal division of work, each weak
+server would carry out O(N/(ℓ⋅logN)) group oper-
+ations. While we do not attain an optimal division of
+4438    32nd USENIX Security Symposium
+USENIX Association
+
+28 29 210211212213214215216217218219220221222223224225
+Constraints
+20
+22
+24
+26
+28
+210
+212
+214
+216
+218
+220
+Time (ms)
+Groth16(128)
+Local
+MSM
+R1CS to QAP
+29
+210 211 212 213 214 215 216 217 218 219 220 221
+Gates
+20
+22
+24
+26
+28
+210
+212
+214
+216
+218
+220
+Time (ms)
+Plonk(128)
+Local
+Group Operations
+Field Operations
+Figure 1: Comparison between proof generation time for
+a local prover (Groth16 and Plonk resp.) run on the con-
+sumer machine against that of the zkSaaS protocol with
+128 servers on a 4 Gigabit link. The bar graph indi-
+cates the fraction of time spent computing Field Opera-
+tions (Tfield) vs Group Operations (Tcrypto). Missing data
+points on the local curve indicates memory exhaustion.
+work, we come very close with a per server complex-
+ity of O(N/ℓ⋅logN/ℓ). In fact, since the constants
+inside the big O notation are the same, we can the-
+oretically predict the percentage loss in performance
+under infinite bandwidth conditions by simply divid-
+ing the two asymptotics. As can be seen in Figure 2,
+a 4Gbps connection closely emulates infinite band-
+width and our implementation indeed comes very
+close to the theoretical prediction.
+— In our distributed FFT/partial product protocol, dur-
+ing degree reduction, the King unpacks and repacks
+shares adding additional overhead. Our FFT imple-
+mentation is also not as carefully optimized as the
+arkworks implementation which is used by the
+consumer machine.
+Also, observe in Figure 1, that the fraction of time
+spent computing the field operations (refered to as R1CS
+to QAP mapping in the case of Groth16) increases with
+23
+24
+25
+26
+27
+Parties (n)
+2
+0
+2
+1
+2
+2
+2
+3
+2
+4
+2
+5
+Speedup
+Groth16-64.0Mbps
+Groth16-256.0Mbps
+Groth16-4Gbps
+Single Prover Baseline
+Perfect Division
+23
+24
+25
+26
+27
+Parties (n)
+2
+0
+2
+1
+2
+2
+2
+3
+2
+4
+2
+5
+Speedup
+Plonk-64.0Mbps
+Plonk-256.0Mbps
+Plonk-4Gbps
+Single Prover Baseline
+Perfect Division
+Figure 2: Proving time versus number of parties, normal-
+ized by a single-prover time for 219 constraints (gates)
+denoted by the dotted black line.
+the number of constraints. This is because the FFT op-
+eration is asymptotically more expensive (O(mlogm))
+than the MSM (O(m/logm)).
+Varying Parties and Network Speeds. For our next ex-
+periment, we show how zkSaaS scales as the number of
+parties increase, at varying network speeds. The dotted
+black line denotes the time taken by a local prover. We
+simulate slower connections by scaling up the time spent
+on communication by the network slowdown factor,
+comparing this to an implementation of Groth16/Plonk
+on a single consumer machine and present our findings
+in Figure 2. Even at lower network speeds (64 Mbps),
+we observe that the performance degradation is ≈2×.
+Discussion on Financial Costs.
+We now estimate the
+costs of providing zk-SNARKs as a service. The power-
+ful VM costs has a spot pricing of $0.79/hr15 and cross
+continent egress traffic pricing is $0.08/GB16. Being very
+conservative, our estimates show that with 128 parties,
+generating a Groth16 proof for an R1CS instance of size
+15https://cloud.google.com/compute/
+vm-instance-pricing
+16https://cloud.google.com/compute/network-pricing
+USENIX Association
+32nd USENIX Security Symposium    4439
+
+219 takes under 1 minute on a 4-Gbps link and under 5
+minutes on a 64 Mbps link, with the total outgoing com-
+munication from the server < 1.85GB. Hence, creating
+this proof would cost < 18 cents with a 4 Gbps link and
+< 23 cents on a 64 Mbps link.
+Acknowledgements.
+Sanjam Garg,
+Guru-Vamsi
+Policharla and Sruthi Sekar are supported in part
+by DARPA under Agreement No.
+HR00112020026,
+AFOSR Award FA9550-19-1-0200, NSF CNS Award
+1936826, and research grants by the Sloan Foundation,
+and Visa Inc. Guru-Vamsi Policharla is also supported
+by the UC Berkeley Center for Long-Term Cybersecu-
+rity. Abhishek Jain is supported in part by NSF CNS-
+1814919, NSF CAREER 1942789, Johns Hopkins Uni-
+versity Catalyst award, AFOSR Award FA9550-19-1-
+0200, and research gifts from Ethereum, Stellar, Cisco.
+References
+[1] Surya Addanki, Kevin Garbe, Eli Jaffe, Rafail Os-
+trovsky, and Antigoni Polychroniadou. Prio+: Pri-
+vacy preserving aggregate statistics via boolean
+shares.
+Cryptology ePrint Archive,
+Report
+2021/576, 2021.
+https://eprint.iacr.org/
+2021/576.
+[2] alex
+ozdemir.
+collaborative-zksnark.
+https://github.com/alex-ozdemir/
+collaborative-zksnark, 2022.
+[3] arkworks contributors. arkworks zksnark ecosys-
+tem. https://arkworks.rs, 2022.
+[4] L´aszl´o Babai, Lance Fortnow, and Carsten Lund.
+Non-deterministic exponential time has two-prover
+interactive protocols. In 31st FOCS, pages 16–25.
+IEEE Computer Society Press, October 1990.
+[5] Judit
+Bar-Ilan
+and
+Donald
+Beaver.
+Non-
+cryptographic fault-tolerant computing in constant
+number of rounds of interaction. In Piotr Rudnicki,
+editor, Proceedings of the Eighth Annual ACM
+Symposium on Principles of Distributed Comput-
+ing, Edmonton, Alberta, Canada, August 14-16,
+1989, pages 201–209. ACM, 1989.
+[6] Gabrielle Beck, Aarushi Goel, Abhishek Jain, and
+Gabriel Kaptchuk. Order-C secure multiparty com-
+putation for highly repetitive circuits.
+In Anne
+Canteaut and Franc¸ois-Xavier Standaert, editors,
+EUROCRYPT 2021, Part II, volume 12697 of
+LNCS, pages 663–693. Springer, Heidelberg, Oc-
+tober 2021.
+[7] Eli Ben-Sasson, Alessandro Chiesa, Christina Gar-
+man, Matthew Green, Ian Miers, Eran Tromer, and
+Madars Virza.
+Zerocash: Decentralized anony-
+mous payments from bitcoin. In 2014 IEEE Sym-
+posium on Security and Privacy, pages 459–474.
+IEEE Computer Society Press, May 2014.
+[8] Eli Ben-Sasson,
+Alessandro Chiesa,
+Matthew
+Green, Eran Tromer, and Madars Virza.
+Secure
+sampling of public parameters for succinct zero
+knowledge proofs. In 2015 IEEE Symposium on
+Security and Privacy, pages 287–304, 2015.
+[9] Eli Ben-Sasson, Alessandro Chiesa, Michael Ri-
+abzev,
+Nicholas Spooner,
+Madars Virza,
+and
+Nicholas P. Ward. Aurora: Transparent succinct ar-
+guments for R1CS. In Yuval Ishai and Vincent Ri-
+jmen, editors, EUROCRYPT 2019, Part I, volume
+11476 of LNCS, pages 103–128. Springer, Heidel-
+berg, May 2019.
+[10] Nir Bitansky, Ran Canetti, Alessandro Chiesa,
+Shafi Goldwasser, Huijia Lin, Aviad Rubinstein,
+and Eran Tromer. The hunting of the SNARK. J.
+Cryptol., 30(4):989–1066, 2017.
+[11] Nir Bitansky, Ran Canetti, Alessandro Chiesa, and
+Eran Tromer.
+Recursive composition and boot-
+strapping for SNARKS and proof-carrying data. In
+Dan Boneh, Tim Roughgarden, and Joan Feigen-
+baum, editors, 45th ACM STOC, pages 111–120.
+ACM Press, June 2013.
+[12] Nir Bitansky and Alessandro Chiesa. Succinct ar-
+guments from multi-prover interactive proofs and
+their efficiency benefits. In Reihaneh Safavi-Naini
+and Ran Canetti, editors, CRYPTO 2012, volume
+7417 of LNCS, pages 255–272. Springer, Heidel-
+berg, August 2012.
+[13] Alexander R. Block, Justin Holmgren, Alon Rosen,
+Ron D. Rothblum, and Pratik Soni.
+Public-coin
+zero-knowledge arguments with (almost) minimal
+time and space overheads.
+In Rafael Pass and
+Krzysztof Pietrzak, editors, TCC 2020, Part II,
+volume 12551 of LNCS, pages 168–197. Springer,
+Heidelberg, November 2020.
+[14] Alexander R. Block, Justin Holmgren, Alon Rosen,
+Ron D. Rothblum, and Pratik Soni.
+Time- and
+space-efficient arguments from groups of unknown
+order.
+In Tal Malkin and Chris Peikert, edi-
+tors, CRYPTO 2021, Part IV, volume 12828 of
+LNCS, pages 123–152, Virtual Event, August 2021.
+Springer, Heidelberg.
+[15] Andrew J. Blumberg, Justin Thaler, Victor Vu,
+and Michael Walfish. Verifiable computation us-
+ing multiple provers. Cryptology ePrint Archive,
+4440    32nd USENIX Security Symposium
+USENIX Association
+
+Report 2014/846, 2014. https://eprint.iacr.
+org/2014/846.
+[16] Dan Boneh, Elette Boyle, Henry Corrigan-Gibbs,
+Niv Gilboa, and Yuval Ishai.
+Zero-knowledge
+proofs on secret-shared data via fully linear PCPs.
+In Alexandra Boldyreva and Daniele Micciancio,
+editors, CRYPTO 2019, Part III, volume 11694 of
+LNCS, pages 67–97. Springer, Heidelberg, August
+2019.
+[17] Dan Boneh, Elette Boyle, Henry Corrigan-Gibbs,
+Niv Gilboa, and Yuval Ishai.
+Lightweight tech-
+niques for private heavy hitters. In 2021 IEEE Sym-
+posium on Security and Privacy, pages 762–776.
+IEEE Computer Society Press, May 2021.
+[18] Jonathan Bootle, Andrea Cerulli, Essam Ghadafi,
+Jens Groth, Mohammad Hajiabadi, and Sune K.
+Jakobsen. Linear-time zero-knowledge proofs for
+arithmetic circuit satisfiability.
+In Tsuyoshi Tak-
+agi and Thomas Peyrin, editors, ASIACRYPT 2017,
+Part III, volume 10626 of LNCS, pages 336–365.
+Springer, Heidelberg, December 2017.
+[19] Jonathan Bootle, Andrea Cerulli, Jens Groth,
+Sune K. Jakobsen, and Mary Maller. Arya: Nearly
+linear-time zero-knowledge proofs for correct pro-
+gram execution. In Thomas Peyrin and Steven Gal-
+braith, editors, ASIACRYPT 2018, Part I, volume
+11272 of LNCS, pages 595–626. Springer, Heidel-
+berg, December 2018.
+[20] Jonathan Bootle, Alessandro Chiesa, and Jens
+Groth. Linear-time arguments with sublinear ver-
+ification from tensor codes.
+In Rafael Pass and
+Krzysztof Pietrzak, editors, TCC 2020, Part II, vol-
+ume 12551 of LNCS, pages 19–46. Springer, Hei-
+delberg, November 2020.
+[21] Jonathan Bootle, Alessandro Chiesa, and Siqi Liu.
+Zero-knowledge IOPs with linear-time prover and
+polylogarithmic-time verifier.
+In Orr Dunkel-
+man and Stefan Dziembowski, editors, EURO-
+CRYPT 2022, Part II, volume 13276 of LNCS,
+pages 275–304. Springer, Heidelberg, May / June
+2022.
+[22] Sean Bowe, Alessandro Chiesa, Matthew Green,
+Ian Miers, Pratyush Mishra, and Howard Wu.
+ZEXE: Enabling decentralized private computa-
+tion.
+In 2020 IEEE Symposium on Security and
+Privacy, pages 947–964. IEEE Computer Society
+Press, May 2020.
+[23] Sean Bowe, Ariel Gabizon, and Matthew D. Green.
+A multi-party protocol for constructing the public
+parameters of the pinocchio zk-snark. In Aviv Zo-
+har, Ittay Eyal, Vanessa Teague, Jeremy Clark, An-
+drea Bracciali, Federico Pintore, and Massimiliano
+Sala, editors, Financial Cryptography and Data Se-
+curity - FC 2018 International Workshops, BIT-
+COIN, VOTING, and WTSC, Nieuwpoort, Curac¸ao,
+March 2, 2018, Revised Selected Papers, volume
+10958 of Lecture Notes in Computer Science, pages
+64–77. Springer, 2018.
+[24] Benedikt B¨unz, Jonathan Bootle, Dan Boneh, An-
+drew Poelstra, Pieter Wuille, and Greg Maxwell.
+Bulletproofs: Short proofs for confidential transac-
+tions and more. In 2018 IEEE Symposium on Secu-
+rity and Privacy, pages 315–334. IEEE Computer
+Society Press, May 2018.
+[25] Vitalik Buterin. Some ways to use zk-snarks for
+privacy.
+[26] Binyi Chen, Benedikt B¨unz, Dan Boneh, and Zhen-
+fei Zhang.
+HyperPlonk: Plonk with linear-time
+prover and high-degree custom gates. Cryptology
+ePrint Archive, Report 2022/1355, 2022. https:
+//eprint.iacr.org/2022/1355.
+[27] Alessandro Chiesa, Yuncong Hu, Mary Maller,
+Pratyush Mishra, Noah Vesely, and Nicholas P.
+Ward. Marlin: Preprocessing zkSNARKs with uni-
+versal and updatable SRS. In Anne Canteaut and
+Yuval Ishai, editors, EUROCRYPT 2020, Part I,
+volume 12105 of LNCS, pages 738–768. Springer,
+Heidelberg, May 2020.
+[28] Alessandro Chiesa, Ryan Lehmkuhl, Pratyush
+Mishra, and Yinuo Zhang. Eos: Efficient private
+delegation of zksnark provers. In USENIX Security
+Symposium. USENIX Association, 2023.
+[29] Alessandro Chiesa,
+Dev Ojha,
+and Nicholas
+Spooner.
+Fractal: Post-quantum and transparent
+recursive proofs from holography. In Anne Can-
+teaut and Yuval Ishai, editors, EUROCRYPT 2020,
+Part I, volume 12105 of LNCS, pages 769–793.
+Springer, Heidelberg, May 2020.
+[30] Arka Rai Choudhuri, Aarushi Goel, Matthew
+Green, Abhishek Jain, and Gabriel Kaptchuk. Fluid
+MPC: Secure multiparty computation with dy-
+namic participants. In Tal Malkin and Chris Peikert,
+editors, CRYPTO 2021, Part II, volume 12826 of
+LNCS, pages 94–123, Virtual Event, August 2021.
+Springer, Heidelberg.
+[31] William R Claycomb and Alex Nicoll.
+Insider
+threats to cloud computing: Directions for new re-
+search challenges. In 2012 IEEE 36th annual com-
+USENIX Association
+32nd USENIX Security Symposium    4441
+
+puter software and applications conference, pages
+387–394. IEEE, 2012.
+[32] Graham Cormode, Michael Mitzenmacher, and
+Justin Thaler. Practical verified computation with
+streaming interactive proofs. In Shafi Goldwasser,
+editor, ITCS 2012, pages 90–112. ACM, January
+2012.
+[33] Ivan Damg˚ard, Yuval Ishai, and Mikkel Krøigaard.
+Perfectly secure multiparty computation and the
+computational overhead of cryptography. In Henri
+Gilbert, editor, EUROCRYPT 2010, volume 6110
+of LNCS, pages 445–465. Springer, Heidelberg,
+May / June 2010.
+[34] Ivan Damg˚ard, Yuval Ishai, Mikkel Krøigaard, Jes-
+per Buus Nielsen, and Adam Smith. Scalable multi-
+party computation with nearly optimal work and re-
+silience. In David Wagner, editor, CRYPTO 2008,
+volume 5157 of LNCS, pages 241–261. Springer,
+Heidelberg, August 2008.
+[35] Zhiyong Fang, David Darais, Joseph P. Near, and
+Yupeng Zhang.
+Zero knowledge static program
+analysis. In Giovanni Vigna and Elaine Shi, editors,
+ACM CCS 2021, pages 2951–2967. ACM Press,
+November 2021.
+[36] Matthew K. Franklin and Moti Yung. Communi-
+cation complexity of secure computation (extended
+abstract).
+In 24th ACM STOC, pages 699–710.
+ACM Press, May 1992.
+[37] Ariel Gabizon, Zachary J. Williamson, and Oana
+Ciobotaru. PLONK: Permutations over lagrange-
+bases for oecumenical noninteractive arguments of
+knowledge.
+Cryptology ePrint Archive, Report
+2019/953, 2019.
+https://eprint.iacr.org/
+2019/953.
+[38] Sanjam Garg, Aarushi Goel, Abhishek Jain, Guru-
+Vamsi Policharla, and Sruthi Sekar. zkSaaS: Zero-
+knowledge snarks as a service. Cryptology ePrint
+Archive, Paper 2023/905, 2023.
+[39] Daniel Genkin, Yuval Ishai, and Antigoni Poly-
+chroniadou.
+Efficient multi-party computation:
+From passive to active security via secure SIMD
+circuits.
+In Rosario Gennaro and Matthew J. B.
+Robshaw, editors, CRYPTO 2015, Part II, volume
+9216 of LNCS, pages 721–741. Springer, Heidel-
+berg, August 2015.
+[40] Daniel Genkin, Yuval Ishai, Manoj Prabhakaran,
+Amit Sahai, and Eran Tromer.
+Circuits resilient
+to additive attacks with applications to secure com-
+putation. In David B. Shmoys, editor, 46th ACM
+STOC, pages 495–504. ACM Press, May / June
+2014.
+[41] Shafi Goldwasser, Yael Tauman Kalai, and Guy N.
+Rothblum.
+Delegating computation: interactive
+proofs for muggles. In Richard E. Ladner and Cyn-
+thia Dwork, editors, 40th ACM STOC, pages 113–
+122. ACM Press, May 2008.
+[42] Alexander Golovnev, Jonathan Lee, Srinath Setty,
+Justin Thaler, and Riad S. Wahby.
+Brakedown:
+Linear-time and post-quantum SNARKs for R1CS.
+Cryptology ePrint Archive, Report 2021/1043,
+2021. https://eprint.iacr.org/2021/1043.
+[43] S. Dov Gordon,
+Daniel Starin,
+and Arkady
+Yerukhimovich.
+The more the merrier: Reduc-
+ing the cost of large scale MPC.
+In Anne Can-
+teaut and Franc¸ois-Xavier Standaert, editors, EU-
+ROCRYPT 2021, Part II, volume 12697 of LNCS,
+pages 694–723. Springer, Heidelberg, October
+2021.
+[44] Vipul Goyal, Antigoni Polychroniadou, and Yi-
+fan Song. Unconditional communication-efficient
+MPC via hall’s marriage theorem. In Tal Malkin
+and Chris Peikert, editors, CRYPTO 2021, Part II,
+volume 12826 of LNCS, pages 275–304, Virtual
+Event, August 2021. Springer, Heidelberg.
+[45] Vipul Goyal, Antigoni Polychroniadou, and Yi-
+fan Song.
+Sharing transformation and dishon-
+est majority MPC with packed secret sharing. In
+Yevgeniy Dodis and Thomas Shrimpton, editors,
+CRYPTO 2022, Part IV, volume 13510 of LNCS,
+pages 3–32. Springer, Heidelberg, August 2022.
+[46] Vipul Goyal, Antigoni Polychroniadou, and Yifan
+Song. Sharing transformation and dishonest major-
+ity MPC with packed secret sharing. Cryptology
+ePrint Archive, Report 2022/831, 2022.
+https:
+//eprint.iacr.org/2022/831.
+[47] Matthew Green, Mathias Hall-Andersen, Eric Hen-
+nenfent, Gabriel Kaptchuk, Benjamin Perez, and
+Gijs Van Laer.
+Efficient proofs of software ex-
+ploitability for real-world processors. Proc. Priv.
+Enhancing Technol., 2023(1):627–640, 2023.
+[48] Jens Groth.
+On the size of pairing-based non-
+interactive arguments.
+In Marc Fischlin and
+Jean-S´ebastien Coron, editors, EUROCRYPT 2016,
+Part II, volume 9666 of LNCS, pages 305–326.
+Springer, Heidelberg, May 2016.
+[49] Jens Groth and Mary Maller.
+Snarky signatures:
+Minimal signatures of knowledge from simulation-
+extractable SNARKs. In Jonathan Katz and Hovav
+4442    32nd USENIX Security Symposium
+USENIX Association
+
+Shacham, editors, CRYPTO 2017, Part II, volume
+10402 of LNCS, pages 581–612. Springer, Heidel-
+berg, August 2017.
+[50] Paul Grubbs, Arasu Arun, Ye Zhang, Joseph Bon-
+neau, and Michael Walfish. Zero-knowledge mid-
+dleboxes. In USENIX Security Symposium, pages
+4255–4272. USENIX Association, 2022.
+[51] Justin Holmgren and Ron Rothblum. Delegating
+computations with (almost) minimal time and space
+overhead. In Mikkel Thorup, editor, 59th FOCS,
+pages 124–135. IEEE Computer Society Press, Oc-
+tober 2018.
+[52] Harry A. Kalodner, Steven Goldfeder, Xiaoqi
+Chen, S. Matthew Weinberg, and Edward W. Fel-
+ten. Arbitrum: Scalable, private smart contracts.
+In William Enck and Adrienne Porter Felt, ed-
+itors, USENIX Security 2018, pages 1353–1370.
+USENIX Association, August 2018.
+[53] Sanket Kanjalkar, Ye Zhang, Shreyas Gandlur,
+and Andrew Miller.
+Publicly auditable mpc-as-
+a-service with succinct verification and universal
+setup.
+In IEEE European Symposium on Secu-
+rity and Privacy Workshops, EuroS&P 2021, Vi-
+enna, Austria, September 6-10, 2021, pages 386–
+411. IEEE, 2021.
+[54] Aniket Kate, Gregory M. Zaverucha, and Ian Gold-
+berg. Constant-size commitments to polynomials
+and their applications.
+In Masayuki Abe, editor,
+ASIACRYPT 2010, volume 6477 of LNCS, pages
+177–194. Springer, Heidelberg, December 2010.
+[55] Markulf Kohlweiss, Mary Maller, Janno Siim, and
+Mikhail Volkhov. Snarky ceremonies. Cryptology
+ePrint Archive, Report 2021/219, 2021.
+https:
+//eprint.iacr.org/2021/219.
+[56] Abhiram Kothapalli, Elisaweta Masserova, and
+Bryan Parno. A direct construction for asymptoti-
+cally optimal zksnarks. IACR Cryptol. ePrint Arch.,
+page 1318, 2020.
+[57] Jonathan Lee. Dory: Efficient, transparent argu-
+ments for generalised inner products and polyno-
+mial commitments. In Kobbi Nissim and Brent Wa-
+ters, editors, TCC 2021, Part II, volume 13043 of
+LNCS, pages 1–34. Springer, Heidelberg, Novem-
+ber 2021.
+[58] Seunghwa Lee, Hankyung Ko, Jihye Kim, and
+Hyunok Oh. vCNN: Verifiable convolutional neu-
+ral network.
+Cryptology ePrint Archive, Report
+2020/584, 2020.
+https://eprint.iacr.org/
+2020/584.
+[59] Tianyi Liu, Xiang Xie, and Yupeng Zhang. zkCNN:
+Zero knowledge proofs for convolutional neural
+network predictions and accuracy. In Giovanni Vi-
+gna and Elaine Shi, editors, ACM CCS 2021, pages
+2968–2985. ACM Press, November 2021.
+[60] Assa Naveh and Eran Tromer. Photoproof: Cryp-
+tographic image authentication for any set of per-
+missible transformations. In IEEE Symposium on
+Security and Privacy, SP 2016, San Jose, CA, USA,
+May 22-26, 2016, pages 255–271. IEEE Computer
+Society, 2016.
+[61] Alex Ozdemir and Dan Boneh.
+Experimenting
+with collaborative zk-SNARKs: Zero-Knowledge
+proofs for distributed secrets.
+In 31st USENIX
+Security Symposium (USENIX Security 22), pages
+4291–4308, Boston, MA, August 2022. USENIX
+Association.
+[62] Bryan Parno, Jon Howell, Craig Gentry, and Mar-
+iana Raykova. Pinocchio: Nearly practical verifi-
+able computation. In 2013 IEEE Symposium on Se-
+curity and Privacy, SP 2013, Berkeley, CA, USA,
+May 19-22, 2013, pages 238–252. IEEE Computer
+Society, 2013.
+[63] Alexey Pertsev, Roman Semenov, and Roman
+Storm. Tornado cash privacy solution version 1.4.
+2019.
+[64] Nicholas Pippenger. On the evaluation of powers
+and monomials. SIAM J. Comput., 9(2):230–250,
+1980.
+[65] Deevashwer
+Rathee,
+Guru
+Vamsi
+Policharla,
+Tiancheng Xie, Ryan Cottone, and Dawn Song.
+Zebra: Anonymous credentials with practical on-
+chain verification and applications to kyc in defi.
+Cryptology ePrint Archive, Paper 2022/1286, 2022.
+[66] Michael Rosenberg, Jacob White, Christina Gar-
+man, and Ian Miers. zk-creds: Flexible anony-
+mous credentials from zkSNARKs and existing
+identity infrastructure. Cryptology ePrint Archive,
+Report 2022/878, 2022. https://eprint.iacr.
+org/2022/878.
+[67] Berry Schoenmakers, Meilof Veeningen, and Niels
+de Vreede.
+Trinocchio: Privacy-preserving out-
+sourcing by distributed verifiable computation. In
+Mark Manulis, Ahmad-Reza Sadeghi, and Steve
+Schneider, editors, ACNS 16, volume 9696 of
+LNCS, pages 346–366. Springer, Heidelberg, June
+2016.
+USENIX Association
+32nd USENIX Security Symposium    4443
+
+[68] Srinath Setty.
+Spartan:
+Efficient and general-
+purpose zkSNARKs without trusted setup.
+In
+Daniele Micciancio and Thomas Ristenpart, edi-
+tors, CRYPTO 2020, Part III, volume 12172 of
+LNCS, pages 704–737. Springer, Heidelberg, Au-
+gust 2020.
+[69] Adi Shamir. How to share a secret. Communica-
+tions of the Association for Computing Machinery,
+22(11):612–613, November 1979.
+[70] Nigel P. Smart and Younes Talibi Alaoui.
+Dis-
+tributing any elliptic curve based protocol. In Mar-
+tin Albrecht, editor, Cryptography and Coding -
+17th IMA International Conference, IMACC 2019,
+Oxford, UK, December 16-18, 2019, Proceedings,
+volume 11929 of Lecture Notes in Computer Sci-
+ence, pages 342–366. Springer, 2019.
+[71] Justin Thaler. Time-optimal interactive proofs for
+circuit evaluation.
+In Ran Canetti and Juan A.
+Garay, editors, CRYPTO 2013, Part II, volume
+8043 of LNCS, pages 71–89. Springer, Heidelberg,
+August 2013.
+[72] Victor Vu, Srinath T. V. Setty, Andrew J. Blumberg,
+and Michael Walfish.
+A hybrid architecture for
+interactive verifiable computation. In 2013 IEEE
+Symposium on Security and Privacy, SP 2013,
+Berkeley, CA, USA, May 19-22, 2013, pages 223–
+237. IEEE Computer Society, 2013.
+[73] Riad S. Wahby, Max Howald, Siddharth Garg,
+Abhi Shelat, and Michael Walfish. Verifiable asics.
+In IEEE Symposium on Security and Privacy, SP
+2016, San Jose, CA, USA, May 22-26, 2016, pages
+759–778. IEEE Computer Society, 2016.
+[74] Riad S. Wahby, Ioanna Tzialla, Abhi Shelat, Justin
+Thaler, and Michael Walfish. Doubly-efficient zk-
+snarks without trusted setup. In 2018 IEEE Sym-
+posium on Security and Privacy, SP 2018, Pro-
+ceedings, 21-23 May 2018, San Francisco, Califor-
+nia, USA, pages 926–943. IEEE Computer Society,
+2018.
+[75] Michael Walfish and Andrew J Blumberg. Verify-
+ing computations without reexecuting them. Com-
+munications of the ACM, 58(2):74–84, 2015.
+[76] Chenkai Weng, Kang Yang, Xiang Xie, Jonathan
+Katz, and Xiao Wang. Mystique: Efficient conver-
+sions for zero-knowledge proofs with applications
+to machine learning. In Michael Bailey and Rachel
+Greenstadt, editors, USENIX Security 2021, pages
+501–518. USENIX Association, August 2021.
+[77] Howard Wu, Wenting Zheng, Alessandro Chiesa,
+Raluca Ada Popa, and Ion Stoica. DIZK: A dis-
+tributed zero knowledge proof system. In William
+Enck and Adrienne Porter Felt, editors, USENIX
+Security 2018, pages 675–692. USENIX Associa-
+tion, August 2018.
+[78] Tiancheng Xie, Jiaheng Zhang, Yupeng Zhang,
+Charalampos Papamanthou, and Dawn Song. Li-
+bra:
+Succinct zero-knowledge proofs with opti-
+mal prover computation. In Alexandra Boldyreva
+and Daniele Micciancio, editors, CRYPTO 2019,
+Part III, volume 11694 of LNCS, pages 733–764.
+Springer, Heidelberg, August 2019.
+[79] Tiancheng Xie, Yupeng Zhang, and Dawn Song.
+Orion: Zero knowledge proof with linear prover
+time. In Yevgeniy Dodis and Thomas Shrimpton,
+editors, CRYPTO 2022, Part IV, volume 13510 of
+LNCS, pages 299–328. Springer, Heidelberg, Au-
+gust 2022.
+[80] Jiaheng Zhang, Zhiyong Fang, Yupeng Zhang, and
+Dawn Song. Zero knowledge proofs for decision
+tree predictions and accuracy. In Jay Ligatti, Xin-
+ming Ou, Jonathan Katz, and Giovanni Vigna, ed-
+itors, ACM CCS 2020, pages 2039–2053. ACM
+Press, November 2020.
+[81] Jiaheng Zhang, Tianyi Liu, Weijie Wang, Yinuo
+Zhang, Dawn Song, Xiang Xie, and Yupeng Zhang.
+Doubly efficient interactive proofs for general arith-
+metic circuits with linear prover time. In Giovanni
+Vigna and Elaine Shi, editors, ACM CCS 2021,
+pages 159–177. ACM Press, November 2021.
+[82] Yupeng Zhang, Daniel Genkin, Jonathan Katz,
+Dimitrios Papadopoulos, and Charalampos Papa-
+manthou. vSQL: Verifying arbitrary SQL queries
+over dynamic outsourced databases. In 2017 IEEE
+Symposium on Security and Privacy, pages 863–
+880. IEEE Computer Society Press, May 2017.
+[83] Yupeng Zhang, Daniel Genkin, Jonathan Katz,
+Dimitrios Papadopoulos, and Charalampos Papa-
+manthou.
+vram:
+Faster verifiable RAM with
+program-independent preprocessing. In 2018 IEEE
+Symposium on Security and Privacy, SP 2018, Pro-
+ceedings, 21-23 May 2018, San Francisco, Califor-
+nia, USA, pages 908–925. IEEE Computer Society,
+2018.
+[84] ZkRollups.
+An incomplete guide to rollups.
+https://vitalik.ca/general/2021/01/
+05/rollup.html,
+2021.
+4444    32nd USENIX Security Symposium
+USENIX Association
+

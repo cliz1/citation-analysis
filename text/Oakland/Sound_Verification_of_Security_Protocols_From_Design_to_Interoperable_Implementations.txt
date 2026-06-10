@@ -1,0 +1,2194 @@
+Sound Veriﬁcation of Security Protocols:
+From Design to Interoperable Implementations
+Linard Arquint∗
+, Felix A. Wolf∗
+, Joseph Lallemand†, Ralf Sasse∗
+,
+Christoph Sprenger∗
+, Sven N. Wiesner∗
+, David Basin∗
+, and Peter Müller∗
+∗Department of Computer Science, ETH Zurich, Switzerland
+†Univ Rennes, CNRS, IRISA, France
+{linard.arquint, felix.wolf, ralf.sasse, sprenger, sven.wiesner,
+basin, peter.mueller}@inf.ethz.ch, joseph.lallemand@irisa.fr
+Abstract—We provide a framework consisting of tools and
+metatheorems for the end-to-end veriﬁcation of security pro-
+tocols, which bridges the gap between automated protocol
+veriﬁcation and code-level proofs. We automatically translate
+a Tamarin protocol model into a set of I/O speciﬁcations
+expressed in separation logic. Each such speciﬁcation describes
+a protocol role’s intended I/O behavior against which the
+role’s implementation is then veriﬁed. Our soundness result
+guarantees that the veriﬁed implementation inherits all secu-
+rity (trace) properties proved for the Tamarin model. Our
+framework thus enables us to leverage the substantial body of
+prior veriﬁcation work in Tamarin to verify new and existing
+implementations. The possibility to use any separation logic
+code veriﬁer provides ﬂexibility regarding the target language.
+To validate our approach and show that it scales to real-
+world protocols, we verify a substantial part of the ofﬁcial Go
+implementation of the WireGuard VPN key exchange protocol.
+Index Terms—Protocol veriﬁcation, Symbolic security, Auto-
+mated veriﬁcation, Tamarin, Separation logic, Implementation.
+1. Introduction
+Security protocols are central to securing communication
+and distributed computation and, by nature, they are often
+employed in critical applications. Unfortunately, as history
+amply demonstrates, they are notoriously difﬁcult to get right,
+and their ﬂaws can be a source of devastating attacks. Hence
+the importance of their formal modeling and veriﬁcation.
+Over the past decades, expressive and highly automated
+security protocol veriﬁers have been developed, including the
+two state-of-the-art tools Tamarin [1], [2] and ProVerif [3],
+which have been used to analyze real-world protocols such as
+TLS [4], 5G [5], and EMV [6]. These tools build on a model
+of cryptographic protocols called the symbolic or Dolev-
+Yao model, where cryptographic primitives are idealized,
+protocols are modeled by process algebras or rewriting
+systems, and the attacker is an abstract entity controlling the
+network and manipulating messages represented as terms.
+However, the protocol veriﬁed is a highly abstract version of
+the actual protocol executed and there is a priori no formal
+link between these two versions. The problem of verifying
+the security of protocol implementations has been studied
+before, but the solutions usually come with severe limitations,
+the most important of which we highlight here. Section 7
+contains a detailed overview of related work.
+Many existing approaches are based on code generation
+or model extraction, and either extract executable code from
+a relatively abstract veriﬁed model (e.g. [7], [8], [9]) or
+conversely extract a model from the code for veriﬁcation
+(e.g. [10]). Another recent approach, DY⋆[11], provides a
+framework to write an executable implementation in F⋆and
+obtain a corresponding model that can be reasoned about
+symbolically, also in F⋆. Other methods adopt an approach,
+where security is proved in a computational model (e.g. [12],
+[13], [14]). These models are more precise and thus give
+stronger guarantees than symbolic ones. However, their
+proofs are very difﬁcult to automate.
+These previous approaches are usually tied to a speciﬁc
+implementation language, like ML, F#, or Java dialects, and
+they are difﬁcult to extend to other languages. They are there-
+fore ill-suited to verifying pre-existing implementations, espe-
+cially when used for code extraction. In addition, the extrac-
+tion mechanisms used are not always proved correct or even
+formalized, which weakens the guarantees for the resulting
+code. Moreover, in many cases, the security proof is tailored
+to the implementation considered rather than constructed at
+an abstract level by a standard security protocol veriﬁer such
+as Tamarin or ProVerif. Hence one can neither leverage these
+tools’ automation capabilities nor the substantial prior work
+invested in security protocol proofs using them.
+Our approach. We propose a novel approach to end-to-end
+veriﬁed security protocol implementations. Our approach
+leverages the combined power of state-of-the-art security
+protocol veriﬁers and source code veriﬁers. This provides
+abstract, concise, and expressive security protocol speciﬁca-
+tions on the modeling side and ﬂexibility and versatility on
+the implementation side.
+More precisely, our approach bridges abstract security
+protocol models expressed in Tamarin as multi-set rewriting
+1077
+2023 IEEE Symposium on Security and Privacy (SP)
+© 2023, Linard Arquint. Under license to IEEE.
+DOI 10.1109/SP46215.2023.00061
+2023 IEEE Symposium on Security and Privacy (SP) | 978-1-6654-9336-9/23/$31.00 ©2023 IEEE | DOI: 10.1109/SP46215.2023.10179325
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+systems with concrete program speciﬁcations expressed as
+I/O speciﬁcations (in a dialect of separation logic [15]),
+against which implementations can be veriﬁed. Its technical
+core is a procedure, implemented in an associated tool, that
+translates Tamarin models into I/O speciﬁcations along with
+a soundness proof, stating that an implementation satisfying
+the I/O speciﬁcations reﬁnes the abstract model in terms of
+trace inclusion. As a result, any trace property proved for the
+abstract model using Tamarin, including standard security
+protocol properties such as secrecy and authentication, also
+holds for the implementation.
+Our approach provides a modular and ﬂexible way to
+verify security protocol implementations. On the model
+veriﬁcation side, we can leverage Tamarin’s proof automation
+capabilities to prove protocols secure. Moreover, we can
+prove a given protocol’s security once in Tamarin, and reuse
+this proof to verify multiple implementations of this protocol,
+rather than having to produce a custom security proof for
+each implementation. In fact, numerous complex, real-world
+protocols have been analyzed using Tamarin over the years.
+Using our method, this substantial body of prior work can
+be exploited to verify implementations.
+On the code veriﬁcation side, the I/O speciﬁcations we
+produce can be encoded in many existing veriﬁers that
+support separation logic. Our tool currently generates I/O
+speciﬁcations for the Go code veriﬁer Gobra [16] and for the
+Java code veriﬁer VeriFast [17], which we respectively use for
+our case study and for our running example. It could easily be
+extended to other veriﬁers supporting I/O speciﬁcations such
+as Nagini [18] for Python code. In addition, the requirements
+for adding other code veriﬁers based on separation logic
+to our arsenal are low: they need to only support abstract
+predicates to encode I/O speciﬁcations and to guarantee that
+successful veriﬁcation implies trace inclusion between the
+I/O traces of the program and those of its I/O speciﬁcation.
+We establish our central soundness result relating Tamarin
+models via I/O speciﬁcations to implementations. This result
+follows a methodology inspired by the Igloo framework [19],
+which provides a series of generic steps that gradually
+transform an abstract model into an I/O speciﬁcation, and
+requires establishing a reﬁnement relation between each
+successive pair of steps. We take similar steps and prove these
+reﬁnements once and for all starting from a generic Tamarin
+system, so that our method can be applied to obtain an I/O
+speciﬁcation from any Tamarin protocol model (under some
+mild syntactic assumptions) without any additional proof.
+Our contributions. We summarize our contributions as
+follows. First, we design a framework for the end-to-end
+veriﬁcation of security protocol implementations. This con-
+sists of a procedure and an associated tool to extract I/O
+speciﬁcations from a Tamarin model, which can be veriﬁed
+on implementation code. Our soundness result ensures that
+the implementation inherits all properties proven in Tamarin.
+Second, we propose a novel approach to relate the
+I/O speciﬁcations’ symbolic terms to the code’s bytestring
+messages. We parameterize the code veriﬁers’ semantics with
+an abstraction function, instantiate it to a message abstraction
+function, and identify assumptions and proof obligations to
+verify that the code correctly implements terms as bytestrings.
+Finally, to validate our approach, we perform a substantial
+case study on a complex, real-world protocol: the WireGuard
+key exchange, which is part of the widely-used WireGuard
+VPN in the Linux kernel. We verify a part of the ofﬁcial Go
+implementation of WireGuard which is interoperable with
+the full version. Using our method, we thereby obtain an end-
+to-end symbolically veriﬁed WireGuard implementation. All
+our models, code, and proofs are available online [20], [21].
+2. Background
+We present background on tools and methodology.
+2.1. Tamarin and multiset rewriting
+The Tamarin prover [1], [2] is an automatic, state-of-
+the-art, security protocol veriﬁcation tool that works in the
+symbolic model. Tamarin has been used to ﬁnd weaknesses in
+and verify improvements to substantial real-world protocols
+like the 5G AKA protocol [5], [22], TLS 1.3 [23], the Noise
+framework [24], and EMV payment card protocols [6], [25].
+Protocols are represented as multiset rewriting (MSR)
+systems, where each rewrite rule represents a step or action
+taken by a protocol participant or the attacker. We present
+the following building blocks: messages, facts, and rules.
+Message
+terms
+are
+elements
+of
+a
+term
+algebra
+T = TΣ(N ∪V). These are built over a signature Σ of func-
+tion symbols and a set of names N = fresh ∪pub consisting
+of a set of fresh names fresh (for secret values, generated by
+parties, unguessable by the attacker), a countably inﬁnite set
+of public names pub (for globally known values), and a set
+of variables V. Cryptographic messages M are modeled as
+ground terms, i.e., terms without variables. The term algebra
+is equipped with an equational theory E, which is a set of
+equations, and we denote by =E the equality modulo E.
+Example 1 (Difﬁe-Hellman equational theory). The signed
+Difﬁe-Hellman (DH) protocol is a well-known key exchange
+protocol, where two agents A and B exchange two DH public
+keys, gx and gy, to establish the shared key gxy (where g is
+a group generator). For the Tamarin model, we use a term
+signature containing symbolsˆ, g, sign, verify, pk modeling
+respectively exponentiation, the group generator, signature,
+veriﬁcation, and public keys. We use the simpliﬁed theory:
+(gx)y = (gy)x
+verify(sign(x, k), pk(k)) = true
+Tamarin’s actual model includes further equations. The
+protocol’s informal description is as follows:
+A →B :
+gx
+x fresh
+B →A :
+sign(⟨0, B, A, gx, gy⟩, kB)
+y fresh
+A →B :
+sign(⟨1, A, B, gy, gx⟩, kA)
+agree on (gx)y =E (gy)x
+The tags 0 and 1 are used to distinguish the last two messages.
+All parties, including the attacker, can use the equational
+theory. The attacker also has its own set of rewriting rules,
+expressing that it can intercept, modify, block, and recombine
+2
+1078
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+all network messages, following the classic Dolev-Yao (DY)
+model [26]. These rules are generated automatically from the
+equational theory, but users may formalize additional rules
+giving the attacker further scenario-speciﬁc capabilities.
+Facts are simply atomic predicates applied to message
+terms, constructed over a signature Σfacts = Σlin ⊎Σper
+of fact symbols, partitioned into linear (Σlin), i.e., single-
+use, and persistent (Σper) facts, which encode the state of
+agents and the network. We write F = {F(t1, . . . , tk) | F ∈
+Σfacts with arity k, and t1, . . . , tk ∈T } for the set of facts
+instantiated with terms, partitioned into Flin ⊎Fper as
+expected. In addition, ∪m, ∩m, \m, ⊆m, and ∈m denote
+the usual operations and relations on multisets, and for a
+multiset m, set(m) denotes the set of its elements.
+A multiset rewriting (MSR) rule, written l
+a
+−→r, contains
+multisets of facts l and r on the left and right-hand side,
+and is labeled with a, a multiset of actions (also facts, but
+disjoint from state facts) used for property speciﬁcation. A
+MSR system R is a ﬁnite set of rewrite rules. A MSR
+system R and an equational theory E have a semantics as a
+labeled transition system (LTS), whose states are multisets
+of ground facts from F, the initial state is empty ([]), and
+the transition relation
+·
+=⇒R,E is deﬁned by
+l
+a
+−→r ∈R
+l′
+a′
+−→r′ =E (l
+a
+−→r)θ
+l′ ∩m Flin ⊆m S
+set(l′) ∩Fper ⊆set(S)
+S
+a′
+=⇒R,E S \m (l′ ∩m Flin) ∪m r′
+,
+(1)
+where θ is a ground instance of the variables in l, a, and r.
+Intuitively, the relation describes an update of state S to a
+successor state, that is possible when a given rule in R is
+applicable, i.e., an instantiation with some θ (mod E) of its
+left-hand side appears in S. Applying the rule consumes the
+linear but not the persistent facts appearing in its left-hand
+side, and adds the instantiations under θ of all the facts of
+its right-hand side to the resulting successor state.
+The MSR rules used in Tamarin feature the reserved
+fact symbols K ∈Σper, and Fr, in, out ∈Σlin, modeling
+respectively the attacker’s knowledge, freshness generation,
+inputs, and outputs. The attacker is modeled by a set of
+message deduction rules MDΣ, giving it the DY capabilities
+mentioned above. A distinguished freshness rule, labeled
+Fr(n), generates fresh values n, which either protocol agents
+or the attacker directly learn, but never both.
+Finally, a protocol’s observable behaviors are its traces,
+which are sequences of multisets of actions labeling a
+sequence of transitions. We deﬁne the sets of full traces
+and of ﬁltered traces with empty labels removed.
+Tr(R) = {⟨ai⟩1≤i≤m |
+∃s1, . . . , sm. []
+a1
+=⇒R,E s1
+a2
+=⇒R,E . . .
+am
+=⇒R,E sm}
+Tr′(R) = {⟨ai⟩1≤i≤m,ai̸=[] | ⟨ai⟩1≤i≤m ∈Tr(R)}.
+To ensure that fresh values are unique, we exclude traces
+with colliding fresh values by deﬁning
+Trt(R) = {⟨ai⟩1≤i≤m ∈Tr′(R) |
+∀i, j, n. Fr(n) ∈ai ∩m aj ⇒i = j}.
+We will abbreviate inclusions between each kind of trace
+sets using the relation symbols ≼, ≼′, and ≼t. For example,
+R1 ≼t R2 denotes Trt(R1) ⊆Trt(R2), and similarly for
+the other two. Note that ≼⊆≼′ ⊆≼t.
+We focus here on Tamarin’s trace properties (i.e., sets
+of traces) such as secrecy and authentication [27]. An MSR
+R satisﬁes a trace property Φ, if Trt(R) ⊆Φ.
+Example 2 (Difﬁe-Hellman). Continuing Example 1, we use
+the linear fact symbols SetupAlice(init), Step1
+Alice(init, x),
+Step2
+Alice(init, x, gy) to initialize and record the progress
+of agent A playing the role of Alice in the protocol. The
+parameters of the facts store her knowledge. Alice’s state
+is initialized with init = rid, A, kA, B, pkB, i.e., a thread
+identiﬁer, her identity, her private key, and her partner’s
+identity and public key. This state is then extended with her
+share of the secret x, and the DH public key gy she received.
+For Alice, the two steps of the protocol can then be modeled
+by the rules:
+[SetupAlice(init), Fr(x)]
+[]−→[Step1
+Alice(init, x), out(gx)]
+[Step1
+Alice(init, x), in(sign(⟨0, B, A, gx, Y ⟩, kB))]
+[Secret(Y x)]
+−−−−−−−−→
+[Step2
+Alice(init, x, Y ), out(sign(⟨1, A, B, Y, gx⟩, kA))]
+The received signature is checked using pattern-matching,
+knowing that pkB = pk(kB). The action fact Secret(Y x)
+in the second rule is used to specify key secrecy. It records
+Alice’s belief that the key she computes from the value Y
+(supposedly gy) received from Bob remains secret. The fact
+SetupAlice(init) in the ﬁrst rule is produced by another rule,
+modeling the environment initializing Alice’s knowledge:
+[Fr(rid), sk(A, kA), pk(B, pkB)]
+[]−→[SetupAlice(rid, A, kA, B, pkB)].
+2.2. Separation logic and I/O speciﬁcations
+Separation logic enables sound and modular reasoning
+about heap manipulating programs by associating every
+allocated heap location with a permission. Permissions are a
+static concept used to verify programs, but do not affect their
+runtime behavior. Each permission is held by at most one
+function execution at each point in the program execution.
+To access a heap location, a function must hold the
+associated permission; otherwise, a veriﬁcation error occurs.
+The separating conjunction ⋆sums up the permissions in its
+conjuncts. Permissions to an unbounded set of locations, for
+instance, all locations of a linked list, can be expressed via
+co-recursive predicates. Moreover, abstract predicates are
+useful to specify permissions to an unknown set of locations.
+Permission-based reasoning generalizes from heap
+locations to other kinds of program resources. Penninckx et
+al. [28] reason about a program’s I/O behavior by associating
+each I/O operation with a permission that is required to
+call the operation and is then consumed. They equip the
+main function’s precondition with an I/O speciﬁcation that
+grants all permissions necessary to perform the desired
+I/O operations of the entire program execution. These I/O
+speciﬁcations can easily be encoded in standard separation
+3
+1079
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+requires token(?p1) && out(p1,v,?p2)
+ensures
+ok =⇒token(p2)
+ensures !ok =⇒token(p1) && out(p1,v,p2)
+func send(v int) (ok bool)
+Figure 1.
+Speciﬁcation of the send operation with I/O permissions.
+Variables starting with ? are implicitly existentially quantiﬁed. The code
+veriﬁer uses && to denote the separating conjunction ⋆.
+logic, such that existing program veriﬁers supporting different
+programming languages can be used to verify I/O behavior.
+Every I/O operation io, such as sending or receiving
+a value, is associated with an abstract predicate io, called
+an I/O permission. Intuitively, io(p1, ¯v, ¯w, p2) expresses the
+permission to perform io with outputs ¯v and inputs ¯w.
+We use ¯x to denote a vector of zero or more values. The
+parameters p1 and p2 are called source and target places,
+respectively. An abstract predicate token(p) is called a
+token at place p. The I/O operation io moves a token from
+the source place p1 to the target place p2 by consuming
+token(p1) and producing token(p2). Hence, the position of
+the token indicates the currently allowed I/O operations.
+Example 3 (Send I/O operation). Figure 1 shows the signa-
+ture and speciﬁcation of a send function. The precondition
+requires an I/O permission out to send the value v at some
+source place p1 with the corresponding token. When the
+send operation succeeds, the I/O permission is consumed
+and the token is moved to some target place p2. In case of
+failure, the token remains at the source place and the I/O
+permission is not consumed.
+The separating conjunction of I/O permissions with the
+same source place encodes non-deterministic choice between
+such permissions. Moreover, co-recursion enables repeated
+as well as non-terminating sequences of I/O operations.
+Example 4 (I/O speciﬁcation for a server).
+P(p, S) = Q(p, S) ⋆R(p, S)
+Q(p1, S) = ∃v, p2, p3. in(p1, v, p2) ⋆out(p2, v, p3)
+⋆P(p3, S ∪{v})
+R(p1, S) = ∃p2. out(p1, “Ping”, p2) ⋆P(p2, S)
+The formula φ = token(p) ⋆P(p, ∅) speciﬁes a non-
+terminating server that repeatedly and non-deterministically
+chooses between receiving and forwarding a value v or
+sending a “Ping” message. All received values v are recorded
+in the state S, which is initially empty. Input parameters, like
+v in in here, are existentially quantiﬁed to avoid imposing
+restrictions on the values received from the environment.
+To enforce certain state updates between I/O operations,
+it is useful to associate permissions also with certain internal
+(that is, non-I/O) operations and include those internal
+permissions in an I/O speciﬁcation. For instance, the above
+server could include an internal operation to reset the state
+S when it exceeds a certain size.
+I/O speciﬁcations induce a transition system and hence
+have a trace semantics. The traces can intuitively be seen as
+the sequences of I/O permissions consumed by possible exe-
+cutions of the programs that satisfy it. We write Tr(φ) for the
+set of traces of an I/O speciﬁcation φ. In the example above,
+the sequence in(5) · out(5) · out(“Ping”) · in(7) · out(7) is
+one example of a trace of φ. Note that the I/O permissions’
+place arguments do not appear in the trace.
+3. From Tamarin models to I/O speciﬁcations
+In this section, we present our transformation of a
+Tamarin protocol model, given as an MSR system R, into
+a set of I/O speciﬁcations ψi, one for each protocol role i.
+The ψi serve as program speciﬁcations, against which the
+roles’ implementations ci are veriﬁed (Section 4). Our main
+result is an overall soundness guarantee stating that the traces
+of the complete system C(c1, . . . , cn, E), composed of the
+roles’ veriﬁed implementations ci and the environment E, are
+contained in the traces of the protocol model R (Section 5):
+C(c1, . . . , cn, E) ≼t R.
+Hence, any trace property Φ proven for the protocol model,
+i.e., Trt(R) ⊆Φ, is inherited by the implementation.
+The sound transformation of an MSR protocol model R
+into a set of I/O speciﬁcations is challenging:
+1) Tamarin’s MSR formalism is very general and offers
+great ﬂexibility in modeling protocols and their prop-
+erties. We want to preserve this generality as much as
+possible.
+2) For the transformation to I/O speciﬁcations, we require
+a separate description of each protocol role and of the
+environment, with a clear interface between the two
+parts. This interface will be mapped to I/O permissions
+in the I/O speciﬁcation and eventually to (e.g., I/O or
+cryptographic) library calls in the implementation.
+3) The protocol models operate on abstract terms, whereas
+the implementation manipulates bytestrings. We need
+to bridge this gap in a sound manner.
+Our solution is based on a general encoding of the
+MSR semantics into I/O speciﬁcations. To separate the
+different roles’ rewrite rules from each other and from
+the environment, we partition the fact symbols and rewrite
+rules accordingly. The interface between the roles and the
+environment is deﬁned by identifying I/O fact symbols, for
+which we introduce separate I/O rules. This isolates the I/O
+operations from others and allows us to map them to I/O
+permissions and later to library functions. Moreover, we keep
+I/O speciﬁcations as abstract as possible by using message
+terms rather than bytestrings. We handle the transition to
+bytestrings in the code veriﬁcation process (Section 4).
+The proofs for the results stated in this section can be
+found in the full version of this paper [20].
+3.1. Protocol format
+We introduce a few mild formatting assumptions on
+the Tamarin model. They mostly correspond to common
+modeling practice and serve to cleanly separate the different
+protocol roles and the environment. They do not restrict
+4
+1080
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+Tamarin’s expressiveness for modeling protocols. In particu-
+lar, all protocols in the Tamarin distribution would ﬁt our
+assumptions after some minor modiﬁcations.
+3.1.1. Rule format. To model an n-role protocol, we use a
+fact signature of the form
+Σfacts = Σact ⊎Σenv ⊎
+
+]
+1≤i≤n
+Σi
+state
+
+,
+where (i) Σact, Σenv, and Σi
+state are mutually disjoint sets of
+fact symbols, used to construct action facts (used in transition
+labels), environment facts, and each role i’s state facts; (ii)
+Σenv contains two disjoint subsets, Σin and Σout, of input
+and output fact symbols such that Fr, in ∈Σin, out ∈Σout,
+and K ∈Σenv \(Σin ∪Σout); and (iii) there is an initialization
+fact symbol Setupi ∈Σin for each protocol role i.
+We consider MSR systems R whose rules are given by:
+R = Renv ⊎
+
+]
+1≤i≤n
+Ri
+
+.
+Here, Renv and the Ris are pairwise disjoint rule sets
+containing rules for the environment and each protocol role.
+Protocol rules use input and output facts to communicate with
+the environment. For example, the following two environment
+rules transfer a message to and from the attacker’s knowledge:
+[out(x)]
+[]−→[K(x)]
+[K(x)]
+[]−→[in(x)].
+(2)
+The attacker rules MDΣ, the freshness rule, and the rules
+that generate the Setupi facts (cf. Example 2), are also in
+Renv. The protocol rules for role i (and only those) use role
+state facts from Σi
+state to keep track of the role’s progress.
+We require that their ﬁrst ki ≥1 arguments are reserved for
+role i’s parameters from the Setupi fact, and that the ﬁrst
+of these parameters is the thread identiﬁer rid.
+For a more detailed speciﬁcation of the format restrictions
+on the rewrite rules, see Appendix A.
+3.1.2. Protocol messages. We support both the usual ways
+of checking received messages using pattern matching and
+explicit equality checks. The latter are formalized, as usual in
+Tamarin, as a combination of action facts labeling the given
+rule (e.g., Eq(x, hash(z))) and restrictions associating these
+facts with (a boolean combination of) equalities (e.g., x =E y
+whenever Eq(x, y) occurs in a trace). These restrictions act
+as assumptions on the traces considered by Tamarin.1 The
+I/O speciﬁcations resulting from our procedure require that
+these equality checks are implemented (Section 3.3).
+Furthermore, we recommend, but do not require, the
+replacement of nested pairs and tuples by formats [29]. These
+are user-deﬁned function symbols, along with projections for
+all arguments, that behave like tuples. In the implementation,
+each format is mapped to a combination of tags (i.e.,
+1. To handle these, we use a modiﬁed, but equivalent MSR semantics,
+where the equalities are checked at each step rather than globally on traces.
+This semantics allows us to translate these checks into the I/O speciﬁcations
+and thus enforce their correct implementation. For simplicity, we present
+our results under the standard semantics and refer to [20] for more details.
+constant bytestrings), ﬁxed-size ﬁelds, and variable-sized
+ﬁelds prepended with a length ﬁeld. Formats help to soundly
+relate term and bytestring messages, if we prove that they
+are unambiguous and non-overlapping (see Section 4).
+Example 5 (Difﬁe-Hellman formatting). The rules for Al-
+ice’s role from Example 2 satisfy the format conditions above.
+The initiator setup rule produces a fact SetupAlice(init),
+whose parameters init appear as the ﬁrst parameters of the
+state facts Step1
+Alice(init, . . .) and Step2
+Alice(init, . . .). Both
+protocol rules produce an out fact to send a message. The
+second rule also consumes an in fact to receive a message.
+To follow our recommendation to use formats, we can model
+the message ⟨0, B, A, gx, Y ⟩being signed as a format with
+ﬁve ﬁelds, rather than a tuple. Note that, at the Tamarin level,
+tuples containing unique tags to distinguish them behave
+essentially the same as formats.
+3.2. Transformation to component models
+We decompose an MSR system R that satisﬁes our
+format requirements into several component models, one
+for each role, and a separate environment model, which
+includes the attacker. In doing so, we move from a global
+view of the protocol, useful for security analysis, to a local
+view of each role, more appropriate for their implementation.
+In Section 3.3, we transform the component models into
+I/O speciﬁcations for the programs implementing them.
+As a preparatory step, we reﬁne R into an interface model
+which starts decoupling the roles from the environment by
+introducing separate rewrite rules for their interactions.
+3.2.1. Interface model. The protocol roles and the environ-
+ment interact using input and output facts, including the
+built-in facts Fr, in, and out. For example, the protocol roles
+receive messages by consuming in facts produced by the
+attacker. The interface model adds an I/O rule for each such
+fact, which turns it into a buffered version. These I/O rules
+will later be implemented as calls to library functions.
+Let Σ−
+in be the set Σin without the initialization facts
+Setupi. We ﬁrst add to the fact signature, for each non-setup
+input or output fact F and role i, a copy (the “buffer”) Fi:
+Σi
+buf = {Fi | F ∈Σ−
+in ∪Σout}
+Σi
+role = Σi
+state ∪Σi
+buf
+Σ′
+facts = Σact ⊎Σenv ⊎(U
+i Σi
+role).
+We then replace the facts used by the protocol rules as
+follows. For each role i, let R′
+i be the set of rules obtained
+by replacing, in all rules in Ri, each fact F(t1, . . . , tk) such
+that F ∈Σ−
+in ∪Σout by Fi(rid, t1, . . . , tk). The latter fact
+has rid as an additional parameter.
+We also introduce the set Rio of I/O rules, which translate
+between input or output facts and their buffered versions.
+The set Rio contains the following rules, for each role i.
+[F(x1, . . . , xk)]
+[]−→[Fi(rid, x1, . . . , xk)]
+for F ∈Σ−
+in
+[Gi(rid, x1, . . . , xk)]
+[]−→[G(x1, . . . , xk)]
+for G ∈Σout.
+5
+1081
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+For reasons that will become clear later, we also count
+the role setup rules as I/O rules. Hence, we move them from
+Renv to Rio, calling the remaining environment rules R−
+env.
+Finally, the interface model is speciﬁed by:
+Rintf = R−
+env ⊎Rio ⊎(
+]
+i
+R′
+i).
+(3)
+Example 6. Continuing Example 5, we introduce the buffer
+facts inAlice, outAlice, and FrAlice. Recall that rid is included
+in init. This yields the modiﬁed set R′
+Alice for the role Alice:
+[SetupAlice(init), FrAlice(rid, x)]
+[]−→
+[Step1
+Alice(init, x), outAlice(rid, gx)]
+[Step1
+Alice(init, x), inAlice(rid, sign(⟨0, B, A, gx, Y ⟩, kB))]
+[Secret(Y x)]
+−−−−−−−−→
+[Step2
+Alice(init, x, Y ), outAlice(rid, sign(⟨1, A, B, Y, gx⟩, kA))].
+We show that the interface model reﬁnes the original one.
+Lemma 1. Rintf ≼′ R.
+3.2.2. Decomposition. We can now decompose the interface
+model into the role components and the environment. In
+a nutshell, we assign the rules R′
+i to the component for
+role i and the rules R−
+env, including the attacker rules MDΣ,
+to the environment. The protocol communicates with the
+environment using the I/O rules. We split them into two
+synchronized parts, one belonging to the environment
+and the other to the protocol. Below, we show that the
+re-composed system implements the interface model.
+We explain the splitting of the I/O rules into a protocol
+part and an environment part using the example rule
+[outi(rid, x)]
+[]−→[out(x)].
+This rule models instance rid of role i outputting a message
+to the attacker. We split this rule into two parts:
+[outi(rid, x)]
+[λout(rid,x)]
+−−−−−−−→[],
+(4)
+[]
+[λout(rid,x)]
+−−−−−−−→[out(x)],
+(5)
+where the ﬁrst rule belongs to role i and the second to the
+environment. We label both rules with a new action fact
+λout(rid, x), which uniquely identiﬁes the original I/O rule
+and has as parameters all variables occurring in it. We call
+this fact a synchronization label, as we later use it for synchro-
+nizing the two parts to recover the original rule’s behavior.
+We similarly split all rules in Rio, yielding two sets Ri
+io and
+Re
+io belonging to the protocol role i and to the environment.
+The components for each protocol role i and for the
+environment are then deﬁned as follows.
+Ri
+role = R′
+i ⊎Ri
+io
+Re
+env = R−
+env ⊎Re
+io.
+(6)
+Note that these two rule sets operate on pairwise disjoint
+sets of facts, namely over the signatures Σi
+role and Σenv,
+respectively. Hence they can interact with each other only
+by synchronizing the split I/O rules.
+Example 7 (Component for Difﬁe-Hellman). The MSR
+system RAlice
+role
+for Alice’s role contains the two protocol
+rules in R′
+Alice from Example 6, the output rule (4) described
+above, and similar rules for inputs and freshness generation.
+In addition, it contains the protocol part of the split setup
+rule for Alice’s role from Example 2, i.e.
+[]
+[λAlice(rid,A,kA,B,pkB)]
+−−−−−−−−−−−−−−−→[SetupAlice(rid, A, kA, B, pkB)].
+The traces of the recomposition of all roles with the
+environment are included in the traces of the interface
+model. We deﬁne two kinds of parallel compositions
+on LTSs (induced here by the MSR systems’ transition
+semantics). We give the intuition here and refer the reader
+to Appendix B for the formal deﬁnitions. The (indexed)
+parallel composition ||| interleaves the transitions of a family
+of component systems without communication. The (binary)
+parallel composition ∥Λ synchronizes transitions with labels
+from the set Λ, resulting in a transition labeled [], and
+interleaves all other transitions. We then show:
+Lemma 2 (Decomposition). Let Ri
+role(rid) be the MSR
+system Ri
+role for a ﬁxed thread id rid. Then
+(|||i,ridRi
+role(rid)) ∥Λ Re
+env ≼Rintf,
+where Λ = S
+i{aθ | ∃l, r. l
+a
+−→r ∈Ri
+io ∧range(θ) ⊆M}
+consists of all ground instances of synchronization labels.
+3.3. Transformation to I/O speciﬁcations
+Finally, we extract an I/O speciﬁcation ψi from each
+role i’s MSR system Ri
+role, which serves as the speciﬁcation
+for the role’s implementation at the code level. ψi is
+parameterized by the thread identiﬁer rid, and it associates
+a token with the starting place p of the predicate Pi:
+ψi(rid) = ∃p. token(p) ⋆Pi(p, rid, []).
+The predicate Pi(p, rid, S)’s parameters are a place p, a
+thread identiﬁer rid, and a state S of the MSR system Ri
+role
+(i.e., a multiset of ground facts). Note that ψi invokes Pi with
+the initial state, i.e., the empty multiset [] (see Section 2.1).
+It is deﬁned co-recursively as the separating conjunction over
+the formulas φR, one for each rewrite rule R ∈Ri
+role:
+Pi(p, rid, S) = ⋆R∈Ri
+role φR(p, rid, S).
+φR encodes an application of the rewrite rule R to
+the model state S. It contains an I/O or internal permis-
+sion R(p, . . . , p′), which an implementation must hold in
+order to execute the program part implementing R. φR co-
+recursively calls Pi(p′, rid, S′) with the target place p′ of
+R and the updated state S′. We deﬁne the formulas φR
+separately for protocol rules in R′
+i and for I/O rules in Ri
+io.
+Consider a protocol rule R
+=
+l
+a
+−→
+r
+∈
+R′
+i
+with variables x. We associate the internal permission
+R(p, x, l′, a′, r′, p′) to R, and deﬁne φR(p, rid, S) by
+φR(p, rid, S) = ∀x, l′, a′, r′.
+M(l′, s) ∧l′ =E l ∧a′ =E a ∧r′ =E r ∧ΦR(x)
+=⇒∃p′. R(p, x, l′, a′, r′, p′) ⋆Pi(p′, rid, U(l′, r′, S))
+where M(l′, S) = (l′ ∩m Flin ⊆m S) ∧(set(l′) ∩Fper ⊆
+set(S)), U(l′, r′, S) = S\m(l′∩mFlin)∪m r′, and ΦR is the
+6
+1082
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+conjunction of all (boolean combinations of) equality checks
+(mod E) that the rule R performs using a combination of ac-
+tion facts in a and associated restrictions (cf. Section 3.1.2).
+This formula speciﬁes that, for any instantiation (mod E)
+l′, a′, r′ of the facts in the rule, if the matching condition
+M(l′, S) and the equational formula ΦR are satisﬁed, then
+we have an internal permission R to execute the rule’s
+implementation. This yields an updated state U(l′, r′, S), on
+which Pi is co-recursively applied to produce the permissions
+for the rest of the execution. The formula ΦR thus enforces
+that the implementation performs the explicit equality checks
+on messages speciﬁed in the rule R (see also Section 4.3.4).
+We deﬁne similar formulas for all I/O rules. For output
+rules of the form RG = [Gi(rid, x)]
+[λG(rid,x)]
+−−−−−−−→[] ∈Ri
+io,
+we deﬁne the formula
+φRG(p, rid, S) = ∀x. Gi(rid, x) ∈m S
+=⇒∃p′. RG(p, rid, x, p′) ⋆Pi(p′, rid, S \m [Gi(rid, x)])),
+which grants the I/O permission RG(p, rid, x, p′) for any
+rid and terms x for which the fact Gi(rid, x) exists in S. Pi
+is called co-recursively with the target place of the permission
+and the updated state, where Gi(rid, x) is removed.
+For input rules RF = []
+[λF (rid,z)]
+−−−−−−−→[Fi(rid, z)] ∈Ri
+io,
+we deﬁne the formula
+φRF (p, rid, S) =
+∃p′, z. RF(p, rid, z, p′) ⋆Pi(p′, rid, S ∪m [Fi(rid, z)])),
+which grants the I/O permission RF(p, rid, z, p′) to read
+inputs z for any rid. Note that the input variables z
+are existentially quantiﬁed (cf. Section 2.2) and the fact
+Fi(rid, z) is added to the state in the co-recursive call to Pi.
+Example 8 (I/O speciﬁcation for Difﬁe-Hellman). Continu-
+ing Examples 6 and 7, the component system is translated
+into an I/O speciﬁcation that features the following conjunct
+corresponding to the rule for the second step of Alice’s role:
+φAlice2(p, rid, S) = ∀init, x, Y, l′, a′, r′.
+M(l′, S) ∧
+l′ =E {|Step1
+Alice(init, x), inAlice(rid, sign(⟨0, B, A, gx, Y ⟩, kB))|} ∧
+a′ =E {|Secret(Y x)|} ∧
+r′ =E {|Step2
+Alice(init, x, Y ), outAlice(rid, sign(⟨1, A, B, Y, gx⟩, kA))|} ∧
+=⇒∃p′. Alice2(p, init, x, Y, l′, a′, r′, p′)⋆Pi(p′, rid, U(l′, r′, S)).
+Namely, the permission to execute this step is granted,
+provided S contains instantiations of the previous state fact
+and the correct input fact, and that S is updated by replacing
+them with the new state and output facts. Recall that init
+abbreviates rid, A, kA, B, pkB.
+The construction of ψi from Ri
+role can be seen as an
+instance of the method presented in [19] and by the soundness
+result from that paper, we get the following trace inclusion.
+Theorem 1 ([19]). For all MSR systems Ri
+role(rid), where
+the fresh name rid instantiates the thread id in all facts,
+π(ψi(rid)) ≼Ri
+role(rid),
+where π = πint ◦πext relabels (the LTS induced by) ψi(rid).
+Here, πint and πext are the identity functions except on the
+following labels:
+πint(R(x, l′, a′, r′)) = a′
+for R ∈R′
+i
+πext(F(rid, x)) = [λF (rid, x)]
+for F ∈Ri
+io.
+4. Veriﬁed protocol implementations
+The implementation step consists of providing the code
+ci(rid) implementing each role i and proving that it satisﬁes
+its I/O speciﬁcation ψi(rid). The challenge here is bridging
+the abstraction gap between the message terms in the I/O
+speciﬁcations ψi(rid) and the bytestring messages manipu-
+lated by the code. In Section 4.1, we present an extension of
+the code veriﬁers’ semantics of Hoare triples to accommodate
+such abstractions. In Section 4.2, we explain how we
+concretely relate bytestrings to terms. Finally, in Section 4.3,
+we show how we verify the roles’ I/O speciﬁcations based
+on appropriate I/O and cryptographic library speciﬁcations.
+4.1. Code veriﬁcation with abstraction
+In Penninckx et al.’s program logic [28], the statement
+that a program c satisﬁes an I/O speciﬁcation φ is expressed
+as the Hoare triple
+{φ} c {true},
+(7)
+with the I/O speciﬁcation φ in the precondition and the post-
+condition true. We assume that the program c has an LTS
+semantics C given by the programming language’s opera-
+tional semantics, where the labels represent the program’s
+I/O (and internal) operations and the program’s traces consist
+of sequences of such labels. We leave the exact semantics
+unspeciﬁed here, to keep our formulation generic with respect
+to the programming language used. The semantics of the
+Hoare triple (7) implies that the program c’s traces are
+included in the traces of φ, i.e. C ≼φ.
+To bridge the gap between message terms and bytestring
+messages, we extend Penninckx et al.’s approach by intro-
+ducing an abstraction or relabeling function α between the
+implementation’s transition labels and the I/O speciﬁcation’s
+transition labels. For example, α may map a concrete label
+inc(l) to an abstract version ina(s), where l is a list
+implementation and s is the mathematical set of l’s elements.
+We also extend the soundness assumption on the code veriﬁer
+accordingly.
+Assumption 1 (Veriﬁer assumption).
+⊢α {φ} c {true} =⇒α(C) ≼φ.
+This means that a successful veriﬁcation implies that
+the program traces, abstracted under α, are included in the
+I/O speciﬁcation φ’s traces. In Appendix C, we sketch a
+semantics for Hoare triples that entails this trace inclusion.
+To ensure this extension’s soundness, we require that
+the I/O operations’ contracts are consistent with α, i.e., they
+imply a correct mapping of transition labels under α. More
+7
+1083
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+precisely, suppose the speciﬁcation of such an operation op
+induces a concrete transition label opc(a), where a are op’s
+inputs and outputs, and the I/O permission in the precondition
+induces the abstract transition label opa(b). Then we deﬁne
+α as lifting from an (overloaded) function α that maps
+concrete parameter types to abstract ones, i.e., α(opc(a)) =
+opa(α(a)). We therefore require that b = α(a) follows from
+op’s precondition (for arguments) and postcondition (for
+return values). Moreover, we allow α to be a partial function,
+in which case the speciﬁcation must also imply that the
+concrete arguments are in its domain.
+Application to role veriﬁcation. We now apply this idea to
+the veriﬁcation of the protocol’s role implementations (using
+Gobra in our case study). That is, we wish to establish
+⊢α {ψi(rid)} ci(rid) {true}
+(8)
+for a suitable α. An obvious possibility would be to deﬁne
+an abstraction function α : B⋆→M from bytestrings to
+messages and then lift it to trace labels. For example, a
+concrete inc(rid, b) would be abstracted to α(inc(rid, b)) =
+ina(rid, α(b)). However, this mapping assumes that each
+bytestring corresponds to exactly one term, and consequently
+that every bytestring can be uniquely parsed as a term. To
+minimize our assumptions, however, we do not a priori want
+to exclude collisions between bytestrings, i.e., we allow a
+bytestring to have several term interpretations.
+In Section 4.2, we therefore relate bytestrings and terms
+using a concretization function γ : M →B⋆. Since a
+bytestring may be related to several terms, we cannot deﬁne
+a function α mapping concrete labels to abstract I/O labels.
+Our solution is based on adding ghost term parameters to the
+I/O operations in the implementation code. For example, the
+operation receiving a bytestring b gets an additional ghost
+return value term m with b = γ(m) and the corresponding
+transition label is inc(rid, (b, m)). These ghost terms aid
+veriﬁcation (see Section 4.3), but are not present in the
+executable code. We instantiate α to the function π′
+ext that
+removes the bytestrings from the concrete I/O operation’s
+labels and keeps only the ghost terms used for the reasoning.
+For instance, π′
+ext(inc(rid, (b, m))) = ina(rid, m). This
+function is deﬁned only for b = γ(m), which is guaranteed
+by the receive operation’s contract (cf. Figure 2).
+Our proposed method enables us to verify that pre-
+existing real-world code satisﬁes I/O speciﬁcations produced
+from abstract Tamarin models (see Section 6).
+4.2. Relating terms and bytestrings
+In Tamarin’s MSR semantics, messages in M are ground
+terms. We model the concrete messages and the operations
+on them as bytestring algebras deﬁned as Σ-algebras B with
+the set of bytestrings B⋆as the carrier set. To relate terms to
+bytestrings, we use a surjective Σ-algebra homomorphism γ :
+M →B, which maps (fresh and public) names to bytestrings
+and the signature’s symbols to functions on bytestrings:
+γ(n) = nB
+for n ∈N
+γ(f(t1, . . . , tk)) = f B(γ(t1), . . . , γ(tk))
+for f ∈Σk
+ensures seq(ciph) = encB(seq(key), seq(msg))
+func encrypt(key, msg []byte) (ciph []byte)
+ensures ok =⇒seq(c) = encB(seq(k), seq(m))
+func decrypt(k, c []byte) (m []byte, ok bool)
+requires token(?p1) && in(p1,?m,?p2)
+ensures
+ok =⇒token(p2) && seq(b) = γ(m)
+ensures !ok =⇒token(p1) && in(p1,m,p2)
+func receive() (b []byte,ghost m term,ok bool)
+Figure 2. Simpliﬁed speciﬁcations for encryption, decryption, and receive.
+The function seq abstracts an in-memory byte array to B. We omit Gobra’s
+memory annotations needed to reason about heap data structures and
+conditions on the size of bytestrings.
+With the requirement that γ is surjective, we avoid junk
+bytestrings that do not represent any term (i.e., the algebra
+B is term-generated). This is without loss of generality as
+there are countably inﬁnitely many public names that can
+be mapped to potential junk bytestrings.
+Note that Σ-algebra homomorphisms are required to
+preserve equalities. For example, a symbolic equality
+dec(k, enc(k, m)) =E m on terms implies the equality
+decB(key, encB(key, msg)) = msg
+on bytestrings. In what follows, we will use the bytestring
+algebra’s functions in our cryptographic library’s speciﬁca-
+tion. This enables us to reason about message parsing and
+construction.
+4.3. Verifying the I/O speciﬁcation
+The veriﬁcation of the I/O speciﬁcation generally follows
+the same approach as in previous work [28], [19]. Every I/O
+operation performed by the code requires that a correspond-
+ing I/O permission is held. The required I/O permissions
+must be obtained from the I/O speciﬁcation. However, our
+introduction of abstraction makes reasoning about what is
+sent and, in particular, received more challenging.
+4.3.1. Sending and receiving messages. For a sent pair of
+a bytestring and a ghost message (in M), we must verify that
+the I/O speciﬁcation permits sending the message. Similarly,
+for a received pair of a bytestring and a ghost message, we
+must verify that the received message matches a term in the
+I/O speciﬁcation, describing the expected protocol message.
+We refer to such terms as patterns. In Example 8, there is
+a single pattern, namely sign(⟨0, B, A, gx, Y ⟩, kB), where
+the unconstrained Y is a variable and all other entities are
+constrained by the fact Step1
+Alice(init, x).
+Verifying that the I/O speciﬁcation permits sending
+a message boils down to verifying that the bytestring
+γ(m) for a permitted message m was constructed and
+then sent. This becomes straightforward by equipping the
+cryptographic library with suitable speciﬁcations. Consider
+the simpliﬁed speciﬁcation of an encryption function shown
+in Figure 2. The function seq abstracts an in-memory
+byte array into a mathematical sequence of bytes, i.e., an
+element of B⋆. Due to the speciﬁcation and the surjectivity
+8
+1084
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+1 // seq(key) = γ(k) holds
+2 ciph, c, ok := receive(); if !ok {return}
+3 assert seq(ciph) = γ(c)
+4 msg, ok := decrypt(key, ciph); if !ok {return}
+5 assert ∃u. seq(msg) = γ(u)
+6
+&& seq(ciph) = γ(enc(k, u))
+7 PaR1(m, ...) // using the pattern requirement
+8 assert ∃w. c =E enc(k, w) && seq(msg) = γ(w)
+Figure 3. Reasoning about receiving and parsing a ciphertext.
+req token(p) && PAnn(p,r,S) && Step1
+Ann(k)∈mS
+req ∃x. γ(enc(k,x)) = γ(m)
+ens token(p) && PAnn(p,r,S) && ∃x′. m =E enc(k,x′)
+ghost func PaR1(m,p,r,S,k)
+Figure 4. Ghost function for the pattern requirement of Example 9. There
+is the single pattern enc(k, x), where k is a constant and x is a variable.
+of γ, the result of encrypt(key, msg) is equal to
+γ(enc(mkey, mmsg)) for some messages mkey and mmsg,
+where γ(mkey) = seq(key) and γ(mmsg) = seq(msg).
+To verify the construction of an entire message, we combine
+the information of all such calls.
+Verifying that a message m returned by receive()
+(cf. Figure 2) matches a pattern t is more involved. Using
+our cryptographic library’s speciﬁcations, we can verify that
+γ(m) is equal to γ(tσ), where the substitution σ instantiates
+the variables of t with messages. Unfortunately, this does
+not entail that the received message m matches the pattern t.
+The function γ may have collisions and hence γ(m) may
+equal γ(tσ), while m and tσ differ. We address this issue
+by requiring that instances of the I/O speciﬁcation’s patterns
+do not collide with other bytestrings; we discuss below how
+we justify this requirement.
+Deﬁnition 1. The pattern requirement for a pattern t ∈T
+is deﬁned by
+γ(tσ) = γ(m) =⇒∃σ′. m =E tσ′.
+(PaR(t))
+This requirement states that if messages m and tσ
+coincide under γ, then m must match the pattern t (mod E)
+with some substitution σ′, which may differ from σ.
+We need the pattern requirement for all patterns of
+the I/O speciﬁcation. For code veriﬁcation, we express the
+pattern requirement as a ghost function whose pre- and
+postcondition are the left-hand and right-hand side of the
+pattern requirement, for each pattern respectively. To apply
+the pattern requirement, the corresponding ghost function is
+called in the code. In Sections 4.3.2 and 4.3.3, we will explain
+how to prove the pattern requirement for a given pattern t.
+Example 9 (Checking a ciphertext). Consider a simple
+protocol where a role Ann expects a message matching
+the pattern enc(k, x), where k is a pre-shared key. We
+use the fact Step1
+Ann(k) to bind k in the model state.
+Figure 3 shows part of an implementation. The variable key
+stores the pre-shared key, expressed as seq(key) = γ(k).
+After successfully receiving a bytestring ciph with a
+message c, seq(ciph) = γ(c) holds due to receive’s
+speciﬁcation (cf. Figure 2). Next, the code decrypts ciph.
+If successful, ciph equals the bytestring γ(enc(k,u))
+for some message u with seq(msg) = γ(u) (lines 5–6)
+by decrypt’s postcondition (cf. Figure 2) and γ being
+a surjective homomorphism. Furthermore, we know that
+γ(enc(k,u)) equals γ(c), but not yet that the received
+message c matches the pattern enc(k, x) (line 8). For this, we
+apply the pattern requirement by calling the ghost function
+PaR1 (cf. Figure 4). The constant k of the pattern enc(k, x)
+is passed as an argument to the call, and related to the
+state facts of the I/O speciﬁcation via the ghost function’s
+precondition (with Step1
+Ann(k)∈mS).
+4.3.2. Deriving the pattern requirement. The pattern re-
+quirement for a given pattern t can be derived from two
+more basic properties. We deﬁne these properties here and
+prove this implication. In Section 4.3.3, we will discuss
+assumptions and justiﬁcations regarding these properties.
+The ﬁrst property is image disjointness, which has two
+parts: (i) the images of (public and fresh) names under γ are
+pairwise disjoint and (ii) the image of any function f B for
+f ∈Σ neither collides with the image of any other function
+gB, for g ∈Σ, nor with the image of names under γ.
+Deﬁnition 2 (Image disjointness). Image disjointness holds
+under the following two conditions:
+(i) γ is injective on the set of names N and
+(ii) for all f, g ∈Σ such that f ̸= g,
+img(f B) ∩(img(gB) ∪γ(N)) = ∅.
+(IDf,g)
+The second property is pattern injectivity for a pattern t.
+This constitutes a much weaker form of standard injectivity.
+It is required to hold only for subterms t′ ⊑t and where,
+again, equality is guaranteed only modulo a substitution σ′.
+Deﬁnition 3 (Pattern injectivity). Pattern injectivity holds
+for a pattern t if, for all f ∈Σ occurring in t,
+f(t′
+1, ..., t′
+k) ⊑t ∧f B(γ(t′
+1σ), ..., γ(t′
+kσ)) = f B(b1, ..., bk)
+=⇒∃σ′. b1 = γ(t′
+1σ′) ∧... ∧bk = γ(t′
+kσ′).
+(PaIf(t))
+Proposition 1. Given a linear pattern t (where every
+variable occurs only once), image disjointness and pattern
+injectivity for t imply the pattern requirement for t.
+Proof. We prove the proposition’s statement for all t′ ⊑t
+by induction on t′.
+We split non-linear patterns into multiple linear ones. For
+instance, the non-linear pattern t = ⟨x, hash(x)⟩can be split
+into t1 = ⟨x, _⟩and t2 = ⟨_, hash(x)⟩(where _ matches
+any term). Conceptually, we then ﬁrst match a given term
+⟨u, hash(u)⟩against t1, which binds x to u, and then against
+⟨_, hash(u)⟩= t2[x 7→u]. This is equivalent to matching
+against t. This turned out to be simpler to work with than a
+single linearized pattern with additional equality constraints.
+9
+1085
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+4.3.3. Assumptions and proof obligations. We discuss
+assumptions and proof obligations regarding image disjoint-
+ness and pattern injectivity. In doing so, we distinguish
+cryptographic operations from formats.
+Since we are working in a symbolic (Dolev-Yao) model,
+which assumes perfect cryptography, we maintain this as-
+sumption for cryptographic operations at the bytestring level
+in the following form.
+Assumption 2 (Cryptographic operations). We assume that
+(i) γ is injective on the set of names N,
+(ii) (IDf,g) holds for cryptographic f ∈Σ and all g ∈Σ,
+(iii) (PaIf(t)) holds for all protocol patterns t and all cryp-
+tographic f ∈Σ occurring in t.
+We justify these assumptions by noting that we can expect
+collisions violating these assumptions to occur only with
+negligible probability in good cryptographic libraries. Also
+recall that pattern injectivity is a much weaker requirement
+than standard injectivity.
+The situation is different for formats (cf. Section 3.1.2).
+We can expect that the formats of a well-designed protocol
+are unambiguously parseable (i.e., injective and hence pattern-
+injective) and mutually disjoint (i.e., image disjoint). We
+therefore require that these properties are proved for formats,
+e.g., using the techniques proposed in [29], [30].
+Remark. An obvious way to achieve image disjointness and
+pattern injectiveness is to tag each construct of the bytestring
+algebra with a different bytestring. This approach is followed,
+e.g., in [19] but it is unrealistic for real protocols.
+Alternatively, image disjointness holds if different opera-
+tions result in differently sized bytestrings. For operations
+with varying output sizes, such as stream encryption, this
+may require restricting the allowed argument sizes in the
+implementation. In some cases, this approach may allow us
+to prove image disjointness even for some cryptographic
+operations. Indeed, we do this for a pre-existing implementa-
+tion of the WireGuard protocol, which does not use tagging.
+However, this approach also has its limitations; for example,
+AES-256 or SHA-256 have the same output size.
+4.3.4. Proving term equalities. Obligations to prove term
+equalities during code veriﬁcation arise from equality con-
+straints in the I/O speciﬁcation. However, while the code
+can check that an equality holds on the bytestring level (e.g.,
+γ(x) = γ(hash(z))), this does not in general imply the pre-
+scribed term equality (e.g., x =E hash(z)). Following [31],
+[32], [33], [34], we can reasonably assume that collisions
+violating this implication do not occur (with overwhelming
+probability) in actual protocol executions and thus prove
+the speciﬁcation under the condition that bytestring equality
+implies term equality for the two concrete bytestrings at
+hand (e.g., γ(x) = γ(hash(z)) =⇒x =E hash(z)). We call
+this a collision-freedom assumption for a given equation.
+4.3.5. Summary. The veriﬁcation of the role implementa-
+tions, i.e., the Hoare triples ⊢π′
+ext {ψi(rid)} ci(rid) {true},
+relies on the following assumptions:
+1) contracts for the I/O and cryptographic libraries, where
+the former’s operations are consistent with π′
+ext;
+2) the pattern requirement for each pattern t occurring in
+the I/O speciﬁcation; and
+3) collision-freedom for all equalities ΦR occurring in the
+I/O speciﬁcation.
+We suggest to also prove the pattern requirement for a given
+pattern t whenever possible, e.g., by showing image disjoint-
+ness and pattern injectivity (at least) for formats and assuming
+them for the cryptographic operations (Assumption 2).
+5. Concrete environment and overall soundness
+We now derive an overall soundness result for our
+approach, which relates the abstract Tamarin model to the
+concrete protocol implementation.
+5.1. Concrete environment
+To formulate such a result, we must ﬁrst deﬁne a
+concrete environment model E, including a concrete attacker,
+which can interact with the roles’ implementations. These
+implementations communicate with the environment using
+I/O library functions, which include non-ghost and ghost
+parameters: they send and receive both bytestrings (used
+by the program) and ghost terms (used for the reasoning),
+related by γ. The ghost parameters should be reﬂected in E’s
+interface, i.e., its synchronization labels. Moreover, to ﬁt into
+an overall soundness result, Emust be trace-included in Re
+env.
+Hence, the concrete attacker must not be more powerful than
+the Dolev-Yao attacker, i.e., we must prevent attacks at the
+bytestring level such as exploiting collisions.
+To achieve this, we construct the concrete environment
+from the term-level environment Re
+env by changing only
+its interface with the protocol. Concretely, we rename and
+extend every synchronization label [λF (rid, x)] of (the LTS
+induced by) Re
+env to the label F(rid, γ(x), x) in E and we
+keep the labels of Re
+env’s internal actions. Note that applying
+the relabeling πext ◦π′
+ext to E recovers Re
+env’s original labels.
+Hence, we record the following property.
+Proposition 2. πext(π′
+ext(E)) ≼Re
+env.
+5.2. Overall soundness result
+Our goal now is to show that any trace property proved
+for the Tamarin model is preserved in the concrete system
+ |||i,rid πint(Ci(rid))
+
+∥Λ′ E,
+which is composed of the veriﬁed programs’ LTSs Ci and
+the concrete environment E, where the programs’ internal
+operations are mapped back to their action fact arguments and
+Λ′ = (πext ◦π′
+ext)−1(Λ) synchronizes I/O permissions that
+also include bytestrings beside terms. Note that our soundness
+result assumes that the role implementations are already
+veriﬁed and that the veriﬁer assumption (Assumption 1) holds.
+The veriﬁcation of the role implementations themselves and
+the related assumptions are discussed in Section 4.
+10
+1086
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+R
+Rintf
+∥Λ
+ |||i,rid Ri
+role(rid)
+
+Re
+env
+π
+ ψi(rid)
+
+∥Λ
+
+|||i,rid π
+ π′
+ext(Ci(rid))
+
+πext
+ π′
+ext(E)
+
+∥Λ′
+|||i,rid πint
+ Ci(rid)
+
+E
+≼′
+≼
+≼
+≼
+≼
+≼
+(Lemma 1)
+(Lemma 2)
+(Theorem 1)
+(Assumption 1)
+(Prop. 2)
+Figure 5. Overview of soundness proof, where π and Λ′ are deﬁned by
+π = πint ◦πext and Λ′ = (πext ◦π′
+ext)−1(Λ).
+Theorem 2 (Soundness). Suppose Assumption 1 holds and
+that we have veriﬁed, for each role i, the Hoare triple ⊢π′
+ext
+{ψi(rid)} ci(rid) {true}. Then
+(|||i,rid πint(Ci(rid))) ∥Λ′ E ≼t R.
+Proof. We decompose the proof into a series of trace
+inclusions. Figure 5 gives an overview of the proof.
+The ﬁrst trace inclusion is
+ |||i,rid πint(Ci(rid))
+
+∥Λ′ E
+≼(|||i,rid π(π′
+ext(Ci(rid)))) ∥Λ πext(π′
+ext(E)),
+(9)
+where the ﬁrst line is obtained from the second by pushing
+the relabeling πext ◦π′
+ext into the parallel composition, thus
+changing the set of synchronizing labels from Λ to Λ′. Next,
+we deduce
+π(π′
+ext(Ci(rid))) ≼Ri
+role(rid)
+(10)
+from Theorem 1 and from the combination of Assumption 1
+and the assumption ⊢π′
+ext {ψi(rid)} ci(rid) {true}. We then
+leverage a general composition theorem [19, Theorem 2.3]
+that implies that trace inclusion is compositional for a large
+class of composition operators including ||| and ∥Λ. We apply
+this to the trace inclusion (10) and the one from Proposition 2
+to derive the trace inclusion
+(|||i,rid π(π′
+ext(Ci(rid)))) ∥Λ πext(π′
+ext(E))
+≼(|||i,rid Ri
+role(rid)) ∥Λ Re
+env.
+(11)
+Our result follows by combining the trace inclusions (9)
+and (11) with Lemmas 1 and 2 and the relation inclusions
+≼⊆≼′ ⊆≼t from Section 2.
+Corollary 1 (Property preservation). Any trace property Φ
+that holds for R also holds for (|||i,rid πint(Ci(rid))) ∥Λ′ E.
+Example 10 (Secrecy for Difﬁe-Hellman). We have veriﬁed
+the secrecy of and agreement on the exchanged key for
+the Tamarin protocol model from Example 2. The former
+is expressed as the requirement that in all possible traces of
+the system, the attacker never learns a value k for which a
+Secret(k) action occurs in the trace. We then implemented
+both roles by programs, and proved they satisfy their I/O
+speciﬁcations (Example 8). Our soundness result and its
+corollary guarantee that the composed system also satisﬁes
+key secrecy and authentication.
+6. Application and WireGuard case study
+To provide evidence that our approach to verifying
+cryptographic protocol implementations is general, powerful,
+and scales to complex real-world protocols, we use it to verify
+our Difﬁe-Hellman running example and the WireGuard
+protocol. Both case studies are available open-source [21].
+6.1. Applying our approach
+The application of our approach involves three steps:
+1) Protocol model speciﬁcation and veriﬁcation in Tamarin.
+Protocol models must satisfy our mild format restrictions
+(Section 3.1). Existing protocol models may require
+minor syntactic modiﬁcations. Verify the desired trace
+properties such as secrecy and authentication.
+2) Generation of the roles’ I/O speciﬁcations. Our tool
+automatically generates each protocol role’s I/O spec-
+iﬁcation along with deﬁnitions of types and internal
+operations. It accepts all protocol models satisfying our
+format assumptions. The tool currently supports Gobra
+(for Go) and VeriFast (for Java).
+3) Role implementation and veriﬁcation. Verify an existing
+or new role implementation against its I/O speciﬁcation.
+This relies on user-provided (reusable) contracts for the
+I/O and cryptographic libraries used and on proofs of
+the relevant instances of the pattern requirement (e.g.,
+using Assumption 2 and Proposition 1).
+By Corollary 1 (and Assumption 1), all properties proven
+for the Tamarin model are inherited by the implementation.
+For our Difﬁe-Hellman example, we have veriﬁed a Go
+implementation (using Gobra) and a Java implementation (us-
+ing VeriFast) against their generated speciﬁcations. These two
+implementations are interoperable and exchange messages
+via UDP. We have also produced a faulty implementation
+that sends x instead of gx as the ﬁrst message and for which
+veriﬁcation fails because the I/O permissions do not permit
+sending this payload.
+6.2. The WireGuard key exchange
+WireGuard is an open VPN (Virtual Private Network)
+system that is widely deployed on various platforms and
+integrated into the Linux kernel. Its core is the WireGuard
+cryptographic protocol.
+The WireGuard protocol mainly consists of a handshake,
+where two agents establish secret session keys and
+authenticate each other, and a transport phase, where they
+use these keys to set up a secure channel for message
+transport. We give an overview of the protocol in Figure 6.
+The complete protocol additionally features denial of service
+(DoS) protection mechanisms, which we omit.
+11
+1087
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+// handshake phase
+A →B :
+⟨1, sidI, gekI, cpkI, cts, mac1I, mac2I⟩
+B →A :
+⟨2, sidR, sidI, gekR, cempty, mac1R, mac2R⟩
+// transport phase
+A →B :
+⟨4, sidR, 0, aead(kIR, 0, p0,′′ )⟩
+B →A :
+⟨4, sidI, 0, aead(kRI , 0, p′
+0,′′ )⟩
+A →B :
+⟨4, sidR, 1, aead(kIR, 1, p1,′′ )⟩
+. . .
+Figure 6. The WireGuard protocol.
+The protocol involves two roles, the initiator (Alice) and
+the responder (Bob), each with long-term private and public
+keys. It is assumed that Alice and Bob know each other’s
+public keys pkI and pkR in advance. They may optionally use
+a pre-shared secret. The protocol relies on an authenticated
+encryption with associated data (AEAD) construction aead,
+and hash and key derivation functions. The exact algorithms
+used are irrelevant for our presentation. All protocol messages
+contain a tag: 1 and 2 for handshake messages, 3 for the
+optional DoS prevention messages (not shown), and 4 for
+transport messages. They also contain randomly generated
+unique session identiﬁers sidI or sidR (for each role).
+The handshake phase comprises two messages. Alice and
+Bob generate fresh ephemeral Difﬁe-Hellman keys ekI, ekR,
+and exchange the associated public keys gekI, gekR. They
+also exchange ciphertexts cpkI, cts, and cempty, which respec-
+tively encrypt Alice’s public key, a timestamp, and the empty
+string, with keys derived from both long term and ephemeral
+secrets. The messages also contain message authentication
+codes (MACs) for the DoS protection mode, not described
+here. At the end of the handshake, both agents compute
+two symmetric keys kIR and kRI . The detailed message
+construction and key computation is given in Appendix D.
+These two keys are afterwards used to encrypt messages
+in the transport phase: kIR for messages from initiator to
+responder and kRI for the other direction. Alice and Bob
+both keep two counters nIR and nRI , counting the number of
+messages sent in each direction. When Alice sends a message,
+she encrypts it with kIR, using the current value of nIR as
+the AEAD nonce, and increments nIR. Thus, no confusion is
+possible regarding the order of messages. The use of different
+keys and counters allows messages to be sent independently
+in each direction, without requiring strict alternation.
+Note that the protocol mandates that Alice sends the ﬁrst
+transport message. The reason is that it is used by Bob to con-
+ﬁrm she has received his key. In contrast, Alice conﬁrms this
+for Bob when she receives the second handshake message.
+6.3. Tamarin model
+We model the WireGuard protocol in Tamarin as a MSR
+system satisfying the assumptions from Section 3.1. Our
+model features rules for each of the two roles’ behavior, as
+well as environment rules modeling the initial long-term key
+distribution. The environment may spawn any number of
+instances of each role, i.e., an unbounded number of sessions
+running in parallel, between the same or different agents.
+Table 1. PROPERTIES VERIFIED FOR THE WIREGUARD CASE STUDY. BY
+COROLLARY 1, THE CODE INHERITS THE PROTOCOL’S PROPERTIES.
+Level
+Veriﬁed properties
+Protocol
+Agreement on the keys, forward secrecy
+Code
+Memory safety, conformance with generated I/O spec
+Note that we not only model the handshake and
+ﬁrst transport message, after which the key exchange is
+concluded, but also the loop that follows where agents
+may exchange any number of transport messages, in any
+order, using the computed keys. Verifying such unbounded
+loops is challenging for automated tools, and often leads
+to non-termination. For this reason, they are usually not
+modeled in their full generality. However, the presence
+of the loop in the implementation required its inclusion
+in the model as well, so that the implementation adheres
+to the model’s behavior. We had to manually write three
+lemmas and an oracle (a heuristic for Tamarin’s proof
+search) to help the tool terminate. Tamarin can then prove
+these lemmas and verify the model automatically.
+We formulate and prove in Tamarin trace properties
+expressing authentication (see Table 1). More precisely, we
+show that, after the ﬁrst transport message, the participants
+mutually agree on the resulting keys: if Alice believes
+she has exchanged kIR and kRI with Bob, then Bob also
+believes so, and conversely. Moreover, we prove the forward
+secrecy of the keys kIR and kRI : they remain secret from
+the attacker, provided neither Alice nor Bob’s long-term
+secrets were corrupted before the end of the key exchange.
+The Tamarin ﬁle consists of about 250 lines of MSR rules,
+and 100 lines of lemmas and properties. It is veriﬁed
+automatically by Tamarin in about 3 minutes.
+6.4. Implementation and code veriﬁcation
+We separately veriﬁed the initiator and responder code of
+the ofﬁcial Go implementation of WireGuard [35] in Gobra.
+We ﬁrst proved memory safety, which is independent of our
+approach, but a required initial step in tools like Gobra and
+VeriFast. We then veriﬁed each role implementation against
+its I/O speciﬁcation, which we generated with our tool from
+the WireGuard Tamarin model.
+We annotated the code
+with speciﬁcations, namely pre- and postconditions and loop
+invariants, and proof annotations, namely assertions, lemma
+calls, and predicate unfolding commands. The code can be
+compiled, since the annotations appear inside comments.
+Table 1 summarizes all properties we proved.
+Changes to the implementation. We modiﬁed the ofﬁcial
+Go implementation in three ways. First, we removed features
+not included in our Tamarin model, namely DDoS protection.
+Second, we made changes to simplify proving memory
+safety. For this, we removed metrics and load balancing,
+which requires complex concurrency reasoning currently not
+supported by Gobra. Lastly, we performed changes related
+to our approach. Namely, we wrote stubs for cryptographic
+and network operations and equipped them with trusted spec-
+iﬁcations (cf. Section 4.3) and adapted the code accordingly.
+12
+1088
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+Our veriﬁed implementation is interoperable with the ofﬁ-
+cial implementation and can delegate OS trafﬁc over a VPN.
+Veriﬁed components. We veriﬁed both the handshake and
+transport phase for both roles. These components are respon-
+sible for all I/O operations of the implementation. We did not
+verify the setup code for network sockets and cryptographic
+keys. The stubs for cryptographic and network operations
+are trusted by assumption and thus also not veriﬁed.
+I/O speciﬁcation. In addition to the I/O speciﬁcations
+generated by our tool, we declared the bytestring algebra
+operations and the homomorphism γ.
+Our veriﬁcation of the I/O speciﬁcation is standard. To
+verify a call to an I/O operation or an internal operation, we
+extract the corresponding I/O permission from the predicate
+Pi(p, rid, S). This requires facts about the model state S.
+For instance, to send a bytestring b, there must exist a term t
+with γ(t) = b such that outi(rid, t) ∈S. We verify such
+facts by relating the program state to the model state S.
+Tool expertise requirements. Performing the code-level
+veriﬁcation requires a basic understanding of separation logic
+and tool-speciﬁc knowledge to complete the memory-safety
+proof (as is necessary when verifying any heap-manipulating
+program). Justifying each of the program’s I/O operations by
+relating them to an I/O permission of the I/O speciﬁcation
+is mostly straightforward.
+Pattern
+requirement.
+Each
+of
+the
+protocol’s
+three
+non-linear patterns induces two instances of the pattern
+requirement, realized as lemma functions (cf. Figure 4).
+We proved the pattern requirement instances using Propo-
+sition 1 and Assumption 2 by showing that all formats
+are (i) image-disjoint with each other and names and (ii)
+pattern-injective. Point (i) holds, since all formats start with
+a different constant and their lengths differ from the lengths
+of bytestrings representing names. Formats are also injective
+and hence satisfy (ii), as the arguments of all formats appear
+at ﬁxed offsets in the bytestring representation.
+Statistics. Our WireGuard implementation consists of
+608 lines of veriﬁed Go code, excluding library stubs.
+Speciﬁcations and proof annotations make up 3936 lines of
+code, 1241 (32%) of which are generated by our tool. We
+required 87 lines of code to declare the term and bytestring
+algebras and the axioms about γ. The veriﬁcation runtime
+is about 148 and 138 seconds for the initiator and responder,
+respectively. This case study demonstrates that our approach
+is applicable to pre-existing real-world security protocols
+with implementations of considerable size.
+The smaller Difﬁe-Hellman implementations consist of
+106 lines of veriﬁed Go code and 113 lines of veriﬁed Java
+code (both excluding library stubs). The Go and Java code
+require 1015 and 1022 lines of speciﬁcation of which 623
+(61%) and 780 (76%) are generated by our tool, respectively.
+7. Related work
+We compare our work with different kinds of approaches
+to formally verifying protocol implementations. We focus
+on symbolic approaches, as we have already discussed their
+relation to computational approaches in the introduction.
+Model extraction and code generation. Bhargavan et
+al. [10] present a sound model extractor from (a ﬁrst-order
+subset of) F# to ProVerif models. They work with an abstract
+datatype of bytestrings and corresponding interfaces for the
+cryptographic and network libraries, which they instantiate
+both to symbolic terms for prototyping and to actual library
+implementations. This approach is used in [36] to verify
+TLS 1.0. In [4], the authors extract models from a typed
+JavaScript reference implementation of TLS 1.2 and TLS 1.3.
+Several works generate both models for veriﬁcation and exe-
+cutable code from abstract protocol descriptions. In [7], [8],
+Alice&Bob-style protocol speciﬁcations are translated into
+ProVerif models and into JavaScript or Java implementations.
+While in [8], the authors prove the correctness of a partial
+translation from a high-level to a low-level semantics, neither
+paper proves the full translation’s correctness. Sisto et al. [9]
+generate a ProVerif model and a reﬁned Java implementation
+from an abstract Java protocol speciﬁcation and prove the
+implementation’s soundness. We have already discussed the
+drawbacks of this family of approaches in the introduction.
+Code veriﬁcation only. Bhargavan et al. [37] modularly
+verify protocol code written in F# using the F7 reﬁnement
+type checker [38]. They rely on protocol-speciﬁc invariants
+for cryptographic structures, e.g., stating which messages
+are public. Vanspauwen and Jacobs [33], [34] use a similar
+approach for protocols implemented in C and veriﬁed using
+VeriFast. They allow the concrete attacker to directly manip-
+ulate bytestrings, which they overapproximate symbolically
+by a set of terms. However, it is unclear what effect these
+manipulations have on message parsing in the protocol roles.
+While the veriﬁcation of global protocol properties in the
+earlier work [37] required additional hand-written proofs, the
+more recent work [11] enables their veriﬁcation in a single
+tool, F⋆, by explicitly incorporating a global event trace.
+While these approaches are also modular and thus
+scale to protocols like Signal, ﬁnding a suitable protocol-
+speciﬁc invariant is challenging. Our approach not only
+decouples proving the security properties from verifying the
+implementation’s correctness, it also leverages Tamarin’s
+automated proof search.
+Combined model and code veriﬁcation. Dupressoir et
+al. [31], [32] use the interactive prover Coq for model
+veriﬁcation in combination with the C code veriﬁer VCC.
+Their approach involves reasoning about concrete bytestrings
+and their relation to terms. The central deﬁnitions of the
+protocol model are duplicated in Coq and in VCC and some
+theorems proven in Coq are imported as axioms into VCC.
+Igloo [19] is a framework for distributed system veriﬁca-
+tion that soundly combines model reﬁnement in Isabelle/HOL
+with code veriﬁcation using I/O speciﬁcations. Their case
+studies include a simple authentication protocol. We follow
+similar steps to extract I/O speciﬁcations from Tamarin
+models, but do this generically and automatically for a
+large class of protocol models. In contrast, these steps
+must be repeated in Igloo for each protocol, which requires
+13
+1089
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+Isabelle/HOL expertise. Moreover, our way of relating terms
+and bytestrings is more ﬂexible and realistic than theirs,
+which assumes an injective function from bytestrings to
+terms. Penninckx et al. [28] introduced I/O speciﬁcations for
+verifying programs’ I/O behaviors, but they did not propose
+a method for verifying global system properties.
+Message parsing. Mödersheim and Katsoris [29] show that
+an abstract symbolic model using message formats soundly
+abstracts a more concrete model, which includes associative
+message concatenation, variable and ﬁxed length ﬁelds,
+and tags. Their result holds for protocols whose formats
+are uniquely parseable and image-disjoint and they give
+algorithms to check these conditions. This work has inspired
+our use of bytestring algebras and our decomposition of
+the pattern requirement into image disjointness and pattern
+injectivity. Their focus is on abstraction soundness, whereas
+ours is on code veriﬁcation. EverParse [30] is a framework
+to generate provably secure (i.e., injective and surjective)
+parsers and serializers for authenticated message formats.
+8. Conclusion
+We have proposed a novel approach to cryptographic
+protocol veriﬁcation that soundly bridges abstract design
+models, speciﬁed as multiset rewriting systems, with code-
+level speciﬁcations. This allows us to leverage the automa-
+tion and proof techniques available in Tamarin for design
+veriﬁcation together with state-of-the-art program veriﬁers
+to obtain security guarantees for protocol implementations.
+Our approach is general, compatible with different code
+veriﬁcation tools, and applicable to real-world protocols.
+There are several exciting directions for future work. Our
+framework is based on a Dolev-Yao attacker. It would be
+interesting to relax this assumption and allow the concrete
+attacker to perform additional (non-Dolev-Yao) bytestring
+operations. Moreover, we currently only support trace prop-
+erties. Some security properties such as privacy properties
+can be formalized as observational equivalences, which
+Tamarin also supports [39]. How to obtain implementation-
+level equivalence guarantees from a symbolic model is an
+open problem.
+Acknowledgements. We thank the Werner Siemens-Stiftung
+(WSS) for their generous support of this project. This work
+received funding from the France 2030 program managed by
+the French National Research Agency under grant agreement
+No. ANR-22-PECY-0006. We would also like to thank the
+anonymous reviewers for their helpful feedback and Soﬁa
+Giampietro for her useful comments on an earlier draft of
+this paper.
+References
+[1]
+B. Schmidt, S. Meier, C. J. F. Cremers, and D. A. Basin, “Automated
+analysis of Difﬁe-Hellman protocols and advanced security properties,”
+in 25th IEEE Computer Security Foundations Symposium, CSF 2012,
+Cambridge, MA, USA, June 25-27, 2012, 2012, pp. 78–94. [Online].
+Available: https://doi.org/10.1109/CSF.2012.25
+[2]
+S. Meier, B. Schmidt, C. Cremers, and D. A. Basin, “The TAMARIN
+prover for the symbolic analysis of security protocols,” in Computer
+Aided Veriﬁcation - 25th International Conference, CAV 2013, Saint
+Petersburg, Russia, July 13-19, 2013. Proceedings, 2013, pp. 696–701.
+[Online]. Available: https://doi.org/10.1007/978-3-642-39799-8_48
+[3]
+B. Blanchet, “An efﬁcient cryptographic protocol veriﬁer based
+on Prolog rules,” in 14th IEEE Computer Security Foundations
+Workshop (CSFW-14 2001), 11-13 June 2001, Cape Breton, Nova
+Scotia, Canada.
+IEEE Computer Society, 2001, pp. 82–96. [Online].
+Available: https://doi.org/10.1109/CSFW.2001.930138
+[4]
+K. Bhargavan, B. Blanchet, and N. Kobeissi, “Veriﬁed models and
+reference implementations for the TLS 1.3 standard candidate,” in
+2017 IEEE Symposium on Security and Privacy, SP 2017, San Jose,
+CA, USA, May 22-26, 2017.
+IEEE Computer Society, 2017, pp.
+483–502. [Online]. Available: https://doi.org/10.1109/SP.2017.26
+[5]
+D. A. Basin, J. Dreier, L. Hirschi, S. Radomirovic, R. Sasse,
+and V. Stettler, “A formal analysis of 5G authentication,” in
+Proceedings of the 2018 ACM SIGSAC Conference on Computer
+and Communications Security, CCS 2018, Toronto, ON, Canada,
+October 15-19, 2018, D. Lie, M. Mannan, M. Backes, and
+X. Wang, Eds.
+ACM, 2018, pp. 1383–1396. [Online]. Available:
+https://doi.org/10.1145/3243734.3243846
+[6]
+D. A. Basin, R. Sasse, and J. Toro-Pozo, “The EMV standard: Break,
+ﬁx, verify,” in 42nd IEEE Symposium on Security and Privacy, SP 2021,
+San Francisco, CA, USA, 24-27 May 2021.
+IEEE, 2021, pp. 1766–
+1781. [Online]. Available: https://doi.org/10.1109/SP40001.2021.00037
+[7]
+P. Modesti, “AnBx: Automatic generation and veriﬁcation of security
+protocols implementations,” in Foundations and Practice of Security -
+8th International Symposium, FPS 2015, Clermont-Ferrand, France,
+October 26-28, 2015, Revised Selected Papers, ser. Lecture Notes in
+Computer Science, J. García-Alfaro, E. Kranakis, and G. Bonfante,
+Eds., vol. 9482.
+Springer, 2015, pp. 156–173. [Online]. Available:
+http://dx.doi.org/10.1007/978-3-319-30303-1_10
+[8]
+O. Almousa, S. Mödersheim, and L. Viganò, “Alice and Bob:
+Reconciling formal models and implementation,” in Programming
+Languages with Applications to Biology and Security - Essays
+Dedicated
+to
+Pierpaolo
+Degano
+on
+the
+Occasion
+of
+His
+65th
+Birthday,
+2015,
+pp.
+66–85.
+[Online].
+Available:
+http:
+//dx.doi.org/10.1007/978-3-319-25527-9_7
+[9]
+R. Sisto, P. B. Copet, M. Avalle, and A. Pironti, “Formally sound
+implementations of security protocols with JavaSPI,” Formal Asp.
+Comput., vol. 30, no. 2, pp. 279–317, 2018. [Online]. Available:
+https://doi.org/10.1007/s00165-017-0449-8
+[10] K. Bhargavan, C. Fournet, A. D. Gordon, and S. Tse, “Veriﬁed
+interoperable implementations of security protocols,” ACM Trans.
+Program. Lang. Syst., vol. 31, no. 1, pp. 5:1–5:61, 2008. [Online].
+Available: https://doi.org/10.1145/1452044.1452049
+[11] K. Bhargavan, A. Bichhawat, Q. H. Do, P. Hosseyni, R. Küsters,
+G. Schmitz, and T. Würtele, “DY*: A modular symbolic veriﬁcation
+framework for executable cryptographic protocol code,” in IEEE
+European Symposium on Security and Privacy, EuroS&P 2021,
+Vienna, Austria, September 6-10, 2021.
+IEEE, 2021, pp. 523–542.
+[Online]. Available: https://doi.org/10.1109/EuroSP51992.2021.00042
+[12] D. Cadé and B. Blanchet, “Proved generation of implementations
+from computationally secure protocol speciﬁcations,” in Principles of
+Security and Trust - Second International Conference, POST 2013,
+Held as Part of the European Joint Conferences on Theory and
+Practice of Software, ETAPS 2013, Rome, Italy, March 16-24, 2013.
+Proceedings, ser. Lecture Notes in Computer Science, D. A. Basin
+and J. C. Mitchell, Eds., vol. 7796.
+Springer, 2013, pp. 63–82.
+[Online]. Available: https://doi.org/10.1007/978-3-642-36830-1_4
+[13] A. Delignat-Lavaud, C. Fournet, M. Kohlweiss, J. Protzenko,
+A. Rastogi, N. Swamy, S. Z. Béguelin, K. Bhargavan, J. Pan, and J. K.
+Zinzindohoue, “Implementing and proving the TLS 1.3 record layer,”
+in 2017 IEEE Symposium on Security and Privacy, SP 2017, San
+Jose, CA, USA, May 22-26, 2017.
+IEEE Computer Society, 2017,
+pp. 463–482. [Online]. Available: https://doi.org/10.1109/SP.2017.58
+14
+1090
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+[14] A.
+Delignat-Lavaud,
+C.
+Fournet,
+B.
+Parno,
+J.
+Protzenko,
+T. Ramananandro, J. Bosamiya, J. Lallemand, I. Rakotonirina,
+and Y. Zhou, “A security model and fully veriﬁed implementation
+for the IETF QUIC record layer,” in 42nd IEEE Symposium on
+Security and Privacy, SP 2021, San Francisco, CA, USA, 24-27
+May 2021.
+IEEE, 2021, pp. 1162–1178. [Online]. Available:
+https://doi.org/10.1109/SP40001.2021.00039
+[15] J. C. Reynolds, “Separation Logic: A logic for shared mutable data
+structures,” in 17th IEEE Symposium on Logic in Computer Science
+(LICS 2002), 22-25 July 2002, Copenhagen, Denmark, Proceedings.
+IEEE Computer Society, 2002, pp. 55–74. [Online]. Available:
+https://doi.org/10.1109/LICS.2002.1029817
+[16] F. A. Wolf, L. Arquint, M. Clochard, W. Oortwijn, J. C. Pereira,
+and P. Müller, “Gobra: Modular speciﬁcation and veriﬁcation of
+Go programs,” in Computer Aided Veriﬁcation - 33rd International
+Conference, CAV 2021, Virtual Event, July 20-23, 2021, Proceedings,
+Part I, ser. Lecture Notes in Computer Science, A. Silva and K. R. M.
+Leino, Eds., vol. 12759.
+Springer, 2021, pp. 367–379. [Online].
+Available: https://doi.org/10.1007/978-3-030-81685-8_17
+[17] B. Jacobs, J. Smans, P. Philippaerts, F. Vogels, W. Penninckx,
+and F. Piessens, “VeriFast: A powerful, sound, predictable, fast
+veriﬁer for C and Java,” in NASA Formal Methods - Third
+International Symposium, NFM 2011, Pasadena, CA, USA, April
+18-20, 2011. Proceedings, ser. Lecture Notes in Computer Science,
+M. G. Bobaru, K. Havelund, G. J. Holzmann, and R. Joshi,
+Eds., vol. 6617.
+Springer, 2011, pp. 41–55. [Online]. Available:
+https://doi.org/10.1007/978-3-642-20398-5_4
+[18] M. Eilers and P. Müller, “Nagini: A static veriﬁer for Python,” in
+Computer Aided Veriﬁcation - 30th International Conference, CAV
+2018, Held as Part of the Federated Logic Conference, FloC 2018,
+Oxford, UK, July 14-17, 2018, Proceedings, Part I, ser. Lecture
+Notes in Computer Science, H. Chockler and G. Weissenbacher,
+Eds., vol. 10981.
+Springer, 2018, pp. 596–603. [Online]. Available:
+https://doi.org/10.1007/978-3-319-96145-3_33
+[19] C. Sprenger, T. Klenze, M. Eilers, F. A. Wolf, P. Müller, M. Clochard,
+and D. A. Basin, “Igloo: Soundly linking compositional reﬁnement
+and separation logic for distributed system veriﬁcation,” Proc. ACM
+Program. Lang., vol. 4, no. OOPSLA, pp. 152:1–152:31, 2020.
+[Online]. Available: https://doi.org/10.1145/3428220
+[20] L. Arquint, F. A. Wolf, J. Lallemand, R. Sasse, C. Sprenger, S. N.
+Wiesner, D. Basin, and P. Müller, “Sound veriﬁcation of security
+protocols: From design to interoperable implementations (extended
+version),” 2022. [Online]. Available: https://arxiv.org/abs/2212.04171
+[21] ——, “Sound veriﬁcation of security protocols: From design to
+interoperable implementations,” Aug. 2022, artifact containing the
+speciﬁcation generation tool and the case studies. [Online]. Available:
+https://doi.org/10.5281/zenodo.7409524
+[22] C. Cremers and M. Dehnel-Wild, “Component-based formal analysis of
+5G-AKA: Channel assumptions and session confusion,” in 26th Annual
+Network and Distributed System Security Symposium, NDSS 2019, San
+Diego, California, USA, February 24-27, 2019.
+The Internet Society,
+2019. [Online]. Available: https://doi.org/10.14722/ndss.2019.23394
+[23] C. Cremers, M. Horvat, J. Hoyland, S. Scott, and T. van der
+Merwe, “A comprehensive symbolic analysis of TLS 1.3,” in
+Proceedings of the 2017 ACM SIGSAC Conference on Computer
+and Communications Security, CCS 2017, Dallas, TX, USA, October
+30 - November 03, 2017, 2017, pp. 1773–1788. [Online]. Available:
+https://doi.org/10.1145/3133956.3134063
+[24] G. Girol, L. Hirschi, R. Sasse, D. Jackson, C. Cremers, and
+D. Basin, “A spectral analysis of Noise: A comprehensive,
+automated, formal analysis of Difﬁe-Hellman protocols,” in 29th
+USENIX Security Symposium (USENIX Security 20).
+Boston,
+MA: USENIX Association, aug 2020. [Online]. Available: https:
+//usenix.org/conference/usenixsecurity20/presentation/girol
+[25] D. Basin, R. Sasse, and J. Toro-Pozo, “Card brand mixup attack:
+Bypassing the PIN in non-Visa cards by using them for Visa
+transactions,” in 30th USENIX Security Symposium (USENIX
+Security 21).
+USENIX Association, Aug. 2021. [Online]. Available:
+https://usenix.org/conference/usenixsecurity21/presentation/basin
+[26] D. Dolev and A. C. Yao, “On the security of public key protocols,”
+IEEE Trans. Information Theory, vol. 29, no. 2, pp. 198–207, 1983.
+[Online]. Available: https://doi.org/10.1109/TIT.1983.1056650
+[27] G. Lowe, “A hierarchy of authentication speciﬁcation,” in 10th
+Computer Security Foundations Workshop (CSFW ’97), June 10-12,
+1997, Rockport, Massachusetts, USA, 1997, pp. 31–44. [Online].
+Available: https://doi.org/10.1109/CSFW.1997.596782
+[28] W. Penninckx, B. Jacobs, and F. Piessens, “Sound, modular and
+compositional veriﬁcation of the input/output behavior of programs,”
+in Programming Languages and Systems, J. Vitek, Ed.
+Berlin,
+Heidelberg: Springer Berlin Heidelberg, 2015, pp. 158–182.
+[29] S. Mödersheim and G. Katsoris, “A sound abstraction of the
+parsing problem,” in IEEE 27th Computer Security Foundations
+Symposium,
+CSF
+2014,
+Vienna,
+Austria,
+19-22
+July,
+2014.
+IEEE Computer Society, 2014, pp. 259–273. [Online]. Available:
+http://dx.doi.org/10.1109/CSF.2014.26
+[30] T. Ramananandro, A. Delignat-Lavaud, C. Fournet, N. Swamy,
+T. Chajed, N. Kobeissi, and J. Protzenko, “EverParse: Veriﬁed
+secure zero-copy parsers for authenticated message formats,” in 28th
+USENIX Security Symposium, USENIX Security 2019, Santa Clara,
+CA, USA, August 14-16, 2019, N. Heninger and P. Traynor, Eds.
+USENIX Association, 2019, pp. 1465–1482. [Online]. Available:
+https://microsoft.com/en-us/research/publication/everparse
+[31] F. Dupressoir, A. D. Gordon, J. Jürjens, and D. A. Naumann,
+“Guiding a general-purpose C veriﬁer to prove cryptographic
+protocols,” in Proceedings of the 24th IEEE Computer Security
+Foundations Symposium, CSF 2011, Cernay-la-Ville, France, 27-29
+June, 2011.
+IEEE Computer Society, 2011, pp. 3–17. [Online].
+Available: https://doi.org/10.1109/CSF.2011.8
+[32] ——, “Guiding a general-purpose C veriﬁer to prove cryptographic
+protocols,” Journal of Computer Security, vol. 22, no. 5, pp. 823–866,
+2014. [Online]. Available: https://doi.org/10.3233/JCS-140508
+[33] G. Vanspauwen and B. Jacobs, “Verifying protocol implementations
+by augmenting existing cryptographic libraries with speciﬁcations,”
+in Software Engineering and Formal Methods - 13th International
+Conference,
+SEFM
+2015,
+York,
+UK,
+September
+7-11,
+2015.
+Proceedings, ser. Lecture Notes in Computer Science, R. Calinescu
+and B. Rumpe, Eds., vol. 9276.
+Springer, 2015, pp. 53–68. [Online].
+Available: https://doi.org/10.1007/978-3-319-22969-0_4
+[34] ——, “Verifying cryptographic protocol implementations that use
+industrial cryptographic APIs,” Department of Computer Science,
+KU Leuven, Belgium, Tech. Rep., 2017. [Online]. Available:
+https://lirias.kuleuven.be/retrieve/456879
+[35] J. A. Donenfeld, “Go implementation of WireGuard,” https://git.zx2c4.
+com/wireguard-go, [Online; accessed 11-March-2021].
+[36] K. Bhargavan, C. Fournet, R. Corin, and E. Zalinescu, “Veriﬁed
+cryptographic implementations for TLS,” ACM Trans. Inf. Syst.
+Secur., vol. 15, no. 1, pp. 3:1–3:32, 2012. [Online]. Available:
+https://doi.org/10.1145/2133375.2133378
+[37] K. Bhargavan, C. Fournet, and A. D. Gordon, “Modular veriﬁcation
+of security protocol code by typing,” in Proceedings of the 37th
+ACM SIGPLAN-SIGACT Symposium on Principles of Programming
+Languages, POPL 2010, Madrid, Spain, January 17-23, 2010, M. V.
+Hermenegildo and J. Palsberg, Eds.
+ACM, 2010, pp. 445–456.
+[Online]. Available: https://doi.org/10.1145/1706299.1706350
+[38] J. Bengtson, K. Bhargavan, C. Fournet, A. D. Gordon, and
+S. Maffeis, “Reﬁnement types for secure implementations,” in
+Proceedings of the 21st IEEE Computer Security Foundations
+Symposium, CSF 2008, Pittsburgh, Pennsylvania, USA, 23-25 June
+2008.
+IEEE Computer Society, 2008, pp. 17–32. [Online]. Available:
+https://doi.org/10.1109/CSF.2008.27
+[39] D. Basin, J. Dreier, and R. Sasse, “Automated symbolic proofs
+of
+observational
+equivalence,”
+in
+Proceedings
+of
+the
+22nd
+ACM SIGSAC Conference on Computer and Communications
+Security, ser. CCS ’15.
+New York, NY, USA: Association for
+Computing Machinery, 2015, p. 1144–1155. [Online]. Available:
+https://doi.org/10.1145/2810103.2813662
+15
+1091
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+Appendix A.
+Protocol format details
+We require that the rules’ labels only contain facts from
+Σact, i.e. for all l
+a
+−→r ∈R, facts(a) ⊆Σact. Here,
+facts(s) denotes the set of fact symbols that occur in a
+multiset of facts s. We assume that environment rules do
+not directly use the agents’ internal states. Namely, for all
+l
+a
+−→r ∈Renv, facts(l∪r) ⊆Σenv. In addition, any rule
+in Renv producing a Setupi fact must not produce any other
+facts on its right-hand side and its label must be empty.
+We also require that rules for role i only use i’s state
+and may consume facts in Σin (but must not produce them)
+and may produce facts in Σout (but must not consume them).
+More formally, we require, for all l
+a
+−→r ∈Ri, facts(l) ⊆
+Σi
+state ∪Σin and facts(r) ⊆Σi
+state ∪Σout.
+Finally, we require that for a protocol rule l
+a
+−→r ∈Ri,
+at least one state fact appears in r, and that there is a ki ≥1
+such that the tuple of the ﬁrst ki arguments of all state facts
+in l
+a
+−→r is the same. Intuitively, these ﬁrst ki arguments
+represent parameters of the run of the protocol role: their
+value remains ﬁxed throughout the role’s execution. They
+can be, for instance, the agent’s identity, a thread identiﬁer,
+or any value that is assumed to be known beforehand by
+the agent. We assume that the ﬁrst one of these arguments,
+which we call rid, is of type fresh. It is intended to represent
+a thread identiﬁer. For readability, we will usually group
+these ki initial parameters as a tuple, denoted by init.
+In summary, these formatting rules only impose very
+mild constraints on Tamarin models. All protocol models in
+the Tamarin distribution could easily be adapted to conform
+to these constraints with only minor modiﬁcations. The main
+changes would be related to providing a separate setup rule
+for each role i and keeping the arguments of the resulting
+Setupi fact as the initial arguments of all state facts as
+described above.
+Appendix B.
+Formal deﬁnition of parallel compositions
+We deﬁne the (indexed) interleaving parallel composition
+||| and the (binary) synchronizing parallel composition ∥Λ.
+These compose their argument MSR systems into a labeled
+transition system.
+The
+(indexed)
+interleaving
+parallel
+composition
+|||i,ridRi(rid) has as states functions f that map each
+pair (i, rid) to a multiset of state facts and transitions
+f
+a
+−→f ′ if, for some i and rid, f(i, rid)
+a
+=⇒Ri(rid) S′ and
+f ′ = f[(i, rid) 7→S′], where f ′ agrees with f except that it
+maps (i, rid) to S′.
+The synchronized composed system R1 ∥Λ R2 has states
+of the form (S1, S2) and transitions (S1, S2)
+a
+−→(S′
+1, S′
+2) if
+either
+(i) a = [] and there is an a′ ∈E Λ such that S1
+a′
+=⇒R1 S′
+1
+and S2
+a′
+=⇒R2 S′
+2,
+(ii) a /∈E Λ, S1
+a
+=⇒R1 S′
+1 and S′
+2 = S2, or
+(iii) a /∈E Λ, S2
+a
+=⇒R2 S′
+2 and S′
+1 = S1.
+Here, a′ ∈E Λ means that a′ =E a for some a ∈Λ.
+Appendix C.
+Extended veriﬁer assumption
+Following Penninckx et al. [28], we sketch an example
+of semantic assumptions on programs and Hoare triples
+that make our extended veriﬁer assumption (Assumption 1)
+hold semantically. The soundness of the program logic itself,
+i.e., that a provable Hoare triple ⊢α {φ} c {ψ} implies its
+semantic validity |=α {φ} c {ψ}, is a separate topic beyond
+the scope of our paper.
+We assume that the programming language semantics
+makes judgements of the form s, c ⇓s′, τ, meaning that the
+program c when started in state s terminates in state s′ and
+produces the I/O trace τ. This semantics induces a LTS C,
+whose set of traces for a given starting state s0 is thus
+Tr(C) = {τ | ∃s′. s0, c ⇓s′, τ}.
+I/O speciﬁcations φ have both a static and a dynamic
+semantics, which are deﬁned in terms of (I/O) heaps. Heaps
+are multisets of (ground) I/O permission and token predicates.
+The static semantics, written h |= φ, intuitively means that h
+contains (at least) the I/O permissions and tokens prescribed
+by φ. The dynamic semantics deﬁnes the set of traces allowed
+by an I/O speciﬁcation φ to contain those traces that are
+possible in all heap models of φ, i.e.,
+Tr(φ) = {τ | ∀h. h |= φ =⇒h
+τ−→},
+where h
+τ−→intuitively means that it is possible to produce a
+trace τ by successively pushing the tokens in h through the
+I/O permissions in h (and thus consume these permissions).
+The semantics of Hoare triples of the form {φ} c {true}
+with respect to an abstraction function α from program-level
+I/O operations to abstract I/O permissions is given by
+|=α {φ} c {true}
+def
+⇐⇒∀s, τ, s′, h. s, c ⇓s′, τ ∧h |= φ =⇒h
+α(τ)
+−−−→
+⇐⇒α(Tr(C)) ⊆Tr(φ)
+⇐⇒α(C) ≼φ.
+Here, α(C) denotes the LTS C whose transition labels are
+renamed under α. The ﬁnal equivalence uses the equality
+α(Tr(C)) = Tr(α(C)).
+Penninckx et al. [28]’s semantics is formulated for the
+case where α is the identity function. Both our and their
+semantics of Hoare triples also include non-trivial post-
+conditions, which we omit here to simplify the presentation.
+Appendix D.
+WireGuard message construction
+The details of the construction of the ciphertexts in
+the messages for the WireGuard protocol are displayed in
+Figure 7, where:
+16
+1092
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+• aead is an AEAD algorithm, h is a hash function, kdf1,
+kdf2, kdf3 are key derivation functions;
+• in aead(k, n, p, a), k is the key, n a nonce or counter,
+p the payload (both authenticated and encrypted), and
+a the additional data (authenticated, but not encrypted);
+• (kI, pkI) and (kR, pkR) are the initiator and responder’s
+long-term private and public keys;
+• (ekI, epkI = gekI) and (ekR, epkR = gekR) are the
+initiator and responder’s ephemeral private and public
+Difﬁe-Hellman keys, g being the group generator;
+• info and prologue are ﬁxed strings containing protocol
+information (version, etc.); and
+• psk is an optional pre-shared key – if unused it is set
+to a string of zeros.
+cpkI, cts, cempty are computed as follows.
+c0 =
+h(info)
+h0 =
+h(⟨c0, prologue⟩)
+h1 =
+h(⟨h0, pkR⟩)
+c1 =
+kdf1(⟨c0, epkI⟩)
+h2 =
+h(⟨h1, epkI⟩)
+c2 =
+kdf1(⟨c1, gkR∗ekI⟩)
+k1 =
+kdf2(⟨c1, gkR∗ekI⟩)
+cpkI =
+aead(k1, 0, pkI, h2)
+h3 =
+h(⟨h2, cpkI⟩)
+c3 =
+kdf1(⟨c2, gkR∗kI⟩)
+k2 =
+kdf2(⟨c2, gkR∗kI⟩)
+cts =
+aead(k2, 0, timestamp, h3)
+h4 =
+h(⟨h3, cts⟩)
+c4 =
+kdf1(⟨c3, epkR⟩)
+h5 =
+h(⟨h4, epkR⟩)
+c5 =
+kdf1(⟨c4, gekR∗ekI⟩)
+c6 =
+kdf1(⟨c5, gekR∗kI⟩)
+c7 =
+kdf1(⟨c6, psk⟩)
+π =
+kdf2(⟨c6, psk⟩)
+k3 =
+kdf3(⟨c6, psk⟩)
+h6 =
+h(⟨h5, π⟩)
+cempty =
+aead(k3, 0, ””, h6)
+kIR and kRI are the resulting exchanged keys: kIR =
+kdf1(c7), kRI = kdf2(c7).
+Figure 7. The WireGuard message construction
+17
+1093
+Authorized licensed use limited to: IEEE Xplore. Downloaded on November 14,2025 at 13:39:53 UTC from IEEE Xplore.  Restrictions apply. 
+

@@ -1,0 +1,3365 @@
+SECFLOAT: Accurate Floating-Point meets Secure
+2-Party Computation (Full Version)
+Deevashwer Rathee
+UC Berkeley
+deevashwer@berkeley.edu
+Anwesh Bhattacharya
+Microsoft Research
+t-anweshb@microsoft.com
+Rahul Sharma
+Microsoft Research
+rahsha@microsoft.com
+Divya Gupta
+Microsoft Research
+divya.gupta@microsoft.com
+Nishanth Chandran
+Microsoft Research
+nichandr@microsoft.com
+Aseem Rastogi
+Microsoft Research
+aseemr@microsoft.com
+Abstract—We build a library SECFLOAT for secure 2-party
+computation (2PC) of 32-bit single-precision floating-point oper-
+ations and math functions. The existing functionalities used in
+cryptographic works are imprecise and the precise functionalities
+used in standard libraries are not crypto-friendly, i.e., they use
+operations that are cheap on CPUs but have exorbitant cost in
+2PC. SecFloat bridges this gap with its novel crypto-friendly
+precise functionalities. Compared to the prior cryptographic li-
+braries, SECFLOAT is up to six orders of magnitude more precise
+and up to two orders of magnitude more efficient. Furthermore,
+against a precise 2PC baseline, SECFLOAT is three orders of
+magnitude more efficient. The high precision of SECFLOAT leads
+to the first accurate implementation of secure inference. All prior
+works on secure inference of deep neural networks rely on ad
+hoc float-to-fixed converters. We evaluate a model where the
+fixed-point approximations used in privacy-preserving machine
+learning completely fail and floating-point is necessary. Thus,
+emphasizing the need for libraries like SECFLOAT.
+I. INTRODUCTION
+Floating-point is the default format used to perform oper-
+ations on real numbers on modern computer hardware. All
+CPUs support efficient and accurate floating-point arithmetic
+on which software developers rely upon. Whether it is solving
+differential equations, continued fractions, matrix factoriza-
+tion, or financial predictions, floating-point is everywhere.
+Theoretically, it was shown in the 1980’s [36], [74] that
+any program, and therefore, floating-point programs, can be
+securely implemented using 2-party computation (2PC) pro-
+tocols. These protocols allow two mutually distrustful parties
+to run programs on their secret inputs in a way that both the
+parties learn nothing about the inputs of each other beyond
+what is revealed by the outputs (Section IV-C). However, since
+almost all practical software uses floating-point arithmetic and
+existing library support for 2PC of floating-point is either non-
+existent or imprecise, there is a big gap between the software
+that exists and the programs that can actually be run accurately
+with existing 2PC implementations.
+When developers use (single-precision) floating-point math
+libraries like GNU’s libm or Intel’s MKL [7], [8], they
+get strong accuracy guarantees. In particular, the results of
+primitive operations like floating-point addition and division
+are correct (return the floating-point number closest to the
+ideal real result, Section III-B) and the implementations of
+math functions in math.h like trigonometric sine are precise
+(return either the closest or the second-closest floating-point
+number to the ideal real result, Section III-C). With these
+guarantees, the developers can build applications that represent
+computations over reals accurately while using only 32-bits.
+A. Importance of accurate floating-point
+To emphasize the importance of accurate floating-point,
+we review two historical incidents. In December 1994, Intel
+recalled its Pentium processors at the cost of $475-million
+because the hardware for its floating-point division instruction
+sometimes produced slightly inaccurate results [32]. This issue
+was brought to the public by a mathematics professor whose
+code to enumerate primes became inconsistent because of this
+hardware bug.
+The second example, is a software bug which caused
+the explosion of Ariane-5 rocket resulting in a loss of $7
+billion [1]. The explosion was caused by replacing floating-
+point numbers with imprecise low-bitwidth fixed-point num-
+bers. Although there are some non-safety-critical applications,
+e.g. in pattern recognition, where losing numerical precision
+for efficiency gains may be OK—an integer overflow in a
+quantized computer vision model could result in an incorrect
+image classification—many safety critical applications (in
+basic sciences or cyber-physical systems) completely fail if
+there is an accuracy loss. Hence, both the writers of math
+libraries software and manufactures of floating-point hardware
+guarantee that the floating-point operations are accurate, i.e.,
+correct or precise.
+B. Secure computation of floating-point code
+Running floating-point code with 2PC while maintaining
+accuracy is hard. Although efficient 2PC support for integer
+arithmetic exists, it is insufficient for floating-point. Single-
+precision floating-point numbers or floats differ from integers
+as, even when using only 32-bits, floats have a large dynamic
+range: they can represent very large numbers like 2127 and
+very small numbers like 2−126 exactly. As 2PC protocols can
+support arbitrary bitwidth integers, it is theoretically feasible
+
+to exactly simulate operations on floats with operations on
+integers or fixed-point numbers. However, due to the large
+range of values that floats represent, this approach requires
+very high bitwidth (512-bit) integers that impose intractable
+performance overheads.
+The primary work on 2PC of floating-point is by Demmler
+et al.
+[28] (referred to as ABY-F to stand for ABY-float).
+They express floating-point operations as optimized circuits
+(obtained from hardware synthesis tools) and run them with
+generic 2PC protocols1. In contrast, MP-SPDZ [44] uses
+hand-made custom functionalities for floating-point operations
+given by Aliasgari et al. [11], [12] (referred to as SA-
+F). The users of existing cryptographic implementations of
+floating-point (ABY-F and SA-F) face two challenges. First,
+the available math implementations are imprecise and don’t
+provide the accuracy guarantees that are provided by standard
+implementations of math.h (Section III-C, Section IX-A). In
+particular, we have observed that ABY-F and SA-F produce
+garbage output (floating-point exceptions like division-by-zero
+or answers that are wrong in every digit) for valid computa-
+tions (Appendix A). We show two very simple examples of
+these errors. First, when evaluating
+x
+sinπ(x) at x near zero, the
+expected output is 0.3 ≈1
+π but ABY-F circuits do a division
+by zero. Second, when evaluating the derivative of log(x) at
+x = 1, i.e., d log(x)
+dx
+|x=1 ≈log(1)−log(1−ϵ)
+ϵ
+, the expected output
+is 1.0 but ABY-F outputs 0.7. Hence, the applicability of ABY-
+F to safety critical applications is unclear (SA-F is even more
+imprecise than ABY-F). Second, even if the target computation
+is insensitive to precision, both ABY-F and SA-F suffer from
+high performance overheads (Section IX-A).
+C. Our contributions
+We provide SECFLOAT, the first secure 2PC library for
+floating-point that matches the accuracy of Intel’s libraries.
+SECFLOAT supports both correct floating-point primitive op-
+erations (addition, multiplication, division, and comparison)
+and precise math functions (trigonometric functions, expo-
+nentiation, and logarithm). In particular, for the examples
+above, SECFLOAT produces the expected outputs. Further-
+more, SECFLOAT outperforms a state-of-the-art precise base-
+line [41] by three orders of magnitude (Section IX-A) and
+is up to two orders of magnitude more efficient than even
+imprecise baselines [3], [28], [44]. Because of SECFLOAT’s
+better performance, even for the computations that are less
+sensitive to precision, users of secure 2PC of floating-point are
+better-off using SECFLOAT compared to the existing systems.
+We also implement privacy preserving proximity test-
+ing [71], an application that has previously been used to
+evaluate 2PC implementations of floats [28]. On random input
+coordinates from Google maps, SECFLOAT-based implemen-
+tations are four orders of magnitude more accurate on average
+and have 6.8 −11× lower communication than the state-of-
+the-art. Here, the average error in distance computed by Intel’s
+1EMP [3] also uses the circuits of ABY-F. We discuss more in Section IX.
+MKL/SECFLOAT from ideal real result is about a millimeter
+and it is about two metres for ABY-F (1600× worse).
+Finally, prior works in secure inference use fixed-point
+arithmetic. We show a case study in privacy-preserving ad-
+vertisements where fixed-point models completely fail and
+floating-point is necessary (Section IX-C).
+The main technical contributions of SECFLOAT are novel
+functionalities for operations over floats that a) keep the cryp-
+tographic cost of running the functionalities low and b) provide
+accurate results. To obtain 2PC protocols for these floating-
+point functionalities, we run each atomic computation with a
+2PC building block over integers (Table I), e.g., comparison,
+multiplication, etc.
+We need to design new functionalities
+because the existing functionalities used in cryptographic
+works are imprecise and the precise functionalities used in
+non-cryptographic works are not crypto-friendly, i.e., they use
+operations that are cheap on CPUs but have exorbitant cost
+in 2PC. SECFLOAT bridges this gap with its crypto-friendly
+precise functionalities. Note that although each building block
+of Table I corresponds to a single x86 assembly instruction,
+their communication costs (given in the last column), which
+are the bulk of the cryptographic costs, are very different.
+Next we discuss the standard libraries, i.e., the non-
+cryptographic floating-point resources, and why they are un-
+suitable for 2PC. Then, in Section I-E we provide an overview
+of SECFLOAT’s functionalities.
+D. Why standard libraries are not suitable for 2PC?
+1) IEEE Standard: The IEEE standard defines the repre-
+sentation for floats with p = 8 exponent bits and q = 23
+mantissa bits [4] and specifies that primitive operations should
+be correct. That is, the primitive operations on these numbers
+should be computed with infinite precision real arithmetic and
+then rounded to the floating-point number closest to the ideal
+real result. The IEEE standard leaves it to the hardware de-
+signers to come up with efficient functionalities that compute
+intermediate results equivalent to the infinite precision results.
+The existing implementations of IEEE standard are not crypto-
+friendly and lead to inefficient 2PC implementations (e.g., they
+use Boolean circuits [72] or high bitwidth integers [39]).
+2) Intel’s MKL: Although IEEE does not specify the pre-
+cision of math libraries, it is standard to compute precise
+results. For math functions, there is a standard recipe [26]
+with three steps which is used by all standard math libraries
+including MKL: range reduction, polynomial approximations,
+and output compensation. For example, in the first step,
+computing a math function z = 2x on a large input range
+like x ∈[−2126, 2127] is reduced to computing 2f on a very
+small input range f ∈[0, 1) using high school mathematics
+(2x = 2N2f where N is an integer and 0 ≤f < 1). The
+second step uses polynomials to compute y ≈2f accurately
+enough so that when y is mapped to the final float output
+(z = y · 2N) in the third step, the output is precise. Standard
+libraries use high bitwidths to get precise results that have
+exorbitant cost when implemented as-is using 2PC. Below,
+we discuss the 2PC performance bottlenecks in more detail.
+
+E. SECFLOAT’s design
+SECFLOAT has novel and accurate crypto-friendly function-
+alities. Standard floating-point libraries incur high worst case
+execution time (WCET) on corner cases to run likely inputs
+efficiently. However, in 2PC, the floating-point implementa-
+tions must take the same time on all inputs to ensure security.
+Hence, SECFLOAT’s functionalities require low WCET, which
+is one of the reasons why the standard libraries are unsuitable
+for it. Furthermore, the existing custom functionalities that
+have been designed for MPC are imprecise [11], [12].
+For primitive operations over floats, i.e., addition, multi-
+plication, and division, SECFLOAT meets the specifications of
+IEEE standard and more. In particular, the primitive operations
+of SECFLOAT are parametrized by p and q and provide
+provably correct results for all floating-point representations,
+including the ones that are outside the IEEE standard, e.g.,
+Google’s BFloat16 with p = 8 and q
+= 7, nVIDIA’s
+TensorFloat32 with p = 8 and q = 10, etc. This generality
+of primitive operations is crucial for SECFLOAT’s math func-
+tionalities. Furthermore, they use algorithms that are crypto-
+friendly. For example, division looks up the approximate result
+from a moderately sized lookup table which is further refined
+to a correct result using Newton iterations. This scheme is
+suboptimal for CPUs but outperforms the state-of-the-art in
+2PC by 11.6×. Standard implementations of the IEEE standard
+are overfitted to q = 23 and lead to 2.36 −6.07× slower 2PC
+implementations than SECFLOAT (Section IX-A3). For this
+evaluation, we simplified implementations in Berkeley’s Soft-
+Float [39] by removing the code for special values like NaNs
+and denormals, and executed these simplified functionalities
+with the same cryptographic building blocks as SECFLOAT.
+The former is necessary for a fair comparison as SECFLOAT,
+like the other baselines, doesn’t support NaNs and denormals
+(Section III-A). Adding support for denormals and NaNs
+would require using comparisons on inputs to identify whether
+special values can arise in the computation and multiplexing
+the results of normal computations and computations with
+special values. Here, the cost of normal computations is much
+higher than the other costs.
+Design of math functions. For math functions, SECFLOAT
+also follows the standard 3-step recipe (Section I-D2). How-
+ever, the similarities between SECFLOAT and MKL end here.
+Since 2PC, which is the target for SECFLOAT, has very
+different performance characteristics than CPUs, SECFLOAT’s
+functionalities are very different from MKL in the represen-
+tations, range reductions, and polynomial approximations. We
+make four technical contributions to design cryptographically
+efficient math functionalities.
+First, we provide new range reductions and implement
+them efficiently with 2PC. Although there are several range
+reduction techniques available in literature [26], [51], [53],
+they rely on polynomial approximations to be evaluated with
+very high precision, e.g., doubles with q = 52, which has
+high cryptographic cost. Hence, our range reductions are more
+complex but allow the polynomial approximations to use
+q = 27 and still permit the overall functionalities to be precise.
+Note that evaluating polynomials over custom representations
+with q = 27 is made possible by the generality of SECFLOAT’s
+primitive operations.
+Second, MKL uses high degree polynomials that are not
+crypto-friendly. We show how to obtain crypto-friendly splines
+(Appendix I). Third, we provide a new general functionality to
+securely evaluate splines efficiently that can have applicability
+beyond floating-point arithmetic (see Section VI-A).
+Fourth, to further improve performance, we use cheaper
+floating-point primitive operators whenever possible that have
+lower cost but don’t provide correct results for all inputs.
+SECFLOAT ensures that the cumulative error (the sum of
+approximation errors from splines, rounding errors when com-
+puting the polynomial with cheaper floating-point operations,
+and the rounding errors arising from output compensation)
+remains low enough that the overall functionalities are precise.
+In Section II, we provide a walk-through example to further
+elaborate on SECFLOAT’s design choices.
+Bitwidth
+optimizations. The functionalities of primitive
+operations
+in
+SECFLOAT
+use
+operations
+over
+integers
+or fixed-point numbers that can be realized using 2PC
+frameworks such as ABY [29], SPDZ [44], etc. These
+frameworks use a uniform bitwidth, e.g., 64, for all values.
+This
+restriction
+of
+uniform
+bitwidth
+mandates
+use
+of
+larger than necessary bitwidths for many sub-computations
+that is wasteful for SECFLOAT’s functionalities and leads
+to unnecessary performance penalties. As an additional
+optimization, SECFLOAT’s functionalities use mixed-bitwidth
+computation
+and
+ensure
+that
+expensive
+high
+bitwidths
+are used only sparingly: the computations use as low
+bitwidths as possible, switch to high bitwidths via extensions
+when necessary, and then come back to low bitwidths
+via truncations. Some of the building blocks used by our
+functionalities are sign or zero extension of an n1-bit integer
+to an n2-bit integer (n1 < n2), truncating an n1-bit integer
+to an n2-bit integer (n1
+>
+n2), multiplying an n1-bit
+integer and an n2-bit integer into an n1 + n2-bit result, etc
+(Section IV-D). Note that these building blocks are generic
+and not specific to floating-point. Furthermore, SECFLOAT’s
+functionalities of math functions use operations over both
+floating-point numbers and integers. Integer operations in
+SECFLOAT’s math functions also use minimal possible
+(necessary to maintain precision) bitwidths and rely on the
+same mixed-bitwidth building blocks discussed above. We
+use the state-of-the-art 2PC protocols for the mixed-bitwidth
+building blocks provided in SIRNN [64]. More efficient
+2PC protocols for these building blocks would improve the
+performance of SECFLOAT’s functionalities even further.
+To summarize, we make the following contributions:
+• We provide the first crypto-friendly functionalities for pre-
+cise math functions. These use new range reductions, a
+new functionality to evaluate splines, and a mechanism
+
+to generate splines that are efficient to evaluate in 2PC
+(Section VI and Appendix I).
+• We provide crypto-friendly functionalities for primitive
+floating-point operations that are correct and support arbi-
+trary floating-point representations (Section V).
+• We build a library SECFLOAT2 for secure 2-party compu-
+tation of 32-bit floating-point arithmetic which is up to six
+orders of magnitude more accurate and up to three orders of
+magnitude more efficient than prior work (Section IX).
+• Using privacy-preserving proximity testing, we show that
+SECFLOAT outperforms prior floating-point 2PC libraries in
+both accuracy and performance. We provide an example
+of machine learning inference with 2PC that concretely
+justifies the use of floating-point over fixed-point arithmetic
+(Section IX-C).
+F. Other Related Work
+There is prior work that focuses on implementing floating-
+point in the honest majority setting [22], [23], [43], [45],
+[48], [57] but these custom functionalities are imprecise [63].
+Moreover, we focus on the 2PC setting that provides stronger
+security guarantees. It is possible to use CBMC-GC to get
+correct functionalities for primitive operations [14], [63].
+However, ABY-F [28] outperforms it on primitive operations
+and the overheads of this approach are intractable for math
+functions (Section IX-A3). Fixed-point math implementations
+include [13], [21], [25], [40], [46], [47], [55], [64], [67].
+Golden section numbers [31] is an alternative real number
+representation that has been evaluated in the honest-majority
+setting. HE-based works [15], [16], [56], [61], [75] focus on
+floating-point addition/multiplication and are less performant
+than ABY-F. Orthogonal to SECFLOAT is the work on OTs
+with sublinear communication [19], [27], [73] that when com-
+bined with SECFLOAT can further improve the performance
+in low-bandwidth settings [64] (Appendix C).
+II. WALK-THROUGH EXAMPLE
+To explain the differences between standard math libraries
+and SECFLOAT, we provide an example where we start with a
+standard implementation L of log2 x and incrementally modify
+it to obtain SECFLOAT’s crypto-friendly functionality. First,
+L expresses the input float x as x = m2N with m = 1 + δ
+where δ is a double s.t. 0 ≤δ < 1, and N is an integer.
+Using the range reduction log2 x = N + log2(1 + δ), L first
+computes y ≈log2(1 + δ) using a polynomial approximation
+which uses the Taylor series polynomial with degree seven:
+y = δ −δ2
+2 + . . . −δ7
+7 . Here, all the arithmetic operations are
+performed using doubles. Then, L rounds the double y + N
+to a float f and returns f. Although f is precise, L is not
+crypto-friendly because it uses high degree polynomials over
+high bitwidth doubles.
+To make L crypto-friendly, we first replace doubles having
+q = 52 mantissa bits with a representation having q = 27.
+Each floating-point operation can introduce a rounding error
+2Implementation is available at https://github.com/mpc-msri/EzPC.
+of
+1
+2q [35]. With q = 27, the computation y + N suffers
+from high numerical errors. When N = −1 and δ ≈1 then
+y ≈1 and subtracting approximately computed values that
+are close to each other leads to cancellation errors (here, y
+is approximate because of the rounding errors caused in the
+polynomial evaluation). These errors were insignificant when
+y was a double with q = 52 but they tank the precision with
+q = 27. Hence, SECFLOAT uses the following novel range
+reduction: when N ̸= −1 then log2 x = N + log2(1 + δ)
+(as before) and when N = −1 then log2 x = log2(1 −δ′),
+where δ′ =
+ 1 −m
+2
+
+. Note that the value of δ′ computed
+using finite-bit arithmetic over m is provably exactly equal to
+the value obtained if δ′ were to be computed with operations
+performed over infinite-bit real numbers using standard results
+from numerical analysis (e.g., Sterbenz’s theorem [70]).Thus,
+SECFLOAT’s range reduction avoids cancellation errors.
+Next, we replace high degree polynomials with low degree
+(degree 3) piecewise polynomials or splines that are more effi-
+cient in 2PC. Hence, log(1+δ) ≈θ(i)
+0 +θ(i)
+1 δ+θ(i)
+2 δ2 +θ(i)
+3 δ3
+if δ ∈[κ(i), κ(i+1)). We show how to compute θ(i)
+j s and κ(i)s
+in Appendix I. To efficiently compute this step, we provide a
+new functionality that given a public spline and a secret δ finds
+(θ(i)
+0 , θ(i)
+1 , θ(i)
+2 , θ(i)
+3 ) s.t. δ ∈[κ(i), κ(i+1)) (Section VI-A).
+Finally, we replace the q = 27 additions in spline evaluation
+with cheaper additions that have lower cryptographic cost at
+the expense of larger errors than the correct additions (multi-
+plications are still correct). We then recompute the splines to
+ensure that the new splines lead to math functionalities with
+provably precise outputs while using the cheap incorrect addi-
+tions. We show the final SECFLOAT functionality for log2 x in
+Figure 10 that has been exhaustively tested for precise results
+on all possible floating-point inputs (Section VI).
+This example demonstrates that SECFLOAT strikes a deli-
+cate balance between cryptographic costs and numerical errors,
+which has never been achieved before: prior cryptographic
+libraries are imprecise and the standard math libraries are
+inefficient with 2PC (Section IX).
+III. FLOATING-POINT BACKGROUND
+Floats in the IEEE standard [4] consist of a sign bit s, an 8-
+bit unsigned integer η called the biased exponent, and 23 man-
+tissa bits ω. These encode the real number (−1)s·2η−127·1.ω.
+We use the standard notation that binary strings are prefixed
+with 0b. For example, s = 0, η = 127, ω = 0b0221 (a
+23-bit binary string with top 22 bits zero and least sig-
+nificant bit 1), represents the real number 1 + 2−23. This
+representation doesn’t enjoy nice algebraic properties that
+are critical for cryptography. For example, the numbers are
+not evenly distributed which makes masking difficult. Hence,
+performing secure computation over floating-point is usually
+more expensive than cryptography over integers [28].
+A. Special values
+Our aim with SECFLOAT is to provide the same floating-
+point support that standard software operates with. IEEE
+standard defines four special values: ±inf (the largest and
+
+the smallest representable values), ±0, NaNs (that are result
+of 0/0, log(−1), etc.) and denormals (small numbers to enable
+gradual underflows). The standard libraries for floating-point
+software don’t handle NaNs and denormal special values
+correctly by default. For example, Intel’s math libraries, with
+optimizations turned on, doesn’t handle denormals correctly
+and requires extra compilation flags to enable strict adherence
+to the IEEE standard. The reason for this design is two fold:
+handling these special values correctly incurs a significant
+performance cost and writing software that uses these special
+values properly requires specialized expertise in numerical
+analysis which is beyond the scope of most programmers. The
+algebra of these special values is counter-intuitive, e.g., x = x
+is false when x is NaN. Hence, although there is no conceptual
+difficulty in supporting denormals, NaNs, and floating-point
+exceptions, neither SECFLOAT nor the baselines we compare
+with (Section IX) are IEEE compliant for them.
+B. Correct results
+The IEEE standard requires that the result of primitive oper-
+ators, i.e., addition, subtraction, multiplication and division, is
+correctly rounded. That is, the result must be computed exactly
+(with infinite precision) and then rounded to the floating-point
+number nearest to the exact result (using round to even in
+case of ties). To perform these operations, the intermediate
+computations require more bits. For example, it is common
+for handheld calculators to internally work with 13 decimal
+digits so that the user gets precise operations on 10 digits. We
+call the correctly rounded results as correct results as they are
+the most precise results permitted by the representation.
+We provide some examples of the default IEEE rounding
+mode using a representation with two mantissa bits, i.e.,
+|ω| = 2. The binary string 0bdj . . . d0.d−1 . . . d−k repre-
+sents the real number Pj
+i=−k di2i. Here, with |ω| = 2, the
+representable numbers are {. . . , 0b1.01 = 1.25, 0b1.10 =
+1.5, 0b1.11 = 1.75, . . .}. The other real numbers are not
+exactly representable as floating-point numbers and need to be
+rounded to floating-point numbers. In IEEE, the real number
+1.3125 = 0b1.0101 would be rounded down to 1.25 =
+0b1.01. In contrast, 1.4375 = 0b1.0111 would be rounded
+up to 1.5 = 0b1.10. Now, consider 1.375 = 0b1.0110 which
+is half way between 1.25 and 1.5. It is rounded up to 1.5 as
+IEEE rounds to even in case of ties. Finally, 1.625 = 0b1.101,
+which is half way between 1.5 and 1.75 is rounded down to
+1.5 because of round to even. Formally, in case of ties, the real
+number is rounded to the floating-point number whose least
+significant mantissa bit is zero. Although this rounding scheme
+is more complicated than always rounding down or rounding
+up, Reiser and Knuth [66] provide compelling arguments
+about how its use helps maintain the precision in numerical
+software. Hence, round to nearest with ties to even is the
+default rounding mode in IEEE standard and also the one that
+SECFLOAT uses.
+Next, lets consider an example of an operation on a floating-
+point number x = 1.25 = 0b1.01 = (−1)02127−1271.01 with
+ω = 0b01 and η = 127. Then x2 = 0b1.01 ∗0b1.01 =
+round(1.25 · 1.25) = round(1.5625) = round(0b1.1001) =
+0b1.10 = 1.5. Here, first the intermediate result is computed
+with high bitwidth to get the exact real result 1.5625 which is
+then subsequently rounded to only two mantissa bits to obtain
+the final result 1.5 with ω′ = 0b10 and η′ = 127. For primitive
+operations, some extra bits in intermediate values is sufficient
+to get the exact real result [4]. However, this is not the case
+with math functions.
+C. Precise results
+The IEEE standard does not require the implementations of
+math functions, i.e., transcendental functions to be correctly
+rounded because of the table maker’s dilemma [35]: computing
+the correctly rounded outputs of transcendental functions for
+|ω| bits of mantissa (say 23 bits) can require intermediate
+values with unbounded bits of mantissa. However, most math
+library implementations try to ensure that the computed result
+is “close” to the exact real result. This closeness relation is
+formally defined using an error metric3 known as ULPs (“units
+in last place”) [35]. In particular, correctly rounded results
+have ULP error ≤0.5 and commonly used implementations
+of math libraries have ULP error ≤1.
+Formally, the ULP error between a floating-point number r′
+and a real number r is defined as follows. We define ulp(r)
+as the distance between the two floating-point numbers that
+surround r. Hence, if r−is the floating-point number just
+below r and r+ is the floating-point number just above r
+then ulp(r) = (r+ −r−). Then the ULP error between r
+and r′ is ULP(r, r′) = |r−r′|
+ulp(r). For IEEE-compliant primitive
+operations, the ULP error is at most half and this upper bound
+is reached when |r−−r| = |r+ −r|. Most commonly used
+math libraries like Intel’s MKL guarantee that if the exact real
+output of a transcendental function is r then the output r′ is
+either r−or r+, which ensures that the ULP error between r′
+and r is below one. For imprecise implementations with u > 1
+ULP error, log2 u bits of the output are garbage [35].
+IV. PRELIMINARIES
+We define notation, secret sharing, background on 2PC with
+its security model, and 2PC building blocks.
+A. Notation
+Let λ be the computational security parameter. [k] refers to
+the set {0, . . . , k −1}, x||y denote concatenation of strings x
+and y, and 1{P} be the indicator function that returns 1 if the
+predicate P is true and 0 otherwise. We use the natural one-to-
+one mapping between {0, 1}ℓ(ℓ-bit integers) and the ring Z2ℓ.
+For an element x ∈Z2ℓ, we refer to its unsigned representation
+as uintℓ(x) = ζℓ(x), where ζℓis a lossless lifting operator
+that maps an element of Z2ℓto an element in Z. We use
+2’s complement encoding for signed representation, which is
+3Relative errors are undefined at zero and deducible from ULP errors [35].
+In contrast, ULP errors are always well defined. Absolute errors are less useful,
+e.g., in exponentiation, the maximum absolute error of MKL/SECFLOAT/all
+baselines exceeds 1038.
+
+Functionality
+Notation
+Description
+Communication
+Functionality
+Protocol
+Multiplexer [65]
+z = c ? x : y
+⟨z⟩ℓ= Πℓ
+MUX(⟨c⟩B, ⟨x⟩ℓ, ⟨y⟩ℓ)
+z = x if c = 1, else z = y
+2λ + 2ℓ
+OR [65]
+z = x ∨y
+⟨z⟩B = ΠOR(⟨x⟩B, ⟨y⟩B)
+z = x ∨y
+λ + 20
+Equality [65]
+e = 1{x = y}
+⟨e⟩B = Πℓ
+EQ(⟨x⟩ℓ, ⟨y⟩ℓ)
+Checks if x = y, x, y ∈Z2ℓ
+< 3
+4 λℓ+ 9ℓ
+Comparison [65]
+c = 1{x > y}
+⟨c⟩B = Πℓ
+GT(⟨x⟩ℓ, ⟨y⟩ℓ)
+Checks if x > y, x, y ∈Z2ℓ
+< λℓ+ 14ℓ
+Lookup Table (LUT) [30]
+y = L(x), y ∈Z2n
+⟨y⟩n = Πm,n
+LUT (L, ⟨x⟩m)
+index x, LUT L, z ∈Z2n
+2λ + 2mn
+Zero-Extension [64]
+y = ZXt(x, n)
+⟨y⟩n = Πm,n
+ZXt (⟨x⟩m)
+ζn(y) = ζm(x) mod 2n, m ≤n
+λ(m + 1) + 13m + n
+Truncate-and-Reduce [64]
+y = TR(x, s)
+⟨y⟩ℓ−s = Πℓ,s
+TR(⟨x⟩ℓ)
+Upper ℓ−s bits of x
+λ(s + 1) + ℓ+ 13s
+Unsigned Mixed-bitwidth
+Multiplication [64]
+z = x ∗ℓy
+⟨z⟩ℓ= Πm,n,ℓ
+UMult (⟨x⟩m, ⟨y⟩n)
+ζℓ(z) = ζm(x) · ζn(y) mod 2ℓ,
+ℓ≥max(m, n)
+λ(3µ + ν) + µ(µ + 2ν)
++16(m + n)
+Signed Mixed-bitwidth
+Multiplication [64]
+z = x ∗′
+ℓy
+⟨z⟩ℓ= Πm,n,ℓ
+SMult (⟨x⟩m, ⟨y⟩n)
+intℓ(z) = intm(x) · intn(y) mod 2ℓ,
+ℓ≥max(m, n)
+λ(3µ + ν) + µ(µ + 2ν)
++16(m + n)
+Most Significant
+Non-Zero Bit [64], [74]
+k, K = MSNZB(x)
+⟨k⟩ℓ, ⟨K⟩ℓ= Πℓ
+MSNZB(⟨x⟩ℓ)
+k, s.t. xk = 1 ∧∀i > k, xi = 0,
+K = 2ℓ−1−k
+≤λ(5ℓ−4) + ℓ2
+Table I: 2PC building blocks used by SECFLOAT. All communication is in bits. µ = min(m, n), ν = max(m, n).
+defined as intℓ(x) = uintℓ(x) −MSB(x) · 2ℓ, where MSB(x)
+is the most-significant bit of x.
+Fixed-point representation. Real numbers can be encoded
+as integers using fixed-point representation parameterized by
+bitlength ℓand scale s. For an unsigned fixed-point integer x,
+JxKℓ,s denotes its real value uintℓ(x)
+2s
+∈Q.
+B. Secret sharing
+We use 2-out-of-2 additive secret sharing schemes over
+different rings [17], [68] between two parties P0 and P1. An ℓ-
+bit secret-shared integer is represented as ⟨x⟩ℓ= (⟨x⟩ℓ
+0, ⟨x⟩ℓ
+1)
+with x = ⟨x⟩ℓ
+0 + ⟨x⟩ℓ
+1 mod 2ℓand share of Pb is ⟨x⟩ℓ
+b for
+b ∈{0, 1}. To denote shares of boolean values over Z2, we use
+the superscript B. 2-out-of-2 secret sharing schemes guarantee
+that each share contains no information about the secret (i.e.,
+the distribution of ⟨x⟩ℓ
+b for b ∈{0, 1}, is independent of x).
+C. 2PC and Security Model
+Secure 2-party computation (2PC) [36], [74] considers two
+parties P0 and P1 with private inputs x and y respectively,
+who agree to compute a public function f on these inputs,
+i.e., f(x, y). 2PC provides an interactive protocol with the
+guarantee that no party learns anything more than the output
+of the function. A common technique for constructing 2PC
+protocols is to convert computation over cleartext values into
+corresponding cryptographically secure interactive protocols
+that operate over secret shares. For instance, say P0 and P1
+wish to compute the function z = f(x, y) which is 0 if x < y
+and 1 otherwise. They would begin by secret sharing x and
+y with each other over an appropriate ring (i.e., P0 creates
+⟨x⟩ℓ= (⟨x⟩ℓ
+0, ⟨x⟩ℓ
+1) with x = ⟨x⟩ℓ
+0+⟨x⟩ℓ
+1 mod 2ℓand gives P1
+the share ⟨x⟩ℓ
+1 while P1 similarly creates shares (⟨y⟩ℓ
+0, ⟨y⟩ℓ
+1)
+and gives P0 the share ⟨y⟩ℓ
+0). Next, they would execute an
+interactive protocol Πf that would compute random shares of
+z, i.e., at the end of this protocol P0 and P1 would hold (say
+boolean) shares ⟨z⟩B
+0 and ⟨z⟩B
+1 such that ⟨z⟩B
+0 ⊕⟨z⟩B
+1 = z. Πf
+comes with a guarantee that P0 learns nothing about y and P1
+learns nothing about x by this interaction; if the parties wish
+to learn z, then they can do so by reconstructing the 2 shares
+(e.g. P0 can send the share ⟨z⟩B
+0 to P1 who computes z).
+Security Model. Our threat model is same as [28] and considers
+2-party computation secure against a static PPT semi-honest
+adversary. At the beginning of the protocol, the adversary
+corrupts one of the two parties, and tries to learn information
+about honest party’s input using the protocol messages while
+faithfully following the protocol. We argue security using the
+standard simulation paradigm [20], [36], [54].
+Our protocols for floating-point invoke several 2PC sub-
+protocols that realize the building blocks described below and
+satisfy the same security definition (see Section VII).
+D. 2PC Building Blocks
+Table I describes the building blocks we use and their
+communication cost (refer Appendix D for details), and in-
+cludes the mixed-bitwidth 2PC functions that are realizable
+using the protocols from [64], [74]. For instance, the protocol
+for multiplexer for ℓ-bit values is denoted by Πℓ
+MUX. It takes
+as input boolean shares of conditional c and ℓ-bit arithmetic
+shares of two values x and y and returns ℓ-bit arithmetic shares
+of z, where z = x if c = 1 and z = y otherwise. We use the
+protocol from [65] with total communication 2λ+2ℓ. Below,
+we define two new building blocks used by our functionalities
+and show how to realize them in Appendix D2.
+a) Less-than-and-equal: LT&EQ(x, y) takes x, y ∈Z2ℓ
+as input, and outputs two bits cLT = 1{x < y} and cEQ =
+1{x = y}. The advantage of using this functionality (over
+comparison and equality separately) is that one can implement
+it at nearly the same cost as one comparison. We provide a
+protocol Πℓ
+LT&EQ that takes as input ⟨x⟩ℓ, ⟨y⟩ℓand securely
+computes ⟨cLT⟩B, ⟨cEQ⟩B with λ(ℓ+ 3) + 14ℓ+ 60 bits of
+communication.
+b) Truncate-and-Reduce-with-Sticky-bit:
+TRS(x, s)
+is
+similar to truncate-and-reduce (Table I), except that it addi-
+tionally sets the least-significant-bit of the output as 1 if any
+of the lower s bits of x is 1. We provide a protocol Πℓ,s
+TRS
+that takes as input ⟨x⟩ℓand securely computes ⟨TRS(x, s)⟩ℓ−s
+with λ(s + 5) + ℓ+ 14s + 60 bits of communication.
+
+Functionality Fp,q
+FPCheck(α)
+1: α = (z, s, e, m)
+2: if 1{e > 2p−1 −1} then
+3:
+m = 2q; e = 2p−1
+4: if 1{z = 1} ∨1{e < 2 −2p−1} then
+5:
+m = 0; e = 1 −2p−1; z = 1
+6: Return (z, s, e, m)
+Fig. 1: Checking for overflows and underflows.
+V. PRIMITIVE OPERATIONS
+In the following, we use Greek letters for floating-point
+numbers and Roman letters for fixed-point numbers or in-
+tegers. We denote a floating-point number α, parameterized
+with p, q ∈Z+, as a tuple (z, s, e, m) where z ∈{0, 1} is the
+zero-bit (set if α = 0), s ∈{0, 1} is the sign-bit (set only if
+α ≤0), e ∈{0, 1}p+2 is the (unbiased) signed exponent taking
+values in the range [−2p−1+1, 2p−1] and m ∈{0, 1}q+1 is the
+(normalized) unsigned fixed-point mantissa taking values from
+[2q, 2q+1 −1]∪{0} with scale q. We note that α = (z, s, e, m)
+represents the real number (1−z)·(1−2s)·2intp+2(e)·JmKq+1,q.
+Below, we write α.z for the z component of the α tuple, and
+similarly for other components. For single-precision floating-
+point numbers, recall that the IEEE standard sets p = 8 and
+q = 23. Following IEEE, we define the infinities special
+values (−1)sinf as (0, s, 2p−1, 2q). Similarly, the special
+values (−1)s0 are defined as (1, s, −2p−1 + 1, 0). During
+operations, when the result overflows, i.e., the magnitude
+of the result becomes greater than the largest floating-point
+number, the result is mapped to ±inf. Similarly, when the
+result underflows, that is, its magnitude becomes too small
+to be represented as floating-point numbers, then the result
+is mapped to ±0. We provide the functionality Fp,q
+FPCheck that
+checks for overflows and underflows in Figure 1. Note that the
+underflow check also ensures that the mantissa and exponent
+are consistent with the zero-bit.
+Correctness. For all the primitive operators, we provide the
+following correctness guarantee. For inputs that are normalized
+floating-point numbers, the outputs of our functionality are
+bitwise equivalent to the primitive operators in the IEEE
+standard, except if the outputs are denormals or NANs. Our
+baselines that we compare against provide the same or weaker
+correctness guarantees (Section III).
+We begin by describing the functionality for rounding that
+is used by all our primitive operators and math functions.
+Steps in rounding and primitive operations functionalities can
+be securely realized using building blocks from Section IV-D
+(see Section VII). In this section, we describe floating-point
+multiplication, addition and division and defer the details of
+comparison to Appendix E. We show how to mechanically
+translate these functionalities to 2PC protocols in Section VII.
+A. Rounding ≫R
+The rounding-nearest (ties to even) operator x≫Rr takes as
+input an ℓ-bit fixed-point number x with scale s, and returns
+a (ℓ−r)-bit fixed-point number y with scale (s −r) that
+Functionality Fℓ
+RNTE(x, r)
+1: a = TRS(x, r −2); idx = a mod 8
+2: c = LRNTE(idx), c ∈{0, 1}
+3: Return TR(a, 2) + ZXt(c, ℓ−r)
+Fig. 2: Round Nearest Ties to Even: x≫Rr.
+Functionality Fp,q,Q
+Round∗(e, m)
+1: if 1{m ≥2Q+1 −2Q−q−1} then
+2:
+Return (e + 1, 2q)
+3: else
+4:
+Return (e, m≫R(Q −q))
+Fig. 3: Round mantissa and check for overflow.
+is closest to x in terms of the real value (Section III-B). In
+concrete terms, we have |JyKℓ−r,s−r −JxKℓ,s| ≤2−(s−r)−1.
+We provide the functionality for rounding in Figure 2.
+Correctness: Let x = xℓ−r−1||d||g||xr−1, where xℓ−r−1 ∈
+{0, 1}ℓ−r−1, d, g ∈{0, 1}, xr−1 ∈{0, 1}r−1. First, we
+replace xr−1 with a sticky bit f which is set if any bit of xr−1
+is set using TRS. Now, for correct results we need to round
+up when g and f are set (round up result is closer than the
+round down result). For the tie case, i.e., when f is zero and g
+is set, if d is set (number is odd) then we round it up to even.
+We use a lookup table (LUT) LRNTE(d||g||f) = g ∧(d ∨f)
+to encode these cases and realize round up by TR(x, r) + 1.
+B. Round&Check Fp,q,Q
+Round∗
+In floating-point operations, rounding is usually performed
+on a normalized mantissa m ∈[2Q, 2Q+1) of Q + 1 bits
+to reduce its fractional bits from higher precision Q to the
+lower precision of the floating-point representation q. Thus,
+the mantissa is rounded by Q −q bits and we get an output
+mantissa of q+1 bits. During rounding, a normalized mantissa,
+however, can become unnormalized (= 2q+1) and overflow
+q + 1 bits, in case the input mantissa is close to 2Q+1 and
+is rounded up. To account for this, in case of overflows, the
+mantissa is set to 2q and the exponent e is incremented to
+adjust for dividing mantissa by 2. We denote this functionality
+by Fp,q,Q
+Round∗(e, m) and describe it in Figure 3.
+Correctness: First note that m is only rounded to 2q+1 if
+m ≥2Q+1 −2Q−q−1. In case m > 2Q+1 −2Q−q−1,
+m
+2Q−q is
+closer to 2q+1 than 2q+1 −1. If m < 2Q+1 −2Q−q−1,
+m
+2Q−q
+is closer to 2q+1 −1. If m = 2Q+1 −2Q−q−1, according
+to the defintion of round-ties-to-even, we choose the even
+representation, i.e., 2q+1. Now, in case there are no overflows,
+we simply round the mantissa and return the result Step 4.
+Otherwise, we increment the exponent by 1 and divide the
+rounded mantissa by 2 to get 2q+1 Step 2.
+C. Multiplication p,q
+Given two floating-point values α1 and α2, we can
+write their (exact) product α as (1 −α.z) · (1 −2α.s) ·
+2int(α1.e)+int(α2.e) · Jα1.mKq+1,q · Jα2.mKq+1,q, where α.z =
+α1.z ∨α2.z and α.s = α1.s ⊕α2.s. Thus, we first add the
+
+Functionality Fp,q
+FPMul(α1, α2)
+1: e = α1.e + α2.e
+2: m = α1.m ∗2q+2 α2.m
+3: if 1{m < 22q+1 −2q−1} then
+4:
+m = m≫Rq mod 2q+1
+5: else
+6:
+m = m≫R(q + 1); e = e + 1
+7: s = α1.s ⊕α2.s; z = α1.z ∨α2.z
+8: Return α = F p,q
+FPCheck(z, s, e, m)
+Fig. 4: Floating-Point Multiplication: α1 p,q α2
+input exponents to get e = α1.e + α2.e. Next, we multiply
+the input mantissas, which results in a 2q + 2-bit fixed-
+point integer m with scale 2q such that JmK2q+2,2q ∈[1, 4).
+Now, we normalize the mantissa and adjust the exponent to
+create a normalized floating-point output. There are two cases:
+Roughly, when JmK2q+2,2q < 2, we simply round it by q bits
+and set e as the output exponent. Otherwise, we round m by
+q+1 bits and set the output exponent as e+1. Finally, we check
+for overflow and underflow. We describe our multiplication
+functionality FFPMul formally in Figure 4. Additionally, we
+perform the optimization of Appendix H1.
+Correctness: Step 1 computes e = α1.e + α2.e ∈[−2p +
+2, 2p], which fits in p + 2 bits, the bitwidth of the input
+exponents. Step 2 computes the product m = α1.m∗2q+2α2.m
+exactly in 2q + 2 bits, which is the sum of bitwidth of the
+input mantissas. Now, m ∈[22q, (2q+1 −1)2] is a fixed-point
+integer with 2q fractional bits, i.e., JmK2q+1,2q ∈[1, 4). If m
+is already in the normalized range (Case I), we simply round it
+by q bits in Step 4; else (Case II) we round it by q+1 bits and
+increment e by 1 in Step 6. An important consideration here is
+that rounding could lead to an unnormalized mantissa (equal
+to 2q+1) in Case I if m ∈[22q+1 −2q−1, 22q+1 −1] before
+rounding. Note that Case II doesn’t have this issue as even the
+largest m, i.e., (2q+1 −1)2 does not round beyond 2q+1 −2.
+Thus, to determine the case, we check if m < 22q+1 −2q−1
+(and not m < 22q+1) in Step 3 to account for the case-
+switching due to rounding. Finally, the output sign bit and the
+zero bit are set in Step 7. The last steps handles overflows and
+underflows. Since we computed the output of multiplication
+exactly before rounding the mantissa to q bits, the maximum
+error in output mantissa is 2−q−1, i.e., at most 0.5 ULP error.
+D. Addition ⊞p,q
+We need to add two floating-point numbers, α1 and α2.
+Let β1 be the larger of the two numbers in magnitude and β2
+be the smaller one. Next, we compute the difference of their
+exponents, d = β1.e −β2.e. Now we have the following 2
+cases: (1) d > q + 1: we simply return β1 as β2 is too small
+compared to β1. (2) d ≤q + 1: we align the exponents of
+both operands to β2.e by left-shifting β1.m by d to obtain
+the mantissa m1 with bitlength 2q + 2 and scale q. Next, we
+add/subtract β2.m from m1 depending on sign of β2. With
+this, we have an unnormalized mantissa m with bitlength 2q+3
+and scale q such that β2.e is the corresponding exponent. To
+Functionality Fp,q
+FPAdd(α1, α2)
+1: (eLT, eEQ) = LT&EQ(α1.e, α2.e)
+2: mLT = 1{α1.m < α2.m}
+3: (β1, β2) = eLT ⊕(eEQ ∧mLT) ? (α2, α1) : (α1, α2)
+4: d = β1.e −β2.e
+5: if 1{d > q + 1} then
+6:
+Return β1
+7: else
+8:
+m1 = β1.m ∗2q+2 2d
+9:
+m2 = ZXt(β2.m, 2q + 2)
+10:
+m2 = (β1.s ⊕β2.s ? −m2 : m2)
+11:
+m = m1 + m2; e = β2.e
+12:
+k, K = MSNZB(m), K = 22q+1−k
+13:
+m = m ∗2q+2 K; e = e + k −q
+14:
+(e, m) = F p,q,2q+1
+Round∗
+(e, m).
+15:
+z = 1{m = 0}; s = β1.s
+16:
+Return α = F p,q
+FPCheck(z, s, e, m)
+Fig. 5: Floating-Point Addition: α1 ⊞p,q α2
+Functionality Fp,q
+FPDiv(α1, α2)
+1: m1 = ZXt(α1.m, q + 2); m2 = α2.m; e = α1.e −α2.e
+2: if 1{α1.m < α2.m} then
+3:
+m1 = 2m1; e = e −1
+4: t = 2; g = ⌈q+1
+2t ⌉+ 1; k0 = g + 1
+5: h = TR(m2, q −g) mod 2g
+6: r0 = Lrecp−init(h), r0 ∈{0, 1}k0+2
+7: for i = 1 to t do
+8:
+ki = 2i · (g −1) + 3
+9:
+fi = 2ki −TR(m2 ∗ki−1+q+1 ri−1, q + ki−1 −ki)
+10:
+ri
+= ri−1 ∗ki+2 2ki−ki−1 + TR(ri−1 ∗′
+ki+ki−1+2
+fi, ki−1)
+11: m′′ = m1 ∗kt+q+2 rt; m′ = TR(m′′, kt)
+12: y1 = m2 ∗q+3 m′; y2 = y1 + ZXt(m2, q + 3)
+13: y = (m1 ∗q+3 2q+1) −(y1 + y2); (lt, eq) = LT&EQ(0, y)
+14: m = lt ⊕(eq ∧1{m mod 2 = 1}) ? m′ + 1 : m′
+15: s = α1.s ⊕α2.s, z = α1.z
+16: Return α = F p,q
+FPCheck(z, s, e, m)
+Fig. 6: Floating-Point Division: α1 p,q α2.
+normalize m, we left-shift it by 2q + 1 −k bits, where k
+is most significant non-zero bit (MSNZB) of m, and set its
+scale as 2q + 1. Accordingly, we subtract 2q + 1 −k from the
+exponent to account for the left-shift and add q + 1 to it for
+the scale change. To reduce the scale of mantissa from 2q + 1
+to q bits, we round it using Fp,q,2q+1
+Round∗
+from Section V-B to
+get the mantissa in q + 1 bits. The sign of the output is the
+same as the sign of β1 and we check if m is 0 to set the zero-
+bit. Our floating-point addition functionality FFPAdd is given
+in Figure 5. We prove correctness in Appendix F.
+E. Division p,q
+Given numerator α1 and denominator α2, we can write their
+(exact) division α as α1.z·(1−2α.s)·2intp+2(α1.e)−intp+2(α2.e)·
+(Jα1.mKq+1,q/Jα2.mKq+1,q), where α.s = α1.s ⊕α2.s. Thus,
+we first subtract the exponents to get e = α1.e −α2.e. Next,
+we compare the mantissas and if α1.m < α2.m, we double
+α1.m to get m1 and subtract 1 from the output exponent
+e. This ensures that the quotient of the mantissas is always
+
+normalized. To calculate the quotient, we first compute an
+approximation r0 for the reciprocal of α2.m with relative error
+< 2−g by using a lookup table of size 2g (Step 6). Then, we
+perform t Newton iterations on this approximation (Steps 7–
+10), essentially doubling the precision with each iteration, to
+get rt with relative error < 2−(2t(g−1)+1) ≤2−q−2. Next, we
+multiply rt with m1 to get an approximation of the quotient
+m′ that has an ULP error of at most 1 (Step 11). At this point,
+we show that the correct quotient can either be Jm′Kq+1,q or
+Jm′+1Kq+1,q. We decide between the two (in Steps 12–14) by
+checking whether Jm1Kq+2,q is closer to Jm′·α2.mK2q+3,2q or
+J(m′ + 1) · α2.mK2q+3,2q. Finally, the output sign-bit is set as
+the XOR of the input sign-bits, the output zero-bit is set as the
+numerator’s zero-bit, and we perform checks for underflows
+and overflows. We prove correctness in Appendix G.
+VI. MATH FUNCTIONS
+We describe our implementations for math functions over
+floats, i.e., p = 8 and q = 23. For SECFLOAT’s design of
+math functions please see Section I-E and Section II. Recall
+that the math functions in standard math libraries follow
+a generic three step process: range reduction, polynomial
+approximations, and output compensation.
+Next, we describe the operators that the math functionalities
+use. We use floating-point addition and multiplication with
+various parametrizations of (p, q) in polynomial approxima-
+tion and output compensation to obtain accurate results. We
+observe that for some of the intermediate operations, we don’t
+need correctly rounded results to meet the 1 ULP error bound.
+Here, the intermediate operands have a restricted range and the
+checks for corner cases can be omitted. In particular, we omit
+the calls to FFPCheck. Also, we have created functionalities for
+cheap addition (denoted by ⊞∗) and cheap division (denoted
+by ∗) that do not return correctly rounded results and
+describe them in Appendix H. Hence, the functionalities use
+⊞/ (without FFPCheck) and cheap addition/division while
+ensuring that the final result is precise. We avoid calls to
+floating-point comparisons of the form α < β by designing
+the functionalities so that β is usually a power of 2 and the
+comparison can be done by just comparing exponents.
+Correctness. To prove the precision of our functionalities,
+we exhaustively test on all possible floating-point inputs.
+For each input α, we compute β the floating-point output
+of the functionality. We also soundly model the exact real
+result using high-precision arithmetic, i.e., MPFR [34] with
+500-bits of precision. MPFR produces a tiny range [r1, r2]
+in which the exact real result must lie. We compute a
+sound bound on the ULP error of β using [r1, r2], i.e,
+max(ULP(β, r1), ULP(β, r2)). This bound is below 1 for all
+our math functionalities on all inputs. Evaluating a functional-
+ity on a single input takes microseconds and we can test each
+functionality on all inputs within a few hours.
+In the following, we use Floatp,q(r) to denote the floating-
+point number, parametrized by p and q, obtained by correctly
+rounding the real number r.
+Fℓ,n,d,p,q
+GetC
+(x, Θ = {θ(j)
+i }d,n
+i=0,j=1, K = {kj}n+1
+j=1 )
+1: {vj}j∈[n] = LK
+ActiveInterval(x), x ∈{0, 1}ℓ, vj ∈{0, 1}
+2: For j ∈[n], Vj = ZXt(vj, q + 1); V ′
+j = Vj mod 2p+2
+3: for i = 0 to d do
+4:
+zi = si = ei = mi = 0
+5:
+for j = 1 to n do
+6:
+zi = zi + vj · θ(j)
+i
+.z; si = si + vj · θ(j)
+i
+.s
+7:
+ei = ei + V ′
+j · θ(j)
+i
+.e; mi = mi + Vj · θ(j)
+i
+.m
+8: Return {(zi, si, ei, mi)}d
+i=0
+Fig. 7: Retrieve the coefficients of the active piece in an n-piece
+d-degree spline using an ℓ-bit index x: GetCℓ,n,d,p,q(x, Θ, K).
+A. Spline Evaluation
+All our math functionalities use splines, or piecewise poly-
+nomials for polynomial approximation. An n-piece spline F
+is parameterized by the knots K = {κ1, . . . , κn+1} and n
+polynomials of degree d. Let the set of coefficients of these
+polynomials be Θ = {θ(j)
+i }d,n
+i=0,j=1. Then, spline F computed
+on δ ∈[κ1, κn+1) is
+F(δ) = θ(j)
+0
++ θ(j)
+1
+· δ + . . . + θ(j)
+d
+· δd, for δ ∈[κj, κj+1)
+The main task is to select the correct polynomial coefficients
+for δ from Θ. In all our math functions, we set up the knots
+K such that the active interval for δ (j s.t. δ ∈[κj, κj+1)) can
+be determined using only a few bits from the exponent and
+the mantissa of δ. We use these bits, ℓin number, to define
+idx ∈{0, 1}ℓfrom δ and K = {k1, . . . , kn+1} from K with
+kj ∈{0, 1}ℓfor all j ∈[n+1] such that δ ∈[κj, κj+1) if and
+only if idx ∈[kj, kj+1]. With this the task is to select correct
+coefficients given idx, Θ, K.
+There are two natural ways to realize splines. 1) Compare
+idx with {k1, . . . , kn+1} and depending on the comparison
+outputs, compute the correct coefficients [59], [60]. 2) Use
+a 2ℓsize LUT that maps idx to correct coefficients. Both of
+these approaches have high cryptographic cost. The former
+requires n comparisons. In the latter approach, the lookup table
+entries are d + 1 floating-point numbers, and since the cost
+of lookup table grows linearly with entry size, this approach
+has high cost when we are looking for many coefficients. We
+give a specialized crypto-friendly functionality for selecting
+the correct coefficients in Figure 7.
+First, we construct a LUT LK
+ActiveInterval of size 2ℓ(of one-
+hot encodings) that maps idx ∈{0, 1}ℓto v ∈{0, 1}n
+such that vj = 1 if idx ∈[kj, kj+1) and 0 otherwise. Note
+that the table entries are only n-bits. After the lookup in
+Step 1, we compute the correct coefficients as P
+j vj · θj. To
+compute this with our floating-point representation, we extend
+vj to appropriate size rings (Step 2) before multiplication.
+We crucially note that since the coefficients in Θ are public,
+the above equation can be computed locally by each party
+using scalar multiplication on secret shares of vj. Hence, our
+cryptographic cost is only proportional to 2ℓ-size LUT with
+n-bit entries followed by n extensions from 1 bit to q +1 bits.
+That is, our cryptographic cost is independent of the degree
+
+Functionality F8,23
+FPsinπ(α)
+1: p = 8; q = 23; Q = 27
+2: α′ = (α.z, 0, α.e, α.m ∗Q+1 2Q−q)
+3: if 1{α.e ≥23} then
+4:
+Return Floatp,q(0)
+5: else if 1{α.e < −14} then
+6:
+γ = Floatp,Q(π) p,Q α′
+7:
+Return (γ.z, γ.s, F p,q,Q
+Round∗(γ.e, γ.m))
+8: else
+9:
+m = α.m ∗q+15 2α.e+14
+10:
+a = TR(m, q + 14); n = m mod 2q+14
+11:
+f = (1{n > 2q+13} ? 2q+14 −n : n)
+12:
+k, K = MSNZB(f); f = f ∗q+15 K
+13:
+z = 1{f = 0}; e = (z ? −2p−1 + 1 : k −q −14)
+14:
+δ = (z, 0, e, TR(f, q + 14 −Q))
+15:
+if 1{δ.e < −14} then
+16:
+µ = Floatp,Q(π) p,Q δ
+17:
+else
+18:
+if 1{δ.e < −5} then
+19:
+idx1 = δ.e + 14 mod 24
+20:
+(θ1, θ3, θ5) = GetC4,9,5,p,Q(idx1, Θ1
+sin, K1
+sin)
+21:
+else
+22:
+idx2 = 32 · (δ.e + 5 mod 27)
+23:
+idx2 = idx2 +ZXt(TR(δ.m, Q−5) mod 32, 7)
+24:
+idx2 = 1{δ.e = −1} ? 127 : idx2
+25:
+(θ1, θ3, θ5) = GetC7,34,5,p,Q(idx2, Θ2
+sin, K2
+sin)
+26:
+∆= δ p,Q δ
+27:
+µ = ((θ5 p,Q ∆) ⊞∗
+p,Q θ3) p,Q ∆
+28:
+µ = (µ ⊞∗
+p,Q θ1) p,Q δ
+29:
+Return (µ.z, a ⊕α.s, F p,q,Q
+Round∗(µ.e, µ.m)).
+Fig. 8: Floating-point sinπ8,23(α).
+of the polynomial used in the spline4. Moreover, we carefully
+choose the knots to ensure that ℓis small. All our splines have
+ℓ≤8 and n ≤64.
+Concretely, for tangent that requires only 2 coefficients,
+the na¨ıve LUT-based approach is better. But for functions
+like exponentiation and logarithm (Section VI-D) that require
+looking up 6 and 8 coefficients respectively, our approach
+has 2.3× and 3.7× lower communication than na¨ıve LUT-
+based approach, respectively. Also, our approach has 3.1× and
+3.9× lower communication than comparison-based approach
+for exponentiation and logarithm, respectively.
+Next, we describe the math functionalities for trigonometric
+sine and tangent, logarithm, and exponentiation; cosine is in
+Appendix J. Appendix K describes the splines used by them.
+The polynomials are evaluated using Horner’s rule, e.g., a +
+bx + cx2 is evaluated as a + x(b + cx).
+B. Sine
+We provide the functionality for computing sinπ(α) in
+Figure 8. First, we handle the easy cases in Steps 3-7.
+• If the input |α| ≥223, we know that sinπ(α) = 0 as all
+such numbers are integers.
+• If the input |α| < 2−14, it is small enough that approxi-
+mating sinπ(α) as πα leads to less than 1 ULP error.
+4Number of multiplications on δ needed to compute the polynomial depends
+on the degree, and hence, we aim to minimize the degree.
+For other inputs, we perform the range reduction:
+1) Range Reduction : We use the property that sinπ is an
+odd periodic function to reduce the computation of sinπ(α)
+where |α| ∈[2−14, 223) to sinπ(δ) where δ ∈[0, 0.5]. Let
+s = 1{α < 0} and β = |α| = 2 · K + a + n, where K ∈N,
+a ∈{0, 1} and n ∈[0, 1). Now, consider δ ∈[0, 0.5], defined
+as δ = n if n < 0.5 and δ = 1 −n otherwise. Then, using
+sinπ(1 −x) = sinπ(x), we have:
+sinπ(α) = (−1)a+s · sinπ(δ)
+(1)
+Although this equation is over reals, we compute bits
+a, s ∈{0, 1} and a reduced input δ ∈[0, 0.5] from α using
+the building blocks of Section IV-D in Steps 9-14.
+2) Polynomial Evaluation (Steps 15-28): For reduced in-
+puts δ < 2−14, we simply approximate sinπ(δ) as π · δ. The
+computation of sinπ(δ) on the rest of the inputs is split into
+two cases, and we design a separate spline of degree 5 (of the
+form θ1δ+θ3δ3+θ5δ5) for both cases. The first case considers
+δ ∈[2−14, 1
+32) and we use a 9 piece spline F 1 here, whose
+intervals are determined by the lower 4 bits of the exponent.
+The second case handles δ ∈[ 1
+32, 0.5] and here we use a 34
+piece spline F 2. Lower 2 bits of exponent and upper 5 bits of
+mantissa suffice to determine the intervals of F 2 on all inputs
+except δ = 0.5. To avoid looking at additional bits for δ = 0.5,
+in Step 24, if δ = 0.5 we set the 7-bit index idx2 to the idx2
+corresponding to the last interval [ 63
+128, 0.5).
+3) Output Compensation (Step 29): By Equation 1, we
+return sinπ(δ) if a ⊕s is 0, and −sinπ(δ) otherwise.
+C. Tangent
+We provide the functionality for computing tanπ(α) in
+Figure 9. For |α| /∈[2−14, 223), tanπ(α) = sinπ(α) (Steps 3-
+7). For α ∈[2−14, 223), we perform the following steps.
+1) Range Reduction: Standard approaches for range reduc-
+tion of tanπ use high degree polynomials that is not crypto-
+friendly. So, we designed our own range reduction for tanπ
+as follows. Similar to sinπ, tanπ is also an odd periodic
+function. Let s = 1{α < 0} and β = |α| = K + m,
+K ∈N and m ∈[0, 1). Now, tanπ(m) = (−1)b · tanπ(n),
+where b = 1{m > 0.5} and n = b ? 1 −m : m. We
+have tanπ(n) = tanπ(t)1−2c, where c = 1{m > 0.25} and
+t = c ? 0.5 −n : n. Now, we rewrite t =
+N
+512 + δ, where
+N ∈{0, . . . , 127} and δ ∈[0,
+1
+512]. Finally, using the identity
+tanπ(x + y) =
+tanπ(x)+tanπ(y)
+1−tanπ(x)·tanπ(y), we get:
+tanπ(α) = (−1)b+s ·
+ tanπ( N
+512) + tanπ(δ)
+1 −tanπ( N
+512) · tanπ(δ)
+1−2c
+(2)
+Thus, we get bits b, c, s ∈{0, 1}, an index N ∈{0, 1}7 and a
+reduced input δ ∈[0,
+1
+512] in Steps 9-21.
+2) Polynomial Evaluation (Steps 22-28): We use a 21-piece
+spline with polynomials of the form θ1δ + θ3δ3 to compute
+tanπ(δ) for δ ∈[2−14,
+1
+512] . We use 3 bits of the exponent
+and 2 bits from the mantissa of δ to lookup the coefficients
+from the LUT Ltan-coeffs of size 21.
+
+Functionality F8,23
+FPtanπ(α)
+1: p = 8; q = 23; Q = 27
+2: α′ = (α.z, 0, α.e, α.m ∗Q+1 2Q−q)
+3: if 1{α.e ≥23} then
+4:
+Return Floatp,q(0)
+5: else if 1{α.e < −14} then
+6:
+γ = Floatp,Q(π) p,Q α′
+7:
+Return (γ.z, γ.s, F p,q,Q
+Round∗(γ.e, γ.m))
+8: else
+9:
+if 1{α.e ≥−9} then
+10:
+m = α.m ∗q+9 2α.e+9
+11:
+(n, b) = 1{m > 2q+8} ? (2q+9 −m, 1) : (m, 0)
+12:
+(t, c) = 1{n > 2q+7} ? (2q+8 −n, 1) : (n, 0)
+13:
+f = t mod 2q; N = TR(t, q)
+14:
+if 1{N = 27} then
+15:
+N = N −1 mod 27; δ′ = Floatp,q(2−9)
+16:
+else
+17:
+k, K = MSNZB(f); f = f ∗q+1 K
+18:
+z = 1{f = 0}; e = (z ? −2p−1+1 : k−q−9)
+19:
+N = N mod 27; δ′ = (z, 0, e, f)
+20:
+else
+21:
+b = 0; c = 0; N = 0; δ′ = (α.z, 0, α.e, α.m)
+22:
+δ = (δ′.z, δ′.s, δ′.e, δ′.m ∗Q+1 2Q−q)
+23:
+if 1{δ.e < −14} then
+24:
+µ = Floatp,Q(π) p,Q δ
+25:
+else
+26:
+idx = (δ′.e+14 mod 8)||(TR(δ′.m, q−2) mod 4)
+27:
+(θ1, θ3) = Ltan-coeffs(idx), idx ∈{0, 1}5
+28:
+µ = ((θ3 p,Q δ p,Q δ) ⊞∗
+p,Q θ1) p,Q δ
+29:
+ν = Ltan-table(N), N ∈{0, 1}7
+30:
+ζ1 = µ ⊞∗
+p,Q ν;
+ζ2 = Floatp,Q(1) ⊟∗
+p,Q (µ p,Q ν)
+31:
+(η1, η2) = 1{c = 1} ? (ζ2, ζ1) : (ζ1, ζ2)
+32:
+γ = η1 ∗
+p,Q η2
+33:
+Return (γ.z, b ⊕α.s, F p,q,Q
+Round∗(γ.e, γ.m))
+Fig. 9: Floating-point tanπ8,23(α).
+3) Output Compensation (Steps 29-33): tanπ( N
+512) is re-
+trieved from a lookup table of size 128 and the output is
+computed according to Equation 2.
+D. Logarithm
+The functionality for computing log2(α) is given in Fig-
+ure 10. The input α ∈[2−126, 2128), i.e., α.s = α.z = 0 and
+we proceed with following steps.
+1) Range Reduction (Steps 2-6): Let α = m · 2N, where
+m ∈[1, 2) and N ∈[−126, 127] ∩Z. Let a = 1{N = −1}
+and define δ as δ = m −1 if a = 0 and δ = 1 −m
+2 if a = 1.
+Then, it is easy to see that the following holds:
+log2(α) =
+ N + log2(1 + δ)
+a = 0
+log2(1 −δ)
+a = 1
+(3)
+Thus, from the range reduction, we get a bit a ∈{0, 1},
+a reduced input δ ∈[0, 1), and an integer N ∈{0, 1}8. We
+use this more complicated range reduction than log2(α) =
+N + log2(1 + δ) as the latter suffers from cancellation errors
+when N = −1 and δ is close to 1. Hence, the requirement of
+precise results and desire to keep the bitwidths small dictate
+that we use Equation 3.
+Functionality F8,23
+FPlog2(α)
+1: p = 8; q = 23; Q = 27
+2: a = 1{α.e = −1}; f = a ? 2q+1 −α.m : α.m −2q
+3: k, K = MSNZB(f); f = f ∗q+1 K
+4:
+e = a ? k −q −1 : k −q
+5: z = 1{f = 0}; e = (z ? −2p−1 + 1 : e)
+6: N = α.e; δ = (z, 0, e, f ∗Q+1 2Q−q)
+7: if 1{δ.z } then
+8:
+µ = Floatp,Q(0)
+9: else
+10:
+if 1{δ.e < −5} then
+11:
+idx1 = δ.e + 24 mod 25
+12:
+(θa
+0, θa
+1, θa
+2, θa
+3) = GetC5,19,4,p,Q(idx1, Θ1
+log, K1
+log)
+13:
+(θb
+0, θb
+1, θb
+2, θb
+3) = GetC5,18,4,p,Q(idx1, Θ3
+log, K3
+log)
+14:
+else
+15:
+idx2 = 16 · (δ.e + 5 mod 27)
+16:
+idx2 = idx2 + ZXt(TR(δ.m, Q −4) mod 16, 7)
+17:
+(θa
+0, θa
+1, θa
+2, θa
+3) = GetC7,20,4,p,Q(idx2, Θ2
+log, K2
+log)
+18:
+(θb
+0, θb
+1, θb
+2, θb
+3) = GetC7,32,4,p,Q(idx2, Θ4
+log, K4
+log)
+19:
+(θ0, θ1, θ2, θ3) = a ? (θa
+0, θa
+1, θa
+2, θa
+3) : (θb
+0, θb
+1, θb
+2, θb
+3)
+20:
+µ = ((θ3 p,Q δ) ⊞∗
+p,Q θ2) p,Q δ
+21:
+µ = ((µ ⊞∗
+p,Q θ1) p,Q δ) ⊞∗
+p,Q θ0
+22: β = LInt2Float(N), N ∈{0, 1}p
+23: β′ = (β.z, β.s, β.e, β.m ∗Q+1 2Q−6)
+24: γ = a ? µ : µ ⊞∗
+p,Q β′
+25: Return (γ.z, γ.s, F p,q,Q
+Round∗(γ.e, γ.m))
+Fig. 10: Floating-point log28,23(α).
+2) Polynomial Evaluation (Steps 7-21): Depending on the
+value of a, we need to compute either log2(1+δ) or log2(1−
+δ), where δ ∈[0, 1). If δ = 0, we simply return 0. For other
+inputs, we found that δ ∈[2−23, 1) when a = 0 and δ ∈
+[2−24, 0.5] when a = 1. For all the cases described below, we
+use degree-3 splines.
+When a = 1, we split the computation of log2(1−δ) in two
+cases and design separate splines for both. 1) δ ∈[2−24, 1
+32):
+a 19-piece spline F 1 such that intervals are determined by the
+lower 5 bits of the exponent. 2) δ ∈[ 1
+32, 0.5]: a 20-piece spline
+F 2 where intervals are determined using 7 bits: lower 3 bits
+of exponent and upper 4 bits of mantissa.
+When a = 0, to compute log2(1 + δ), we do similar two
+cases. 1) δ ∈[2−23, 1
+32): a 18 piece spline F 3 determined by
+the same lower 5 bits of exponent. 2) δ ∈[ 1
+32, 1): a 32-piece
+spline F 4 determined by the same 7 bits as above.
+We provide details on exact knots used in Appendix K. As
+the knots used in the two cases of a = 0 and a = 1 have a
+large overlap, in GetC, we combine the first look-up step in
+F 1 and F 3 (similarly, F 2 and F 4) to reduce its cost.
+3) Output Compensation (Steps 23-25): Let µ be the output
+of the polynomial evaluation. As per Equation 3, if a = 1, we
+simply return µ; else, we convert N to a floating-point number
+β with p = 8 and q = 6 using an LUT LInt2Float of size 256,
+convert β to floating-point with p = 8 and q = 27, and round
+µ + β to q = 23.
+
+Functionality F8,23
+FPexp2(α)
+1: p = 8; q = 23; Q = 27; β = (α.z, 0, α.e, α.m)
+2: if 1{α.s = 0} ∧1{α.e ≥7 } then
+3:
+Return inf
+4: else if 1{α <p,q Floatp,q(−126)} then
+5:
+Return Floatp,q(0)
+6: else if 1{α.e < −24} then
+7:
+Return Floatp,q(1)
+8: else
+9:
+m = α.m ∗q+32 2α.e+24
+10:
+s = α.s; f = m mod 2q+24; N = TR(m, q + 24)
+11:
+k, K = MSNZB(f); f = TR(f ∗q+25 K, 24 + q −Q)
+12:
+z = 1{f = 0}; e = (z ? −2p−1 + 1 : k −q −24)
+13:
+N = (s ? −N : N); δ = (z, 0, e, f)
+14:
+if 1{δ.e < −24} then
+15:
+µ = Floatp,Q(1)
+16:
+else
+17:
+e′ = 1{δ.e < −6} ? −7 : δ.e
+18:
+idx = 32 · (e′ + 7 mod 28); ∆= δ p,Q δ
+19:
+idx = idx + ZXt(TR(δ.m, Q −5) mod 32, 8)
+20:
+(θ+
+0 , θ+
+1 , θ+
+2 ) = GetC8,64,3,p,Q(idx, Θ+
+exp2, Kexp2)
+21:
+(θ−
+0 , θ−
+1 , θ−
+2 ) = GetC8,64,3,p,Q(idx, Θ−
+exp2, Kexp2)
+22:
+(θ0, θ1, θ2) = s ? (θ−
+0 , θ−
+1 , θ−
+2 ) : (θ+
+0 , θ+
+1 , θ+
+2 )
+23:
+µ = (((θ2 p,Q δ) ⊞∗
+p,Q θ1) p,Q δ) ⊞∗
+p,Q θ0
+24:
+Return (0, 0, F p,q,Q
+Round∗(ZXt(N, p + 2) + µ.e, µ.m))
+Fig. 11: Floating-point exp28,23(α).
+E. Exponentiation
+Figure 11 describes the functionality to compute 2α. First,
+we handle the easy cases in Steps 2-7.
+• If α ≥128, we return inf as 2α overflows 32-bit floats.
+• If α < −126, we return 0 as 2α underflows.
+• If |α| < 2−24, then returning 1 results in < 1 ULP error.
+1) Range Reduction (Steps 9-13): Let s = 1{α < 0} and
+β = |α| = K + δ, K ∈N and δ ∈[0, 1). For N = (−1)s · K,
+2α = 2N · 2−δ if s = 1 and 2α = 2N · 2δ otherwise. From
+this range reduction, we get a bit s ∈{0, 1}, an integer N ∈
+Z ∩[−126, 128), and a reduced input δ ∈[0, 1).
+2) Polynomial Evaluation (Steps 14-23): Based on the sign-
+bit s, we need to compute either 2δ or 2−δ where δ ∈[0, 1). If
+δ < 2−24 then we can again return 1. For the remaining inputs,
+we use two 64-piece degree-2 splines, F + for 2δ and F −for
+2−δ. Both F + and F −have identical and equidistant knots
+that are multiples of
+1
+64. For small δ with δ.e ∈[−24, −7], it is
+okay to set δ.e = −7 without affecting the active interval of δ.
+With this, to determine the active interval of δ, we only need
+to examine 8 bits of δ, namely, bottom 3 bits of exponent
+and top 5 bits of mantissa. We retrieve the corresponding
+coefficients for both F + and F −for the active interval, assign
+the coefficients of the quadratic polynomial θ0 + θ1δ + θ2δ2
+based on s, and evaluate this polynomial on δ.
+3) Output Compensation (Step 24): The final output is
+simply 2N ·µ, where µ is the output of polynomial evaluation.
+Note that since N is an integer, this multiplication is equivalent
+to adding N to µ’s exponent.
+Protocol Πp,q
+FPMul(⟨α1⟩FP(p,q), ⟨α2⟩FP(p,q))
+1: Set ⟨e⟩p+2 = ⟨α1.e⟩p+2 + ⟨α2.e⟩p+2.
+2: Call ⟨m′⟩2q+2 = Πq+1,q+1,2q+2
+UMult
+(⟨α1.m⟩q+1, ⟨α2.m⟩q+1).
+3: Call ⟨c⟩B = Π2q+2
+GT
+(22q+1 −2q−1, ⟨m⟩2q+2).
+4: Call ⟨m1⟩q+1 = Π2q+2,q
+RNTE (⟨m′⟩2q+2) mod 2q+1.
+5: Call ⟨m2⟩q+1 = Π2q+2,q+1
+RNTE
+(⟨m′⟩2q+2).
+6: Set ⟨e2⟩p+2 = ⟨e⟩p+2 + 1.
+7: Call ⟨m⟩q+1 = Πq+1
+MUX(⟨c⟩B, ⟨m1⟩q+1, ⟨m2⟩q+1).
+8: Call ⟨e⟩p+2 = Πp+2
+MUX(⟨c⟩B, ⟨e⟩p+2, ⟨e2⟩p+2).
+9: Set ⟨s⟩B = ⟨α1.s⟩B ⊕⟨α2.s⟩B.
+10: Call ⟨z⟩B = ΠOR(⟨α1.z⟩B, ⟨α2.z⟩B).
+11: Ret. ⟨β⟩FP(p,q) = Πp,q
+FPCheck(⟨z⟩B, ⟨s⟩B, ⟨e⟩p+2, ⟨m⟩q+1).
+Fig. 12: 2PC protocol for floating-point multiplication
+VII. 2PC PROTOCOLS FOR FLOATING POINT
+For ease of exposition, in Sections V and VI we described
+the crypto-friendly cleartext functionalities for floating-point
+operations used in SECFLOAT. Here, we discuss how we can
+obtain the corresponding 2PC protocols using the building
+blocks discussed in Section IV-D in a straight-forward manner.
+First, consistent with the floating-point representation used by
+our functionalities, a secret shared floating-point number α is
+a tuple ⟨α⟩FP(p,q) = (⟨α.z⟩B, ⟨α.s⟩B, ⟨α.e⟩p+2, ⟨α.m⟩q+1) of
+four secret-shared values.
+Next, as an example, we provide the 2PC protocol for
+floating-point multiplication in Figure 12 derived from the
+cleartext functionality in Figure 4. Here, parties start with
+secret-shares of 2 floating-point values α1 and α2 and end up
+with shares of α1 p,q α2. For each step in Figure 4, we com-
+pute the shares of the output from the shares of the input by
+invoking the correct 2PC building block corresponding to the
+computation in that step. For instance, shares of the value m′,
+i.e., the product of the mantissas α1.m and α2.m, are obtained
+using a call to the protocol for unsigned multiplication over
+shares. All the conditionals or “if” statements are executed
+using a call to the multiplexer protocol that works over boolean
+shares of the conditional variable and arithmetic shares of the
+values being chosen. This transforms the data dependent flow
+in the cleartext functionality to data oblivious computation in
+the 2PC protocol. For example, Steps 7 and 8 correspond to the
+conditional setting of m and e in Steps 3-6 in Figure 4. Apart
+from the calls to the 2PC building blocks in Section IV-D,
+the 2PC protocol for floating-point multiplication also invokes
+protocols that check for underflows and overflows (ΠFPCheck)
+and round nearest ties to even (ΠRNTE). For completeness, we
+provide these protocols in Figures 13 and 14, respectively,
+that are derived using similar transformations to cleartext
+functionalities in Figures 1 and 2.
+We can follow the same mechanical procedure to obtain the
+2PC protocols for all primitive floating point operations from
+the corresponding cleartext functionalities in Section V. More-
+over, for the math functionalities in Section VI, each of the
+steps can be securely computed using either the protocol for
+
+Protocol Πp,q
+FPCheck(⟨α⟩FP(p,q))
+1: Call ⟨c1⟩B = Πp+2
+GT (⟨α.e⟩p+2, 2p−1 −1).
+2: Call ⟨m⟩q+1 = Πq+1
+MUX(⟨c1⟩B, 2q, ⟨α.m⟩q+1).
+3: Call ⟨e⟩p+2 = Πp+2
+MUX(⟨c1⟩B, 2p−1, ⟨α.e⟩p+2).
+4: Call ⟨c2⟩B = Πp+2
+GT (2 −2p−1, ⟨α.e⟩p+2).
+5: Call ⟨c3⟩B = ΠOR(⟨α.z⟩B, ⟨c2⟩B).
+6: Call ⟨m⟩q+1 = Πq+1
+MUX(⟨c3⟩B, 0, ⟨m⟩q+1).
+7: Call ⟨e⟩p+2 = Πp+2
+MUX(⟨c3⟩B, 1 −2p−1, ⟨e⟩p+2).
+8: Call ⟨z⟩B = ΠB
+MUX(⟨c3⟩B, 1, ⟨α.z⟩B).
+9: Return ⟨β⟩FP(p,q) = (⟨z⟩B, ⟨α.s⟩B, ⟨e⟩p+2, ⟨m⟩q+1).
+Fig. 13: 2PC protocol for checking overflows and underflows
+Protocol Πℓ,r
+RNTE(⟨x⟩ℓ)
+1: Call ⟨a⟩ℓ−r+2 = Πℓ,r−2
+TRS (⟨x⟩ℓ).
+2: Set ⟨idx⟩3 = ⟨a⟩ℓ−r+2 mod 8.
+3: Call ⟨c⟩B = Π3,1
+LUT(LRNTE, ⟨idx⟩3).
+4: Call ⟨a⟩ℓ−r = Πℓ−r+2,2
+TR
+(⟨a⟩ℓ−r+2).
+5: Call ⟨c⟩ℓ−r = Π1,ℓ−r
+ZXt
+(⟨c⟩B).
+6: Return ⟨a⟩ℓ−r + ⟨c⟩ℓ−r.
+Fig. 14: 2PC protocol for Round Nearest Ties to Even
+the floating-point primitive operations (or, its cheaper variant
+as discussed), or the building blocks from Section IV-D.
+As is standard, security of the overall protocols for floating-
+point operations can be argued in the hybrid model [20] as
+follows. First, we replace the calls to sub-protocols with calls
+to corresponding ideal (trusted) functionalities. Second, we
+note that all the sub-protocols/ideal functionalities maintain the
+invariant that they take 2-out-of-2 secret shares of the inputs
+and produce 2-out-of-2 secret shares of the output. Hence,
+during simulation, it is secure to provide random values (from
+the correct domain) as outputs of these ideal functionalities.
+With these observations, simulation is straight-forward. For
+instance, we prove security of our protocol for floating-
+point multiplication against an adversary that corrupts P0 as
+follows: the simulator will provide uniform random values
+from appropriate domains as shares for m′, c, m1, m2, m, e, z
+and β.z, β.s, β.e, β, m. It holds that the views of the adversary
+in the real execution and this simulated execution are identical.
+Proofs of security for all our protocols are similar.
+VIII. SECFLOAT IMPLEMENTATION
+We have designed SECFLOAT as a drop-in replacement for
+floating-point libraries. The users of SECFLOAT can take their
+existing numerical software written in C++ and link it with
+SECFLOAT instead of standard math libraries to obtain secure
+2PC implementations. SECFLOAT is implemented on top of
+SIRNN’s [64] building blocks available at [6] using 3200 lines
+of C++. Additionally, [64] provided an optimization, MSB-to-
+Wrap, that significantly reduces the cost of building blocks
+when the most significant bit (MSB) of the input is known (See
+Table 5, [64]). To use this optimization, in our implementation
+of floating-point functionalities, many of the bitwidths are
+incremented by 1 to keep track of the MSB.
+Appendix I
+describes how to obtain splines for the math functions.
+IX. EVALUATION
+We empirically evaluate SECFLOAT and show that it signif-
+icantly advances the state-of-the-art in 2PC of floating-point
+computation both in terms of precision, as well as communi-
+cation and latency. We compare against three baselines:
+First, we compare with ABY [2] and EMP [3], two state-
+of-the-art cryptographic libraries with floating-point support.
+They use heavily optimized circuits that were generated au-
+tomatically from hardware synthesis tools in ABY-F [28].
+Here, on some inputs, all 23 bits of mantissa are garbage
+and even some bits of the exponent are incorrect. In contrast,
+SECFLOAT implementations are both provably accurate (for
+primitive operations and math functions) and have up to 30×
+lower communication (Section IX-A2).
+For our second baseline, we compare with the MP-
+SPDZ [10], [44] semi-honest 2PC implementations of the
+custom functionalities for primitive floating-point operations
+presented by Aliasgari et al. [11], [12]. Unlike SECFLOAT,
+these implementations are imprecise (six orders of magnitude
+higher errors) and suffer up to 240× higher communica-
+tion overheads (Section IX-A2). MP-SPDZ doesn’t support
+floating-point math functions.
+As a result, the only way to evaluate math functions like sine
+precisely using 2PC frameworks that exist today is to take the
+C-code of precise math implementations from an open source
+math library like OpenLibm [50] and run it using 2PC with a
+compiler that can translate C-code to 2PC protocols. This is
+our third baseline. Like SECFLOAT, this baseline is guaranteed
+to be precise (OpenLibm is precise and 2PC protocols provide
+bitwise equivalent results to cleartext). However the communi-
+cation overheads for this baseline are intractable. For example,
+for sine, SECFLOAT’s communication is at least 1000× lower
+than this baseline (Section IX-A3). Finally, performance of
+state-of-the-art SilentOT [19], [27], [73] based protocols is
+4.5 −1152× worse than SECFLOAT (Appendix C).
+Finally, we evaluate the SECFLOAT library with two ap-
+plications: privacy-preserving proximity testing and secure
+inference in privacy-preserving advertisements.
+Experimental Setup. We perform our experiments on two
+machines, each equipped with a 4-core 3.7 GHz Xeon pro-
+cessor and 16 GBs of RAM. The machines are connected via
+LAN network providing 3 Gbps bandwidth and 0.8 ms RTT.
+A. Microbenchmarks and Comparison
+In Table II, we consider the benchmarks5 from [28], i.e.,
+floating-point comparison (CMP), multiplication (MULT), ad-
+dition (ADD), division (DIV), sinπ (SIN), cosπ (COS), tanπ
+(TAN), 2α (EXP2), and log2 α (LOG2). Next, we evaluate
+SECFLOAT and the baselines.
+5SECFLOAT also supports correct square root and precise ex, loge x, etc.
+
+Technique
+Time (in s) for Batch Size
+Comm.
+(KiB)
+ULP
+Error
+103
+104
+105
+CMP
+SECFLOAT
+0.02
+0.07
+0.30
+1.11
+NA
+ABY-F
+0.05
+0.25
+2.08
+6.93
+NA
+(2.3x)
+(3.9x)
+(7.0x)
+(6.2x)
+MP
+0.22
+1.24
+12.85
+89.64
+NA
+SPDZ
+(10.7x)
+(19.0x)
+(43.1x)
+(80.7x)
+MULT
+SECFLOAT
+0.05
+0.14
+0.69
+3.13
+0.5
+ABY-F
+0.34
+3.22
+32.20
+95.74
+0.5
+(7.0x)
+(23.0x)
+(46.7x)
+(30.6x)
+MP
+0.38
+1.36
+10.28
+72.72
+> 106
+SPDZ
+(7.7x)
+(9.7x)
+(14.9x)
+(23.2x)
+ADD
+SECFLOAT
+0.15
+0.56
+3.91
+11.10
+0.5
+ABY-F
+0.12
+1.00
+9.35
+31.33
+0.5
+(0.8x)
+(1.8x)
+(2.4x)
+(2.8x)
+MP
+3.63
+36.05
+−
+2561.22
+> 106
+SPDZ
+(23.8x)
+(64.4x)
+−
+(230.7x)
+DIV
+SECFLOAT
+0.14
+0.35
+2.43
+10.27
+0.5
+ABY-F
+0.46
+3.90
+38.36
+119.55
+0.5
+(3.2x)
+(11.2x)
+(15.8x)
+(11.6x)
+MP
+11.33
+113.25
+−
+2462.68
+> 106
+SPDZ
+(78.4x)
+(326.3x)
+−
+(239.8x)
+SIN
+SECFLOAT
+0.46
+1.59
+11.27
+42.36
+1
+ABY-F
+0.48
+4.49
+44.77
+163.49
+> 107
+(1.0x)
+(2.8x)
+(4.0x)
+(3.9x)
+COS
+SECFLOAT
+0.50
+1.60
+11.29
+42.41
+1
+ABY-F
+0.46
+4.51
+45.21
+163.86
+> 107
+(0.9x)
+(2.8x)
+(4.0x)
+(3.9x)
+TAN
+SECFLOAT
+0.66
+2.21
+14.91
+60.38
+1
+ABY-F
+1.32
+12.39
+122.37
+445.86
+> 107
+(2.0x)
+(5.6x)
+(8.2x)
+(7.4x)
+EXP2
+SECFLOAT
+0.41
+1.51
+11.28
+37.23
+1
+ABY-F
+0.85
+8.38
+83.61
+304.89
+1
+(2.0x)
+(5.6x)
+(7.4x)
+(8.2x)
+LOG2
+SECFLOAT
+0.53
+1.97
+14.94
+51.48
+1
+ABY-F
+0.92
+9.04
+90.53
+330.77
+> 106
+(1.7x)
+(4.6x)
+(6.1x)
+(6.4x)
+Table II: Comparison of SECFLOAT with ABY-F and MP-
+SPDZ. The numbers in parentheses show our improvement
+factor. ‘-’ denotes tool crash.
+OP
+Rounds
+OP
+Rounds
+ABY-F
+SECFLOAT
+ABY-F
+SECFLOAT
+CMP
+12
+11
+SIN/COS
+95/98
+196
+MULT
+47
+27
+TAN
+394
+268
+ADD
+59
+49
+EXP2
+100
+187
+DIV
+296
+84
+LOG2
+157
+256
+Table III: Rounds comparison of SECFLOAT with ABY-F.
+1) SECFLOAT evaluation: As can be seen from the last
+column, SECFLOAT has ideal ULP error: half for primitive
+operations and one for math functions. The penultimate col-
+umn shows the communication in kilobytes per operation.
+We evaluate SECFLOAT with different batch sizes of 1000
+to 100,000 operations and report the total execution time. For
+batches below size 1000, the time of SECFLOAT is about the
+same as the time for batch of size 1000. This unexpected
+behavior is because of engineering inefficiencies in the source
+code of SIRNN [6], [64] that SECFLOAT currently uses for its
+building blocks. In particular, if the implementations in SIRNN
+were to be parallelized then the cost of small batches would be
+lower. Since improvements in the 2PC implementations of the
+building blocks is orthogonal to SECFLOAT, for this evaluation
+we use the SIRNN implementations as is.
+2) Imprecise baselines: We run the microbenchmarks6 with
+ABY-F circuits [28]. For each ABY-F row in Table II, the num-
+bers shown are from evaluating these circuits from [28] with
+the best performing backend out of ABY’s garbled circuits,
+ABY’s GMW, and EMP. We observe that the math functions
+(except for EXP2) have huge ULP errors. For example, on run-
+ning LOG2 with input just below one, SECFLOAT and MKL
+output −8.59913 · 10−8 and ABY-F outputs −1.19209 · 10−7,
+which is incorrect in every digit and has a relative error of
+40%. We show such examples for other math functions in
+Appendix A. SECFLOAT’s communication is also up to 30×
+lower than ABY-F, resulting in 46× reduction in running time.
+Table III shows that the rounds of SECFLOAT are comparable
+to the rounds of ABY-F with the GMW backend. For our case
+studies (Section IX-B and Section IX-C), the 2PC performance
+is bottlenecked by the communication and not the rounds.
+We evaluate the functions available in MP-SPDZ (based on
+[11], [12]) in Table II. These implementations are imprecise
+and SECFLOAT outperforms them in both precision (up to
+106×) and communication (up to 240×).
+3) Precise baselines: Since the trigonometric functions are
+imprecise in ABY-F circuits [28], and are unavailable in MP-
+SPDZ, the only option today to run them with 2PC precisely
+is to compile existing precise C-implementations to 2PC. We
+use OpenLibm as it has open-source C-code7 for precise math
+functions. The only C-to-2PC compiler that can handle Open-
+Libm’s implementation for trigonometric sine is CBMC-GC,
+the state-of-the-art compiler from C to garbled circuits [14],
+[41], [63]. We evaluate this CBMC-GC+OpenLibm approach
+for trigonometric sine. Here, CBMC-GC generates a Boolean
+circuit with 1.7 million Non-XOR gates and running such a
+circuit using any available implementation of Yao’s garbled
+circuits will incur a communication of at least 51MiB for each
+evaluation [2], [3], [10]. This is three orders of magnitude
+larger than the communication of our sinπ functionality and
+quickly becomes intractable.
+Next, we consider Berkeley’s SoftFloat [39] as a baseline,
+which is the gold standard for correct implementations of
+primitive operations8. For this comparison, we implemented
+SoftFloat’s functionalities with the same building blocks
+as SECFLOAT, and found that SoftFloat’s functionalities
+have 6.1×, 2.4×, 3.2×, and 2.4× worse communication than
+SECFLOAT for comparison, multiplication, addition, and di-
+6TAN(x) has been implemented as DIV(SIN(x), COS(x)) for ABY-F.
+7Intel MKL’s implementations are in handwritten x86-assembly and there
+are no compilers from x86-assembly to 2PC.
+8SoftFloat doesn’t have math functions.
+
+Technique
+Time (in s) for Batch Size
+Comm.
+Average
+103
+104
+105
+(KiB)
+ULP Error
+Scenario I: Parties have secret inputs
+SECFLOAT
+0.96
+2.86
+21.42
+75.27
+33.86
+ABY-F
+2.29
+24.33
+250.68
+833.98
+(2.4x)
+(8.5x)
+(11.7x)
+(11.1x)
+Scenario II: Parties have secret-shares of inputs
+SECFLOAT
+2.41
+7.59
+55.55
+211.26
+1.05
+ABY-F
+4.21
+40.27
+415.61
+1437.73
+19612.95
+(1.7x)
+(5.3x)
+(7.5x)
+(6.8x)
+Table IV: Comparison of SECFLOAT with ABY-F on privacy-
+preserving proximity testing. The numbers in parentheses
+show our improvement factor.
+vision, respectively. SECFLOAT’s improvement can be largely
+attributed to the use of non-standard bitwidths (SoftFloat uses
+only the standard bitwidths of {8, 16, 32, 64}) and fewer “if-
+then-else” statements. For instance, SoftFloat’s addition has
+different branches depending on the equality of signs of
+operand, and then further two more sub-branches depending
+on which operand is larger. In contrast, SECFLOAT runs a
+uniform computation for all four cases.
+B. Privacy-Preserving Proximity Testing
+We evaluate SECFLOAT on privacy preserving proximity
+testing [71], the case study used in ABY-F [28]. Here, given
+secret coordinates (ψA, ϕA) and (ψB, ϕB) for points A and
+B on earth, where ψA, ψB are latitudes and ϕA, ϕB are
+longitudes, it tests whether the distance ∆between the points
+is less than a threshold ϵ. The distance ∆is calculated using
+Haversine’s formula [69]:
+∆= 2R · tan−1(
+q
+δ
+1−δ), where R is the radius of the Earth,
+δ = sinπ2( ψA−ψB
+2
+) + cosπ(ψA) · cosπ(ψB) · sinπ2( ϕA−ϕB
+2
+).
+The secure computation of ∆< ϵ can be reduced to securely
+computing δ [71]. The last column of Table IV shows the ULP
+error in computing δ in two scenarios.
+In scenario I, Alice knows A and Bob knows B and they
+want to securely compute whether distance between A and
+B is less than ϵ. As shown by [28], [71], the computation
+can be rearranged using trigonometric identities that allows
+local computation of trigonometric functions and we need to
+only compute the following floating-point operations securely:
+6 multiplications, 5 additions, and 1 comparison. We run this
+computation with both ABY-F circuits [28] and SECFLOAT
+and report the results in the top half of Table IV (we take the
+best number of ABY and EMP). The primitive operators of
+both SECFLOAT and ABY-F are correct and result in similar
+numerical errors. However, SECFLOAT’s communication is an
+order of magnitude lower.
+In scenario II, Alice and Bob both have secret shares of
+(ψA, ϕA) and (ψB, ϕB), and want to compute secret shares
+of ∆< ϵ. This scenario arises when privacy preserving
+proximity testing is a part of a bigger computation in which
+the coordinates are the output of some 2PC and cannot be
+revealed to any single party. This computation requires 4
+multiplications, 3 additions, 2 divisions, 1 comparison, 2 sinπ
+and 2 cosπ operations. Here, the trigonometric computations
+need to be performed with 2PC and the output of ABY-F is
+very imprecise (the bottom half of Table IV). On 105 randomly
+generated pairs of coordinates, the average ULP error of [28] is
+19613 ULPs, which means that more than half of the mantissa
+bits in the output are garbage on average. In contrast, the
+average numerical error of SECFLOAT is ≈1 ULP. In meters,
+this translates to ABY-F having an average deviation of ≈2
+meters, while SECFLOAT has an average deviation of ≈10−3
+meters with 6.8× lower communication.
+We conclude that SECFLOAT provides an accurate imple-
+mentation of this application. In both the scenarios, the ULP
+error of SECFLOAT-based implementation matches the error
+of the cleartext implementation that runs the floating-point
+computation with Intel’s compilers and libraries. Moreover, the
+communication of SECFLOAT are 6.8 −11× lower than the
+prior state-of-the-art 2PC implementations of this application
+and provide up to an order of magnitude faster runtimes.
+C. Machine Learning
+Consider the problem of web advertising, that is wit-
+nessing a push for 2PC-based solutions, through proposals
+like Google’s DOVEKEY [5] and Microsoft’s MACAW [9].
+Commercial advertisement networks use deep neural networks
+(DNNs) for the relevance problem; given the user information
+known as context and an advertisement, the model outputs a
+score indicating whether the advertisement is relevant to the
+user or not. There are two parties—Alice holding a secret
+unlabeled input and Bob holding the secret model weights—
+who want to run secure inference to learn relevance scores
+without revealing their secrets to each other.
+The prior works on secure deep learning [18], [24], [33],
+[47], [49], [55], [58], [60], [62] (and references therein) rely on
+converting floating-point models to fixed-point models. They
+require the scale or precision level of fixed-point numbers to
+be set manually (often ≤16). Low scales cause precision
+loss and high scales cause integer overflows. Hence, a good
+scale that preserves model accuracy (i.e., where the accuracy
+of fixed-point model is close to that of the floating-point
+model) might or might not exist. To determine the best scale,
+CRYPTFLOW [49], [64], [65] enumerates fixed-point models
+with all possible scales and picks the most accurate model.
+In this section, we evaluate an industrial relevance model
+M. It is a fully-connected feed-forward neural network that
+takes a vector of length 874 as input. It has three hidden layers
+with sizes 300, 200, and 100, respectively. The output layer
+has 4 classes with softmax activation. We evaluated M with
+CRYPTFLOW and found that no good scales exists for M
+because M has weights in a large dynamic range: they are as
+large as 10 and as small as 10−7 in magnitude. The dynamic
+range of intermediate activations is even larger and this large
+dynamic range of values makes fixed-point approximations
+unsuitable for M. All the fixed-point programs, each with
+a different scale, generated by CRYPTFLOW for M, either
+
+Task
+Size
+Time (s)
+Comm. (GB)
+Improvement
+Backprop.
+1
+40.3
+10.9
+11.3×
+Backprop.
+32
+1020.5
+329.6
+9.1×
+Inference
+1
+18.3
+4.7
+8.8×
+Inference
+32
+1036.0
+151.58
+8.8×
+Table V: Secure machine learning with SECFLOAT and its
+communication improvements over ABY-F.
+overflow the integers for large values or underflow small values
+to zero. In both cases, the fixed-point model output is garbage.
+In Table V, we perform secure inference of M with
+SECFLOAT and report the runtime and communication for
+minibatch sizes 1 and 32. For completeness, we also evaluate
+backpropagation: one forward pass, one backward pass while
+using the cross entropy loss, and a weight update. This model
+uses additions, multiplications, comparisons, divisions, and ex-
+ponentiations. As expected, the communication of SECFLOAT-
+based implementations are much lower than those based on
+ABY-F (last column of Table V). Hence, SECFLOAT enables
+accurate secure inference of relevance models in privacy-
+preserving advertising, which is impossible with the existing
+fixed-point-based frameworks.
+X. CONCLUSION AND FUTURE WORK
+We build a library SECFLOAT for 2PC of floats which is up
+to six orders of magnitude more precise and up to three orders
+of magnitude more efficient than ABY-F, CBMC-GC, and
+MP-SPDZ. Going forward, we would like to provide security
+against malicious adversaries and math functions for doubles.
+The former is an engineering effort that requires running
+SECFLOAT’s crypto-friendly functionalities with SPDZ [44].
+Accurate math functions over doubles require advanced veri-
+fication techniques (e.g., [37], [38], [52]) as verifying the pre-
+cision on all inputs via exhaustive testing on ≈264 doubles is
+intractable. In most software, the era of fixed-point arithmetic
+is long forgotten and not regretted. With SECFLOAT, we make
+a case to end the use of ad hoc fixed-point approximations in
+secure inference. In the future, we would like to explore what
+benefits SECFLOAT brings to other applications in privacy-
+preserving machine learning.
+REFERENCES
+[1] https://www-users.math.umn.edu/∼arnold/disasters/ariane.html, 2000.
+[2] “ABY: A Framework for Efficient Mixed-Protocol Secure Two-Party
+Computation,” https://github.com/encryptogroup/ABY, 2015.
+[3] “EMP-toolkit: Efficient MultiParty computation toolkit,” https://github.
+com/emp-toolkit, 2016.
+[4] “IEEE standard for floating-point arithmetic,” IEEE STD 754-2019
+(Revision of IEEE 754-2008), 2019.
+[5] “ Dovekey auction using Secure Multi Party Computation (MPC),”
+https://github.com/google/ads-privacy/blob/master/proposals/dovekey/
+dovekey auction.md, 2021.
+[6] “CrypTFlow: An End-to-end System for Secure TensorFlow Inference,”
+https://github.com/mpc-msri/EzPC, 2021.
+[7] “Intel®C++
+Compiler
+Classic
+Developer
+Guide
+and
+Reference
+,”
+https://software.intel.com/content/www/us/en/develop/
+documentation/cpp-compiler-developer-guide-and-reference/
+top/optimization-and-programming-guide/intel-math-library/
+overview-intel-math-library.html, 2021.
+[8] “Intel®oneAPI Math Kernel Library Vector Mathematics Performance
+and Accuracy Data ,” https://software.intel.com/content/www/us/en/
+develop/documentation/onemkl-vmperfdata/top.html, 2021.
+[9] “Multi-party Computation of Ads on the Web (MaCAW),” https://github.
+com/WICG/privacy-preserving-ads/blob/main/MACAW.md, 2021.
+[10] “Multi-Protocol SPDZ: Versatile framework for multi-party computation
+(accessed: May 2021),” 2021. [Online]. Available: https://github.com/
+data61/MP-SPDZ
+[11] M. Aliasgari, M. Blanton, and F. Bayatbabolghani, “Secure computation
+of hidden markov models and secure floating-point arithmetic in the
+malicious model,” Int. J. Inf. Sec., 2017.
+[12] M. Aliasgari, M. Blanton, Y. Zhang, and A. Steele, “Secure computation
+on floating point numbers,” in NDSS, 2013.
+[13] A. Aly and N. P. Smart, “Benchmarking privacy preserving scientific
+operations,” in ACNS, 2019.
+[14] D. W. Archer, S. Atapoor, and N. P. Smart, “The Cost of IEEE
+Arithmetic in Secure Computation,” Cryptology ePrint Archive, Report
+2021/054, 2021.
+[15] S. Arita and S. Nakasato, “Fully homomorphic encryption for point
+numbers,” in Inscrypt, ser. Lecture Notes in Computer Science, 2016.
+[16] S. Bai, G. Yang, J. Shi, G. Liu, and Z. Min, “Privacy-preserving oriented
+floating-point number fully homomorphic encryption scheme,” Secur.
+Commun. Networks, 2018.
+[17] G. R. Blakley, “Safeguarding cryptographic keys,” in International
+Workshop on Managing Requirements Knowledge, 1979.
+[18] F. Boemer, R. Cammarota, D. Demmler, T. Schneider, and H. Yalame,
+“MP2ML: a mixed-protocol machine learning framework for private
+inference,” in ARES, 2020.
+[19] E. Boyle, G. Couteau, N. Gilboa, Y. Ishai, L. Kohl, P. Rindal, and
+P. Scholl, “Efficient two-round OT extension and silent non-interactive
+secure computation,” in CCS, 2019.
+[20] R. Canetti, “Security and Composition of Multiparty Cryptographic
+Protocols,” J. Cryptology, 2000.
+[21] O. Catrina, “Round-efficient protocols for secure multiparty fixed-point
+arithmetic,” in COMM, 2018.
+[22] ——, “Evaluation of floating-point arithmetic protocols based on shamir
+secret sharing,” in ICETE (Selected Papers), 2019.
+[23] ——, “Performance analysis of secure floating-point sums and dot
+products,” in COMM, 2020.
+[24] N. Chandran, D. Gupta, S. L. B. Obbattu, and A. Shah, “SIMC: ML
+inference secure against malicious clients at Semi-Honest cost,” in
+USENIX Security, 2022.
+[25] V. Chen, V. Pastro, and M. Raykova, “Secure Computation for Machine
+Learning With SPDZ,” in Workshop on Privacy Preserving Machine
+Learning at NeurIPS, 2018.
+[26] W. J. Cody and W. Waite, Software Manual for the Elementary Functions
+(Prentice-Hall Series in Computational Mathematics).
+USA: Prentice-
+Hall, Inc., 1980.
+[27] G. Couteau, S. Raghuraman, and P. Rindal, “Silver: Silent VOLE
+and Oblivious Transfer from Hardness of Decoding Structured LDPC
+Codes,” in CRYPTO 2021.
+[28] D. Demmler, G. Dessouky, F. Koushanfar, A. Sadeghi, T. Schneider,
+and S. Zeitouni, “Automated synthesis of optimized circuits for secure
+computation,” in CCS, 2015.
+[29] D. Demmler, T. Schneider, and M. Zohner, “ABY - A Framework
+for Efficient Mixed-Protocol Secure Two-Party Computation,” in NDSS,
+2015.
+[30] G. Dessouky, F. Koushanfar, A. Sadeghi, T. Schneider, S. Zeitouni, and
+M. Zohner, “Pushing the Communication Barrier in Secure Computation
+using Lookup Tables,” in NDSS, 2017.
+[31] V. Dimitrov, L. Kerik, T. Krips, J. Randmets, and J. Willemson,
+“Alternative implementations of secure real numbers,” in CCS, 2016.
+[32] A. Edelman, “The mathematics of the pentium division bug,” SIAM Rev.,
+vol. 39, no. 1, 1997.
+[33] D. Escudero, S. Ghosh, M. Keller, R. Rachuri, and P. Scholl, “Im-
+proved Primitives for MPC over Mixed Arithmetic-Binary Circuits,” in
+CRYPTO, 2020.
+[34] L. Fousse, G. Hanrot, V. Lef`evre, P. P´elissier, and P. Zimmermann,
+“MPFR: A multiple-precision binary floating-point library with correct
+rounding,” ACM Trans. Math. Softw., 2007.
+[35] D. Goldberg, “What every computer scientist should know about
+floating-point arithmetic.” ACM Comput. Surv., vol. 23, no. 1, 1991.
+
+[36] O. Goldreich, S. Micali, and A. Wigderson, “How to Play any Mental
+Game or A Completeness Theorem for Protocols with Honest Majority,”
+in ACM STOC, 1987.
+[37] J. Harrison, “Floating point verification in HOL light: The exponential
+function,” Formal Methods Syst. Des., vol. 16, no. 3, 2000.
+[38] ——, “Formal verification of floating point trigonometric functions,” in
+FMCAD, ser. Lecture Notes in Computer Science, vol. 1954, 2000.
+[39] J. R. Hauser, “Berkeley softfloat (release 3e),” http://www.jhauser.us/
+arithmetic/SoftFloat.html, 2018.
+[40] B. Hemenway, S. Lu, R. Ostrovsky, and W. W. IV, “High-precision
+secure computation of satellite collision probabilities,” in SCN, 2016.
+[41] A. Holzer, M. Franz, S. Katzenbeisser, and H. Veith, “Secure two-party
+computations in ANSI C,” in CCS, 2012.
+[42] Y. Ishai, J. Kilian, K. Nissim, and E. Petrank, “Extending Oblivious
+Transfers Efficiently,” in CRYPTO 2003.
+[43] L. Kamm and J. Willemson, “Secure floating point arithmetic and private
+satellite collision analysis,” Int. J. Inf. Sec., vol. 14, no. 6, 2015.
+[44] M. Keller, “MP-SPDZ: A versatile framework for multi-party computa-
+tion,” in CCS, 2020.
+[45] L. Kerik, P. Laud, and J. Randmets, “Optimizing MPC for robust and
+scalable integer and floating-point arithmetic,” in Financial Cryptogra-
+phy Workshops, 2016.
+[46] D. Kim, Y. Son, D. Kim, A. Kim, S. Hong, and J. H. Cheon, “Privacy-
+preserving approximate gwas computation based on homomorphic en-
+cryption,” BMC Medical Genomics, vol. 13, 2020.
+[47] B. Knott, S. Venkataraman, A. Hannun, S. Sengupta, M. Ibrahim, and
+L. van der Maaten, “CrypTen: Secure multi-party computation meets
+machine learning,” in NeurIPS, 2021.
+[48] T. Krips and J. Willemson, “Hybrid model of fixed and floating point
+numbers in secure multiparty computations,” in ISC, 2014.
+[49] N. Kumar, M. Rathee, N. Chandran, D. Gupta, A. Rastogi, and
+R. Sharma, “Cryptflow: Secure tensorflow inference,” in IEEE Sympo-
+sium on Security and Privacy, 2020.
+[50] J. Lang, “OpenLibm,” https://openlibm.org/, 2016.
+[51] W. Lee, R. Sharma, and A. Aiken, “Verifying bit-manipulations of
+floating-point,” in PLDI, 2016.
+[52] ——, “On automatically proving the correctness of math.h implemen-
+tations,” Proc. ACM Program. Lang., vol. 2, no. POPL, 2018.
+[53] J. P. Lim and S. Nagarakatte, “RLIBM-32: high performance correctly
+rounded math libraries for 32-bit floating point representations,” in
+PLDI, 2021.
+[54] Y. Lindell, “How to simulate it – a tutorial on the simulation proof
+technique,” Tutorials on the Foundations of Cryptography, 2017.
+[55] J. Liu, M. Juuti, Y. Lu, and N. Asokan, “Oblivious Neural Network
+Predictions via MiniONN Transformations,” in CCS, 2017.
+[56] X. Liu, R. H. Deng, W. Ding, R. Lu, and B. Qin, “Privacy-preserving
+outsourced calculation on floating point numbers,” IEEE Transactions
+on Information Forensics and Security, vol. 11, no. 11, 2016.
+[57] Y. Liu, Y. Chiang, T. Hsu, C. Liau, and D. Wang, “Floating point
+arithmetic protocols for constructing secure data analysis application,”
+in KES, ser. Procedia Computer Science, 2013.
+[58] P. Mishra, R. Lehmkuhl, A. Srinivasan, W. Zheng, and R. A. Popa,
+“Delphi: A Cryptographic Inference Service for Neural Networks,” in
+USENIX Security, 2020.
+[59] P. Mohassel and P. Rindal, “ABY3: A Mixed Protocol Framework for
+Machine Learning,” in CCS, 2018.
+[60] P. Mohassel and Y. Zhang, “SecureML: A System for Scalable Privacy-
+Preserving Machine Learning,” in IEEE S&P, 2017.
+[61] S. Moon and Y. Lee, “An efficient encrypted floating-point representation
+using HEAAN and TFHE,” Secur. Commun. Networks, 2020.
+[62] A. Patra, T. Schneider, A. Suresh, and H. Yalame, “ABY2.0: improved
+mixed-protocol secure two-party computation,” in USENIX Security,
+2021.
+[63] P. Pullonen and S. Siim, “Combining secret sharing and garbled circuits
+for efficient private IEEE 754 floating-point computations,” in Financial
+Cryptography Workshops, 2015.
+[64] D. Rathee, M. Rathee, R. K. K. Goli, D. Gupta, R. Sharma, N. Chandran,
+and A. Rastogi, “SIRNN: A math library for secure inference of RNNs,”
+in IEEE S&P, 2021.
+[65] D. Rathee, M. Rathee, N. Kumar, N. Chandran, D. Gupta, A. Rastogi,
+and R. Sharma, “CrypTFlow2: Practical 2-Party Secure Inference,” in
+CCS, 2020.
+[66] J. F. Reiser and D. E. Knuth, “Evading the drift in floating-point
+addition,” Inf. Process. Lett., vol. 3, no. 3, 1975.
+Input
+Output
+ULP Error
+ABY-F [28]
+Ideal/SECFLOAT
+SIN
+7.5891 · 10−8
+0x33a2f983
+0
+2.38419 · 10−7
+16.7 · 106
+COS
+0.49999
+0x3effffff
+3.5 · 10−7
+9.36268 · 10−8
+37.1 · 106
+TAN
+1.89727 · 10−8
+0x32a2f983
+0
+5.96046 · 10−8
+16.7 · 106
+LOG2
+0.99999
+0x3f7fffff
+−1.1 · 10−7
+−8.59913 · 10−8
+4.6 · 106
+Table VI: Inputs which lead to large ULP errors in ABY-
+F circuits. Ideal is the exact real result. The floating-point
+inputs are shown both in their decimal as well as hexadecimal
+representations.
+[67] B. D. Rouhani, M. S. Riazi, and F. Koushanfar, “DeepSecure: Scalable
+Provably-Secure Deep Learning,” in DAC, 2018.
+[68] A. Shamir, “How to share a secret,” Commun. ACM, 1979.
+[69] R. W. Sinnott, “Virtues of the Haversine,” Sky Telesc., vol. 68, 1984.
+[70] P. H. Sterbenz, Floating-point computation, ser. Prentice-Hall series in
+automatic computation.
+Prentice-Hall, 1974.
+[71] J. ˇSedˇenka and P. Gasti, “Privacy-preserving distance computation and
+proximity testing on earth, done right,” in AsiaCCS, 2014.
+[72] Xilinx, “Vivado Design Suite User Guide, High-level Synthesis,”
+https://www.xilinx.com/support/documentation/sw manuals/
+xilinx2012 2/ug902-vivado-high-level-synthesis.pdf, 2015.
+[73] K. Yang, C. Weng, X. Lan, J. Zhang, and X. Wang, “Ferret: Fast
+extension for correlated OT with small communication,” in CCS, 2020.
+[74] A. C. Yao, “How to Generate and Exchange Secrets (Extended Ab-
+stract),” in FOCS, 1986.
+[75] T. Zhu, X. Zou, and J. Pan, “Query with SUM aggregate function on
+encrypted floating-point numbers in cloud,” J. Inf. Process. Syst., vol. 13,
+no. 3, 2017.
+APPENDIX
+A. Example inputs with imprecise outputs in ABY-F
+In Table VI, we provide example inputs that lead to very
+imprecise outputs in ABY-F circuits [28]. We did not evaluate
+the precision of these libraries exhaustively; these are the
+inputs that have the maximum error in the tests we ran and
+larger errors are possible. The third column shows the exact
+real result with six decimal digits and SECFLOAT produces the
+same answer. The imprecision in ABY-F’s sine is particularly
+worrisome as when it is used in computing cosecant ( 1
+sin)
+or cotangent ( cos
+sin ) then the user will run into divide by zero
+errors on perfectly valid inputs. For reference, Intel recalled
+its pentium processors when DIV(4195835,3145727) returned
+1.33373 instead of 1.33382. In Table VI, even the exponent
+of the ABY-F output is wrong.
+B. Performance numbers of ABY
+In this section, we provide performance numbers of ABY
+for both garbled circuits (GC) and GMW. See Table VII
+for microbenchmark numbers and Table VIII for proximity
+testing.
+
+Operation
+Time (in s) for Batch Size
+Comm.
+(KiB)
+ULP
+Error
+103
+104
+105
+CMP
+GC
+0.11
+0.71
+6.94
+8.82
+NA
+(5.5x)
+(5.6x)
+(23.2x)
+(7.9x)
+GMW
+0.07
+0.31
+2.81
+6.93
+(3.2x)
+(2.4x)
+(9.4x)
+(6.2x)
+MULT
+GC
+0.79
+8.45
+83.74
+96.26
+0.5
+(16.0x)
+(60.4x)
+(121.4x)
+(30.7x)
+GMW
+0.41
+3.89
+36.34
+95.74
+(8.3x)
+(27.8x)
+(52.7x)
+(30.6x)
+ADD
+GC
+0.52
+5.13
+52.17
+60.04
+0.5
+(3.4x)
+(9.2x)
+(13.3x)
+(5.4x)
+GMW
+0.29
+2.34
+25.12
+58.96
+(1.9x)
+(4.2x)
+(6.4x)
+(5.3x)
+DIV
+GC
+1.44
+15.15
+−
+170.61
+0.5
+(10.0x)
+(32.8x)
+(11.5x)
+GMW
+0.80
+6.74
+63.33
+171.25
+(5.5x)
+(14.6x)
+(22.1x)
+(11.5x)
+SIN
+GC
+1.37
+14.36
+−
+164.98
+> 107
+(3.0x)
+(9.0x)
+(3.9x)
+GMW
+0.72
+7.13
+62.29
+165.54
+(1.6x)
+(4.5x)
+(5.5x)
+(3.9x)
+COS
+GC
+1.36
+14.17
+−
+165.36
+> 107
+(2.5x)
+(8.9x)
+(3.9x)
+GMW
+0.75
+6.41
+62.73
+165.92
+(1.4x)
+(4.0x)
+(5.6x)
+(3.9x)
+EXP2
+GC
+2.63
+24.97
+−
+306.39
+1
+(6.3x)
+(16.2x)
+(8.2x)
+GMW
+1.26
+13.32
+112.83
+309.15
+(3.0x)
+(8.6x)
+(10.0x)
+(8.3x)
+LOG2
+GC
+2.89
+27.84
+−
+332.26
+> 106
+(5.5x)
+(13.8x)
+(6.5x)
+GMW
+1.38
+12.63
+123.44
+335.44
+(2.6x)
+(6.3x)
+(8.3x)
+(6.5x)
+Table VII: Performance numbers for ABY-GC and ABY-
+GMW. The numbers in parentheses show SECFLOAT’s im-
+provement factor. ‘-’ denotes tool crash.
+Technique
+Time (in s) for Batch Size
+Comm.
+Average
+103
+104
+105
+(KiB)
+ULP Error
+Scenario I: Parties have secret inputs
+GC
+7.68
+74.78
+−
+864.48
+33.86
+(7.8x)
+(24.4x)
+(11.5x)
+GMW
+3.57
+34.86
+−
+875.98
+(3.6x)
+(11.4x)
+(11.6x)
+Scenario II: Parties have secret-shares of inputs
+GC
+12.40
+124.01
+−
+1459.80
+19612.95
+(4.6x)
+(14.1x)
+(5.9x)
+GMW
+5.73
+55.36
+−
+1476.56
+(2.1x)
+(6.3x)
+(6.0x)
+Table VIII: Performance of ABY-GC and ABY-GMW on
+privacy-preserving proximity testing. The numbers in paren-
+theses show SECFLOAT’s improvement factor. ‘-’ denotes tool
+crash.
+C. Silent OT and extensions.
+Another baseline we consider is running accurate function-
+alities with GMW [36] where the required oblivious transfers
+(OTs) are preprocessed using SilentOT extension [19], [27]
+and pseudorandom correlation generators (PCGs) [73]. We ran
+Ferret [73], which is the state-of-the-art, to estimate the cost of
+OT preprocessing for division from ABY-F and OpenLibm’s
+sine, and observed that the time for this preprocessing alone9
+was 16.4× and 1152× worse than the total runtime of
+SECFLOAT. The communication of Ferret+GMW for division
+is 2.2× better and for sine is 36× worse than SECFLOAT.
+A recent work Silver [27] improves upon Ferret using new
+non-standard assumptions. Using Silver, preprocessing time
+is 4.5× and 315× worse than total runtime of SECFLOAT
+for division and sine respectively. The communication of
+Silver+GMW for division is 3.8× better and for sine is 21×
+worse than SECFLOAT.
+Above comparisons used traditional IKNP-style [42] OT
+extensions for building blocks of SECFLOAT. We note that
+almost all of SECFLOAT’s building blocks in Section IV-D use
+OTs and can benefit from SilentOT/PCG techniques, that trade
+communication with compute, to further improve SECFLOAT’s
+performance in low bandwidth settings. In our evaluation set
+up, IKNP works better for SECFLOAT.
+D. 2PC Building Blocks
+1) Existing building blocks:
+a) Zero extension.: For x ∈Z2m, zero-extension to
+n > m bits is defined as ZXt(x, n) = ζm(x) mod 2n. [64]
+provides a protocol Πm,n
+ZXt that takes as input ⟨x⟩m and outputs
+⟨ZXt(x, n)⟩n with communication of at most λ(m + 1) +
+13m + n bits. When m = 1, we do extension using the
+cheaper Boolean-to-Arithmetic (B2A) protocol, which costs
+λ + n bits [65].
+b) Truncate-and-Reduce.: We denote truncate-reduce by
+s bits as TR(x, s) that takes x of ℓbits, drops the lower s
+bits and returns upper ℓ−s bits as the truncated output. [64]
+provides a protocol Πℓ,s
+TR that takes ⟨x⟩ℓas input and returns
+⟨TR(x, s)⟩ℓ−s with communication λ(s + 1) + ℓ+ 13s bits.
+c) Multiplication with non-uniform bitwidths.: Unsigned
+multiplication between x ∈Z2m and y ∈Z2n with the output
+in an ℓ-bit ring is denoted by x ∗ℓy = ζm(x) · ζn(y) mod 2ℓ.
+[64] gives a protocol Πm,n,ℓ
+UMult that takes ⟨x⟩m and ⟨y⟩n as input
+and returns ⟨x ∗ℓy⟩ℓ. The communication complexity of this
+protocol is roughly λ(3µ+ν)+µ(µ+2ν)+16(m+n) where
+µ = min(m, n) and ν = max(m, n). Signed multiplication is
+denoted by x∗′
+ℓy = intm(x)·intn(y) mod 2ℓ, and its protocol
+Πm,n,ℓ
+SMult has the same communication as the unsigned case.
+d) MSNZB: For an ℓ-bit number x, MSNZB(x) is de-
+fined as the index of the most significant non-zero bit. That is,
+MSNZB(x) = k ∈{0, . . . , ℓ−1} such that xk = 1 and xi = 0
+for all i > k. We make slight modifications10 to protocol from
+[64] to create a protocol Πℓ
+MSNZB that takes ⟨x⟩ℓas input and
+outputs {⟨zi⟩ℓ}i∈[ℓ] such that zi = 1 for i = MSNZB(x) and
+0 otherwise. Given {⟨zi⟩ℓ}, the parties can locally compute
+⟨k⟩ℓ= P
+i∈[ℓ] i · ⟨zi⟩ℓand ⟨K⟩ℓ= P
+i∈[ℓ] 2ℓ−1−i · ⟨zi⟩ℓ.
+Alternatively, garbled circuits (GC) can be used to get boolean
+shares of one-hot encoding of MSNZB using 2(ℓ−1) AND
+operations and ℓB2A operations, which costs λ(5ℓ−4) + ℓ2
+9Ignoring the runtime of online multi-round GMW.
+10 [64] produces boolean shares of one-hot encoding. To get arithmetic
+shares, we append it with COT-based boolean-to-arithmetic share conversion
+from [65].
+
+bits. The MSNZB protocol from [64] is more communication-
+efficient than the GC solution; please refer [64] for the exact
+cost expression.
+e) Comparison.: We require a protocol that takes ⟨x⟩ℓ
+and ⟨y⟩ℓas input and returns ⟨1{x < y}⟩B as output. Special-
+ized protocols for this function instead compute 1{x−y < 0}
+and hence, for correctness require that |x −y| < 2ℓ−1 for
+unsigned inputs and |x| + |y| < 2ℓ−1 for signed inputs. Due
+to this constraint, while invoking the comparison protocol for
+greater-than Πℓ
+GT, we set the bitwidths of x, y such that this
+condition is met. We use the protocol for comparison from
+[65] that has communication of < λℓ+ 14ℓbits (for both
+signed and unsigned numbers).
+f) Equality.: We use a slightly modified version of the
+millionaires’ protocol from [65] to compute equality-check. In
+particular, their millionaires’ protocol already does most of the
+work required for equality-check, and we can get an equality-
+check protocol Πℓ
+EQ straightforwardly from it by avoiding
+the extra AND computations. The communication cost of the
+resultant protocol is < 3
+4λℓ+ 9ℓbits.
+g) Lookup Tables.: The lookup table (LUT) protocol
+Πm,n
+LUT takes a table L with 2m entries of n-bits each and ⟨x⟩m
+as inputs, and outputs ⟨z⟩n such that z = L[x]. A single call
+to
+ 2m
+1
+
+-OTn realizes this functionality with communication
+2λ + 2mn bits [30].
+2) New Building Blocks: Our new building blocks, namely,
+less-than-and-equal (LT&EQ) and truncate-and-reduce-with-
+sticky-bit (TRS), reduce to a functionality called wrap-and-all-
+zeros Wrap&All0s(⟨x⟩ℓ). This functionality on ⟨x⟩ℓoutputs
+two secret-shared bits ⟨w⟩B and ⟨z⟩B, where wrap w =
+1{⟨x⟩ℓ
+0 + ⟨x⟩ℓ
+1 ≥2ℓ}, and all-zero result z = 1{⟨x⟩ℓ
+0 +
+⟨x⟩ℓ
+1 = 0 mod 2ℓ}. The reductions of LT&EQ and TRS to
+Wrap&All0s are as follows:
+• LT&EQ: Since |x|+|y| < 2ℓ−1, we can express the 2 output
+bits as cLT = 1{c < 0} and cEQ = 1{c = 0}, respectively,
+where c = x−y. From [65], cLT = MSB(c) = MSB(⟨c⟩ℓ
+0)⊕
+MSB(⟨c⟩ℓ
+1)⊕dw, where dw = 1{d0+d1 ≥2ℓ−1}, with di =
+⟨c⟩ℓ
+i mod 2ℓ−1. Similarly, cEQ = ¬MSB(c)∧dz = ¬cLT∧dz,
+where dz = 1{d0 + d1 = 0 mod 2ℓ−1}. Now, observe that
+Wrap&All0s on ⟨d⟩ℓ−1 outputs precisely (dw, dz). Hence
+LT&EQ can be computed by a single call to Wrap&All0s
+and a single AND.
+• TRS: For i ∈{0, 1}, let xℓ−s,i ∈{0, 1}ℓ−s and xs,i ∈
+{0, 1}s be the upper ℓ−s and lower s bits of ⟨x⟩ℓ
+i,
+respectively. Now, TRS(x, s) = TR(x, s) ∨¬tz, where
+tz = 1{xs,0 + xs,1 = 0 mod 2s}. From [64], TR(x, s) =
+xℓ−s,0+xℓ−s,1+ZXt(tw, ℓ−s), where tw = 1{xs,0+xs,1 ≥
+2s}. Wrap&All0s on ⟨xs⟩s outputs tw and tz and from this
+TRS can be computes using a 1 OR and 1 zero-extension.
+Finally, to compute Wrap&All0s, we use ideas similar
+to what was used in [64] to compute Mill&Eq(x, y). This
+functionality takes ⟨x⟩ℓ, ⟨y⟩ℓas input and outputs ⟨c⟩B =
+1{x > y} and ⟨e⟩B = 1{x = y} and could be computed
+at nearly the same communication cost as computing only
+⟨c⟩B (λℓ+ 14ℓbits). By writing w and z in Wrap&All0s
+Functionality Fp,q
+FPLT(α1, α2)
+1: sEQ = 1 ⊕α1.s ⊕α2.s
+2: (eLT, eEQ) = LT&EQ(α1.e, α2.e)
+3: (mLT, mEQ) = LT&EQ(α1.m, α2.m)
+4: if 1{sEQ = 1} then
+5:
+Return (α1.s ⊕eLT ⊕(eEQ ∧mLT)) ∧¬(mEQ ∧eEQ)
+6: else
+7:
+Return α1.s ∧¬(α1.z ∧α2.z)
+Fig. 15: Floating-Point Less Than: α1 <p,q α2
+as w
+= 1{x0
+> 2ℓ−x1} ⊕1{x0
+= 2ℓ−x1} and
+z = 1{x0 = 2ℓ−x1} ∧1{x0 = x1 = 0}, the values
+a = 1{x0 > 2ℓ−x1} and b = 1{x0 = 2ℓ−x1} can be
+computed using Mill&Eq on (ℓ+1)−bit inputs. Now, w = a⊕b
+and z = b ∧1{x0 = 0} ∧1{x1 = 0}. Hence, Wrap&All0s
+can be computed with a single call to Mill&Eq and 2 AND
+operations.
+E. Floating-Point Comparison <p,q
+In Figure 15, given two floating-point values α1 and α2, to
+check if α1 < α2, we start by comparing their signs. If the
+signs are unequal then we return the sign of α1, except if α1
+and α2 are both ±0, in which case we return false. If the signs
+are equal and positive (the negative case is similar) then we
+compare the exponents and return true if exponent of α1 is
+smaller. If the exponents are equal as well then we compare
+the mantissa and return true if the mantissa of α1 is smaller.
+If the sign, exponent, and mantissa of α1 and α2 are equal
+then we return false.
+F. Correctness of Floating-Point Addition
+In Figure 5, the operands are reordered according to mag-
+nitude in Step 3 such that β1 is larger of the two. Next, we
+compute the difference between the exponents d = β1.e−β2.e
+in p + 2 bits in Step 4 and check if d > q + 1 in Step 5. Note
+that p + 2 bits suffice for this comparison assuming q < 2p.
+If d > q + 1 (Case I), the output is simply set to β1 in
+Step 6 as β2 < β1 · 2−q−1, which implies that ignoring β2
+leads to a < 0.5 ULP error when q bits of the mantissa are
+preserved. If d ≤q + 1 (Case II), we add the mantissas of
+β1 and β2 in 2q + 2 bits as follows: We left shift β1.m by d
+and extend β2.m in Steps 8 & 9 to ensure that alignment and
+addition of mantissas can be done without losing any bits.
+Next, β2.m is multiplied by −1 if the signs of β1 and β2
+differ. With a common exponent (β2.e), the mantissas are then
+added in Step 11 to get m. Note that m fits in 2q + 2 bits as
+its maximum value is 22q+2 −1 and its smallest value is 0.
+In Steps 12 & 13, we normalize m and adjust the exponent
+to get a 2q + 2-bit mantissa with scale 2q + 1 such that
+JmK2q+2,2q+1 ∈[1, 2) ∪{0}. To get the correctly rounded
+mantissa with q fractional bits, we perform a rounding by
+q +1 bits using Fp,q,2q+1
+Round∗
+from Section V-B on m in Step 14.
+Finally, we set the sign and zero-bit in Step 15 and return the
+result after checking for overflows and underflows.
+It is easy to see that our functionality does not discard any
+bits in the case the smaller operand can affect the final rounded
+
+output and only perform the rounding after computing the
+result exactly. Thus, our functionality returns correctly rounded
+results and admits at most 0.5 ULP error due to rounding.
+G. Correctness of division
+Let c = 1{α1.m < α2.m} and e = intp+2(α1.e) −
+intp+2(α2.e) −c, and let ˜n =
+m1
+m2 , where m1 = 2c · α1.m
+and m2 = α2.m. Then, ignoring the sign and zero-bit, it is
+easy to see that the division output is equal to 2e · ˜n. Now, if
+˜n (correctly) rounded to q bits is normalized ∈[1, 2), then we
+can simply set it as the output mantissa m, along with output
+exponent as e, and be done. Note that 1 ≤˜n ≤2 −2−q
+as 1 ≤
+α1.m
+α2.m = ˜n ≤
+α1.m
+2q
+≤2 −2−q if c = 0 and
+1 <
+2q+1
+α2.m ≤˜n ≤
+2α1.m
+α1.m+1 = 2 −
+2q+1
+α1.m+1 ≤2 −2−q
+otherwise. This implies that 1 ≤
+⌊˜n·2q⌉
+2q
+< 2, and thus, ˜n
+rounded to q bits is always normalized. Now, we show that
+m in Step 14 is indeed ˜n (correctly) rounded to q bits, i.e.,
+|˜n −JmKq+1,q| ≤2−q−1, and that will conclude our proof.
+For any fixed-point integer z ∈Z2ℓwith scale s, let ˜z =
+JzKℓ,s denote the real value it represents. From Lemma 2 and
+Lemma 3, for all i ∈[0, t], ri (in Steps 6 & 10) of Figure 6
+satisfies |1 −˜m2 · ˜ri| < 2−(2i(g−1)+1) as ˜m2 ∈[1, 2) and
+ki = 2·
+ 2i−1(g−1)+1
+
++1. Since g = ⌈q+1
+2t ⌉+1 (in Step 4),
+we have |1−˜m2 · ˜rt| < 2−q−2. Next, observe that |˜n−˜m′′| =
+|˜n −˜m1 · ˜rt| = |˜n · (1 −˜m2 · ˜rt)| < 2−q−1 as m′′ (in Step 11)
+exactly computes m1 · rt. From Lemma 1, ˜m′ = ˜m′′ −e1,
+where e1 ∈[0, 2−q), and we have −2−q−1 < ˜n −˜m′ =
+˜n−˜m′′+e1 < 3
+2 ·2−q. Thus, if −2−q−1 < ˜n−˜m′ < 2−q−1, m′
+is correctly rounded and if 2−q−1 < ˜n−˜m′ < 3
+2 ·2−q, m′+1 is
+the correct output. If ˜n−˜m′ = 2−q−1, then the correct output
+is the one which is an even integer. We capture these checks in
+Steps 12–14, which check if ˜y = JyKq+3,2q = 2 ˜m1 −(˜y1 + ˜y2)
+is greater than and equal to 0, where ˜y1 = ˜m2 ·Jm′Kq+2,q and
+˜y2 = ˜m2 · Jm′ + 1Kq+2,q. This helps determine the position of
+˜m1 relative to ˜y1 and ˜y2, and consequently, decides between
+m′ and m′ + 1. We use q + 3 bits for this check as |y| ≤
+(| ˜m1−˜y1|+| ˜m1−˜y2|)·22q < ˜m2·( 1
+2·2−q+ 3
+2·2−q)·22q < 2q+2.
+Lemma 1. Let x ∈Z2ℓbe a fixed-point integer with scale
+s, and let y = TR(x, s′). Then, it holds that JyKℓ−s′,s−s′ =
+JxKℓ,s −e, where e ∈[0, 2−(s−s′)).
+Lemma 2. Let x ∈Z2q+1, y ∈Z2g+3 such that ˜x =
+JxKq+1,q ∈[1, 2) and y = Lrecp−init(z), where z = TR(x, q −
+g) mod 2g and Lrecp−init(i) =
+j
+2g+1
+1+ i
+2g
+k
+mod 2g+3. Then, it
+holds that |1 −˜x · ˜y| < 2−g, where ˜y = JyKg+3,g+1.
+Proof. For every x ∈[2q + z · 2q−g, 2q + (z + 1) · 2q−g),
+y = Lrecp−init(z) =
+2g+1
+1+ z
+2g −e1, where z ∈Z2g and e1 ∈
+[0, 1). Alternatively, we can write for ˜x ∈[1 + z
+2g , 1 + z+1
+2g ),
+˜y =
+1
+1+ z
+2g −
+e1
+2g+1 . Since for a fixed z, and consequently, a
+fixed ˜y, 1 −˜x · ˜y is a monotonically decreasing function of ˜x,
+the following inequalities hold:
+1 −˜x · ˜y ≤1 −
+
+1 + z
+2g
+
+·
+
+1
+1 + z
+2g
+−
+e1
+2g+1
+
+≤
+
+1 + z
+2g
+
+·
+e1
+2g+1 < 1
+2g
+1 −˜x · ˜y > 1 −
+
+1 + z + 1
+2g
+
+·
+
+1
+1 + z
+2g
+−
+e1
+2g+1
+
+> −1
+2g ·
+
+1
+1 + z
+2g
+
++
+
+1 + z + 1
+2g
+
+·
+e1
+2g+1 ≥−1
+2g
+Lemma 3. Let x ∈Z2q+1 and y1 ∈Z2k1+2 such that |1 −˜x ·
+˜y1| < 2−k, where ˜x = JxKq+1,q ∈[1, 2), ˜y1 = Jy1Kk1+2,k1,
+and k1 > k > 0. Consider y2 ∈Z2k2+2, for k < k2 ≤q + k1,
+which is defined as follows:
+f = 2k2 −TR(x ∗k1+q+1 y1, q + k1 −k2)
+y2 = y1 ∗k2+2 2k2−k1 + TR(y1 ∗′
+k2+k1+2 f, k1)
+Then, for ˜y2 = Jy2Kk2+2,k2, it holds that |1−˜x· ˜y2| < 2−2k +
+2−k2+1.
+Proof. Observe that exact (unsigned) multiplication of x and
+y1 can be done in k1 + q + 1 bits as ˜x · ˜y1 < (1 + 2−k) ·
+2k1+q < 2k1+q+1. Then, from Lemma 1, it is easy to see that
+˜f = JfKk2+1,k2 = 1 −˜x · ˜y1 + e1, where e1 ∈[0, 2−k2).
+Next, note that (signed) multiplication between y1 and f is
+also exact in k2 + k1 + 2 bits as |y1 · f| < (1 + 2−k) · (2−k +
+2−k2) · 2k2+k1 < 2k1+k2+1. Again from Lemma 1, we have
+˜y2 = Jy2Kk2+2,k2 = ˜y1 · (1 + ˜f) −e2, where e2 ∈[0, 2−k2),
+and we can write 1 −˜x · ˜y2 as follows:
+= 1 −˜x · (˜y1 · (2 −˜x · ˜y1 + e1) −e2)
+= 1 −2 · ˜x · ˜y1 + (˜x · ˜y1)2 + ˜x · (e2 −˜y1 · e1)
+= (1 −˜x · ˜y1)2 + ˜x · e2 −˜x · ˜y1 · e1
+Thus, −2−k2+1 < −2−k2 · (1 + 2−k) < 1 −˜x · ˜y2 < 2−2k +
+2−k2+1.
+H. Optimizations
+1) Floating-point Multiplication: In our floating-point mul-
+tiplication functionality (Figure 4), we can use the TRS opera-
+tion on m in Step 2 to discard its lower q−2 bits and work with
+smaller bitwidths in the subsequent operations. Specifically,
+the comparison in Step 3 changes to m < 2q+3 −2 in q + 4
+bits, and the rounding in Step 4 and Step 6 is done by 2 and 3
+bits, respectively. The main benefit of this optimization is the
+cheaper comparison in Step 3. Since (TRS(x, s −k))≫Rk =
+x≫Rs, where s−k ≥2, this optimization does not change the
+behaviour of the above rounding operations, and consequently,
+the output of the functionality.
+2) Cheap Floating-Point Addition: In Figure 16, we pro-
+vide the cheap variant of our floating-point addition function-
+ality which is imprecise. Apart from using truncate-reduce in
+place of rounding, it differs from our correct addition func-
+tionality (Figure 5) in one major way: to align the mantissas
+of the operands, instead of left-shifting the larger operand (in
+magnitude) by the difference of exponents, we right-shift the
+smaller operand by the same amount. As a result, we are
+able to work with nearly half the bitwidth in all subsequent
+steps, while losing precision due to significant bits being
+discarded. Concretely, this functionality has 1.57× and 1.63×
+
+Functionality Fp,q
+CheapFPAdd(α1, α2)
+1: (eLT, eEQ) = LT&EQ(α1.e, α2.e)
+2: mLT = 1{α1.m < α2.m}
+3: (β1, β2) = eLT ⊕(eEQ ∧mLT) ? (α2, α1) : (α1, α2)
+4: d = β1.e −β2.e
+5: if 1{d > q + 1} then
+6:
+Return β1
+7: else
+8:
+m1 = ZXt(β1.m, q + 2)
+9:
+m2 = TR(β2.m ∗2q+3 2q+1−d, q + 1)
+10:
+m2 = (β1.s ⊕β2.s ? −1 ∗q+2 m2 : m2)
+11:
+m = m1 + m2; e = β2.e
+12:
+k, K = MSNZB(m)
+13:
+m = TR(m ∗q+2 K, 1); e = e + k −q
+14:
+z = 1{m = 0}; s = β1.s
+15:
+Return α = (z, s, e, m)
+Fig. 16: Cheaper Floating-Point Addition: α1 ⊞∗
+p,q α2
+Functionality Fp,q
+CheapFPDiv(α1, α2)
+1: Perform Steps 1 – 11 from Figure 6 to get e and m′
+2: s = α1.s ⊕α2.s, z = α1.z
+3: Return α = F p,q
+FPCheck(z, s, e, m′)
+Fig. 17: Cheaper Floating-point Division: α1 ∗
+p,q α2
+less communication than Figure 5 for p = 8, q = 23 and
+p = 8, q = 27, respectively.
+3) Cheap Floating-Point Division: Our cheap floating-point
+division functionality is given in Figure 17. It is the same as
+our correct division functionality (Figure 6), except it returns
+m′ as the mantissa which has at most 1 ULP error. Using this
+functionality leads to 1.22× less communication than Figure 6.
+I. Generating splines.
+We use splines, or piecewise polynomials for polynomial
+approximations for elementary math functions f. As discussed
+in Section VI-A, an n-piece spline is characterized by config-
+urations c = (K, d), consisting of knots K and a polynomial
+degree d, and the polynomial coefficients Θ = {θ(j)
+i }d,n
+i=0,j=1.
+We decompose the problem to determine splines into gener-
+ating polynomial coefficients Θ (given a configuration) and
+generating a configuration (K, d):
+1) Generating coefficients given a configuration: For a
+given configuration, RLIBM [53] provides a mechanism to
+generate Θ from three inputs, f(α), range reduction func-
+tion and output compensation, using linear programming and
+CEGIS (counterexample guided inductive synthesis). RLIBM
+uses it to generate polynomials that when evaluated with
+double precision floating-point give correctly rounded single-
+precision floating-point results after output compensation. We
+generalize RLIBM’s implementation in two aspects to obtain
+our coefficient generator. First, instead of being limited to
+correctly rounded results, we create linear programs whose
+solutions are polynomial coefficients which ensure that the
+final result is within 1 ULP of f(α). Second, instead of limit-
+ing to polynomials over doubles, we provide general support
+for evaluating polynomials using floating-point numbers with
+Functionality F8,23
+FPcosπ(α)
+1: p = 8; q = 23; Q = 27; (cLT, cEQ) = LT&EQ(23, α.e)
+2: if cLT ⊕cEQ then
+3:
+Return (0, (α.m mod 2) ∧cEQ, 0, 2q)
+4: else if 1{α.e < −14} then
+5:
+Return Floatp,q(1)
+6: else
+7:
+m′ = α.m ∗q+15 2α.e+14
+8:
+m = m′ + 2q+13 mod 2q+15
+9:
+Perform Steps 10 - 28 on m from Figure 8 to get µ, a
+10:
+Return (µ.z, a, F p,q,Q
+Round∗(µ.e, µ.m)).
+Fig. 18: Floating-point cosπ8,23(α).
+parameters (p, q). This generalized implementation determines
+the coefficients for a given configuration automatically if they
+exist and fails otherwise.
+2) Generating configurations: To generate an appropriate
+polynomial approximation, SECFLOAT (with manual guid-
+ance) explores candidate configurations in increasing crypto-
+graphic cost and runs the coefficient generator for each such
+configuration. The cryptographic cost crucially depends on the
+degree d of the polynomials and number of bits ℓof the input
+that determine the active interval and hence the configurations
+are explored in increasing d, ℓ. (Note that the cryptographic
+cost of a spline is entirely governed by its configuration and
+is independent of the actual polynomial coefficients.) The
+exploration stops when the coefficient generator succeeds.
+J. Cosine
+The functionality for cosine is given in Figure 18, which
+first handles the easy cases of input α ∈(−∞, ∞) in Steps 1-
+5 as follows:
+• If the input |α| ≥223, cosπ(α) = 1 if α is an even
+integer and 0 if α is an odd integer. Since all floats with
+exponent > 23 are even integers, we only set the output
+to −1 if α.e = 23 and α.m mod 2 = 1.
+• If the input |α| < 2−14, it is small enough that approxi-
+mating cosπ(α) as 1 has less than 1 ulp error.
+For the rest of the inputs, we reduce the computation to
+evaluating sine, for which we already have a functionality.
+Specifically, using identity cosπ(α) = sinπ(α + 0.5), we add
+0.5 to the fixed-point integer m′ representing α in Step 8, and
+then the remaining steps are the same as that in sine. Like sine,
+our cosine functionality also uses two splines F 1 and F 2 with
+identical configuration, but with different sets of coefficients
+Θ1
+cos and Θ2
+cos, respectively. Since cosπ(α) = cosπ(−α), we
+do not flip the sign of the final output depending on the sign
+of α.
+K. Knots for Math Functions
+In this section, we provide details on the knots used in
+splines for our math implementations. The polynomial coeffi-
+cients can be obtained from the source code of SECFLOAT.
+
+1) Sin/Cosine: Sine has two splines F 1 and F 2 which cover
+the input range [2−14, 1
+32) and [ 1
+32, 0.5], respectively. F 1 has
+knots at powers of 2: κj+1 = 2j−14, j ∈[0, 9]. The knots in
+F 2 are at multiples of
+1
+32 in the range [ 1
+32, 9
+32), at multiples
+of
+1
+64 in the range [ 9
+32, 10
+32), and lastly at multiples of
+1
+128 in
+the remaining input range [ 10
+32, 0.5]. The last interval in F 2 is
+closed on the right to include 0.5. The splines used in cosine
+have configuration identical to sine’s splines, and thus, use the
+same sets of knots.
+2) Tangent: Tangent uses a single spline for the input range
+[2−14,
+1
+512] and has knots at {2j, 1.25·2j, 1.5·2j, 1.75·2j}, for
+j ∈[−14, −10]. Apart from these, there are two more knots
+at
+1
+512 and 1.25 ·
+1
+512. Note that the final piece has just one
+possible input.
+3) Exponentiation: Exponentiation has two splines F + and
+F −that share the same configuration. They handle the input
+range [2−24, 1), and have all knots at multiples of
+1
+64 in the
+range [ 1
+64, 1], except the first one which is at 2−24.
+4) Logarithm: Logarithm uses four splines F 1, F 2, F 3,
+and F 4. F 1 and F 3 handle the input range [2−24, 1
+32) and
+[2−23, 1
+32), respectively, and both have knots at powers of
+2. The input domain for F 2 is [ 1
+32, 0.5] and it has knots
+at multiples of
+1
+32 in [ 2
+32, 13
+32) and at multiples of
+1
+64 in
+[ 1
+32, 2
+32) ∪[ 13
+32, 33
+64]. Note that the final piece has just one
+possible input, i.e., 0.5. Finally, F 4 covers the input range
+[ 1
+32, 1) and has knots at multiples of
+1
+32 in [ 2
+32, 1], along with
+two more knots at { 1
+32, 3
+64}.
+

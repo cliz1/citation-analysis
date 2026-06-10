@@ -1,0 +1,2056 @@
+Cryptanalysis of Algebraic Veriﬁable
+Delay Functions
+Alex Biryukov1(B), Ben Fisch2(B), Gottfried Herold3(B),
+Dmitry Khovratovich4(B), Gaëtan Leurent5(B), María Naya-Plasencia5(B),
+and Benjamin Wesolowski6(B)
+1 University of Luxembourg, Esch-sur-Alzette, Luxembourg
+alex.biryukov@uni.lu
+2 Yale University, New Haven, USA
+benjamin.fisch@yale.edu
+3 Ethereum Foundation, Bonn, Germany
+gottfried.herold@ethereum.org
+4 Ethereum Foundation, Luxembourg City, Luxembourg
+khovratovich@gmail.com
+5 INRIA, Paris, France
+{gaetan.leurent,maria.naya_plasencia}@inria.fr
+6 ENS de Lyon, CNRS, UMPA, UMR 5669, Lyon, France
+benjamin.wesolowski@ens-lyon.fr
+Abstract. Veriﬁable Delay Functions (VDF) are a class of crypto-
+graphic primitives aiming to guarantee a minimum computation time,
+even for an adversary with massive parallel computational power. They
+are useful in blockchain protocols, and several practical candidates
+have been proposed based on exponentiation in a large ﬁnite ﬁeld:
+Sloth++, Veedo, MinRoot. The underlying assumption of these con-
+structions is that computing an exponentiation xe requires at least log2 e
+sequential multiplications.
+In this work, we analyze the security of these algebraic VDF can-
+didates. In particular, we show that the latency of exponentiation can
+be reduced using parallel computation, against the preliminary assump-
+tions.
+Keywords: Veriﬁable Delay Functions · MinRoot · Veedo · Sloth++ ·
+cryptanalysis · smoothness
+1
+Introduction
+A veriﬁable delay function (VDF) [11] is a function f : X →Y that on average
+cannot feasibly be evaluated much faster than some prescribed time T, even on
+a parallel machine, but every output y = f(x) comes with a proof that allows
+anyone to quickly verify the output is correct. The ﬁrst property makes it a delay
+function and the second makes it veriﬁable. In more detail, a VDF is a triple of
+algorithms:
+– Setup(1λ, T) →pp; returns public parameters pp given a security parameter
+λ and delay parameter T.
+c
+⃝International Association for Cryptologic Research 2024
+L. Reyzin and D. Stebila (Eds.): CRYPTO 2024, LNCS 14922, pp. 457–490, 2024.
+https://doi.org/10.1007/978-3-031-68382-4_14
+
+458
+A. Biryukov et al.
+– Eval(pp, x) →(y, π); returns y ∈Y given x ∈X and a proof π.
+– Verify(pp, x, y, π) →{0, 1}; returns 1 if y is the correct output of input x.
+The algorithms Setup and Verify are polynomial time and the algorithm
+Eval(pp, x), which is allowed to use up to poly(λ) parallel processors, runs in
+time at most (1 + ε)T for some 0 < ε < 1. Any parallel algorithm using at
+most poly(λ) processors and running in time less than T should not be able to
+compute f(x) = y except with negl(λ) probability over random x. We refer to
+[11] for a more complete and formal deﬁnition.
+VDFs have been most notably applied to removing bias in randomness bea-
+cons1, which play an important role in consensus protocols, especially those used
+in modern blockchains [11,15,23,44]. The randomness may be used both to select
+block proposers unpredictably, or in the application layer, e.g. to simulate lotter-
+ies or more sophisticated protocols. Unbiasable randomness beacons can also be
+constructed from coin-tossing protocols [10], or from distributed key generation
+and veriﬁable random functions (VRFs) [30], but these constructions require
+a majority of parties participating in the protocol to be honest. In addition
+to requiring honest-majority assumptions, such protocols are communication-
+intensive and prone to delays in the case of a dynamic player set. In contrast,
+constructions of randomness beacons using VDFs are simple, communication
+eﬃcient, and only require one participating party to be honest. VDFs have also
+been particularly important for constructing blockchains using proof-of-space
+as an alternative to proof-of-work2, or more broadly achieving dynamic avail-
+ability in consensus protocols without proof-of-work [20]. There are many other
+applications, including to proofs-of-replication [11,25], voting protocols [5], and
+preventing front-running of trades in decentralized exchanges [17]. See [37] for a
+survey of applications.
+Any delay function can be made veriﬁable using generic SNARKs [11,36].
+However, it is desirable to construct delay functions with specialized proof sys-
+tems that result in a more eﬃcient Eval algorithm than the generic construction
+(i.e., requiring fewer parallel processors and lower overall complexity).
+There are two elegant and eﬃcient constructions of VDFs based on repeated
+squaring in a group of unknown order [39,59], as well as constructions based on
+sequential compositions of isogenies on elliptic curves [4,19,46]. There are several
+candidates for groups of unknown order. One is the RSA group Z∗
+N for N = p · q
+a product of two unknown safe primes, provided that the group is set up by
+a trusted party who discards p and q. The assumption that repeated squaring
+is sequential in this group was previously used in the construction of timelock
+puzzles [41], and over generic rings has been proven equivalent to the diﬃculty
+of factoring [42]. Multiparty computation can be used to generate a trusted RSA
+modulus [12,16,27], but this has been found to be challenging and error-prone
+to implement.3 Two candidates that do not require a trusted setup are class
+1 https://a16zcrypto.com/posts/article/public-randomness-and-randomness-
+beacons/.
+2 https://docs.chia.net/green-paper-abstract/.
+3 https://medium.com/zengo/dogbyte-attack-playing-red-team-for-eth2-0-vdf-
+ea2b9b2152af.
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+459
+groups of quadratic number ﬁelds and Jacobians of hyperelliptic curves [22].
+Unfortunately, the security of VDFs in class groups or Jacobians is based on less
+studied assumptions (e.g., diﬃculty of ﬁnding low order elements in the class
+group of an imaginary quadratic number ﬁeld). The security of VDFs based on
+isogenies is similarly based on relatively new assumptions.
+In theory, a sequential composition of hash functions, when modeled as ran-
+dom oracles, is provably a delay function [35]. While this might suggest that the
+generic construction from SNARKs is the most robust direction for VDFs, in
+practice no concrete hash function behaves like a true random oracle. Moreover,
+the way this hash function is constructed can have a big impact on the eﬃciency
+of Eval, speciﬁcally the complexity of computing a SNARK for many interactions
+of the functions. The complexity of the SNARK is proportional to the complex-
+ity of verifying f(x) = y directly, using an arithmetic circuit over a ﬁnite ﬁeld.
+One direction that was suggested in [11] and explored further in [29,52] is to
+use an iterated permutation Π over Fn that has (a) low arithmetic complex-
+ity as a circuit over F, and (b) Π−1 has even lower complexity than Π, which
+helps with the SNARK. One such candidate are permutations that use a round
+function xe mod p for e ≫2 where the inverse operation is exponentiation by
+a = e−1 mod p −1 for a ≪e. The assumption that xe mod p is sequential, i.e.
+that it cannot be evaluated substantially faster than repeated squaring on a
+reasonable number of parallel processors, originates in the Sloth system [33], a
+precursor to VDFs. This method is used in the VDF candidates Sloth++ [11],
+Veedo [52], and MinRoot [29].
+In this work, we present parallel algorithms for evaluating xe mod p several
+factors faster than log2 e steps, challenging this assumption that was widely used
+in constructions of VDFs, including one that was planned for use in Ethereum’s
+consensus protocol and Filecoin, and for which an ASIC had already been devel-
+oped [53,54]. As a response to our attacks, those plans have been put on hold [28].
+We conclude by suggesting several alternative directions for VDFs that are not
+known to suﬀer from our attacks.
+1.1
+Algebraic VDF Proposals
+We ﬁrst describe concrete VDF proposals based on exponentiation in a ﬁnite
+group and their security claims.
+Sloth++ [11]. The round function in the Sloth++ VDF candidate involves two
+interleaved permutations ρ and σ over Fp2 where p ≡3 mod 4. The function
+ρ(x) = x(p2+1)/4 returns a square root of x ∈Fp2 and has inverse ρ−1(y) = y2.
+The function σ(x) interprets x = (x1, x2) as a vector over F2
+p (i.e., the coeﬃcients
+of a degree two polynomial) and returns σ(x1, x2) = (x2 + c1, x1 + c2) for some
+ﬁxed constants c1, c2 ∈Fp (Fig. 1).
+Veedo [52]. The round function of Veedo operates on a pair of elements (u, v) in
+Fp. It ﬁrst applies a root operation to each element, then applies a linear layer
+deﬁned by an MDS matrix (Fig. 2).
+
+460
+A. Biryukov et al.
+Input: x ∈Fp2
+for 0 ≤i < niterations do
+x ←√x
+(x1, x2) ←x ▷Map from Fp2 to Fp
+2
+(x1, x2) ←(x2 + c1, x1 + c2)
+x ←(x1, x2) ▷Map from Fp
+2 to Fp2
+return u, v
+Algorithm 1. Sloth++ VDF.
+x1
+x2
+√·
+c1
+c2
+⊞
+⊞
+x′
+1
+x′
+2
+Fig. 1. Sloth++ round function.
+Input: u, v ∈Fp
+for 0 ≤i < niterations do
+(u, v) ←M × ( a√u,
+a√u) + (ci, c′
+i)
+return u, v
+Algorithm 2. Veedo VDF.
+u
+v
+a√·
+a√·
+M
+ci
+c′
+i
+⊞
+⊞
+u′
+v′
+Fig. 2. Veedo round function.
+MinRoot [29]. MinRoot is a VDF proposal that was designed to be used as a
+randomness beacon in the core layer of the Proof-of-Stake Ethereum protocol4.
+It iterates niterations times a simple round function, which is concretely given as
+an a’th root for small a in a ﬁnite ﬁeld deﬁned by a prime number p such that
+gcd(a, p −1) = 1, as shown in Algorithm 3. A proof of evaluation is supposed
+to be a SNARK proof, output by the Nova prover [31]. We denote the internal
+state of MinRoot as (u, v), and the round counter as i (Fig. 3).
+Input: u, v ∈Fp
+for 0 ≤i < niterations do
+(u, v) ←( a√u + v, u + i)
+return u, v
+Algorithm 3. MinRoot VDF.
+u
+v
+i
+⊞
+⊞
+a√·
+u′
+v′
+Fig. 3. MinRoot round function.
+The concrete parameters proposed by the MinRoot designers are as follows:
+– p = 2254 + 232 · 0x224698fc094cf91b992d30ed + 1,
+– a = 5,
+– The number niterations of iterations is typically in the order of 240.
+4 https://ethereum.github.io/consensus-specs/.
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+461
+MinRoot has concrete security claims and an ASIC implementation has been
+developed, therefore we explain in more detail its implementation properties,
+security claims, and functionality.
+Currently, in the Proof-of-Stake Ethereum protocol every 32 blocks consti-
+tute an epoch, and the epoch block proposers contribute some entropy values
+s1, s2, . . . , s32 (omissions are possible). The values are passed to a classical hash
+function whose output is declared a random beacon, which determines proposers
+and signers for the next epochs. Clearly, the last of 32 proposers can inﬂuence
+the beacon value by trying diﬀerent entropy values.
+To mitigate this issue, VDF f would be applied to (s1, s2, . . . , s32). The calcu-
+lation of f would run for the M next epochs, and the result would then determine
+the block proposers for the M + 1-th epoch. Assuming that no parallel adver-
+sary could compute the VDF faster than by a factor of M and that each epoch
+has at least one honest proposer, there is no way for any malicious proposer,
+who learns the other contributions of a given epoch only during that epoch, to
+precompute f and ﬁnd some contribution si of his own that would give a desired
+VDF output.
+MinRoot Implementation. A standard implementation of MinRoot, such as
+the one by Supranational [53], computes the rounds iteratively. The root is the
+most expensive operation in the round function; in each round, it is computed
+using Fermat’s little theorem (as
+a√x = x1/a mod p−1), with a square and multiply
+algorithm. We deﬁne e = 1/a mod p −1 so that the round function is written as
+a√x = xe. Recall that a is chosen such that gcd(a, p −1) = 1.
+Exponentiation to the power e with the square and multiply algorithm
+requires log2(e) ≈log2(p) squarings. There are techniques to reduce the number
+of multiplications (such as the sliding-window method or addition chains), but
+in the context of a low latency implementation it is better to use a naive binary
+decomposition because the multiplications can be evaluated in parallel with the
+squarings. Therefore, the delay of one round is essentially log2(p) squarings (254
+squarings with the proposed parameters), and the delay of MinRoot is essentially
+niterations ·log2(p) squarings (using two processors: one for the squarings and one
+for the multiplications).
+In practice, Supranational built an optimized ASIC implementation of Min-
+Root, on a 12nm node [53,55]. Their implementation requires 257 cycles per
+round, where each cycle essentially corresponds to a squaring and takes 0.9ns
+(230ns per round).
+MinRoot security claims and their interpretation. The security claim of
+MinRoot is that it is a sequential function. Informally, this means that MinRoot
+cannot be computed faster by using some parallelism. There should be a lower
+bound to the delay required to evaluate the function, and the standard imple-
+mentation with a delay of niterations log2(p) squarings should be close to this
+lower bound (up to a small constant factor).
+
+462
+A. Biryukov et al.
+This implies at least two distinct assumptions:
+1. The round function itself is a sequential function (i.e. the root cannot be
+computed faster using parallelism);
+2. The iteration is sequential (i.e. there is no shortcut to evaluate niterations
+rounds faster than by iterating them).
+Formally, MinRoot is claimed to have 128 bits of VDF security, deﬁned as follows:
+Given up to 2128 parallel processors, no adversary using these processors and
+spending up to 2128 MinRoot calls in precomputation, can compute MinRoot on
+any input from a challenge set faster than by a factor of 2.
+One may notice that the security claim of MinRoot is somewhat vague. Con-
+cretely, it misses the following details, which became apparent at the time of
+third party analysis:
+– What the reference implementation of MinRoot is and what timing it claims.
+– What the computation model is, which might be needed to determine whether
+the adversary is faster than the legitimate computation.
+For the ﬁrst issue, we refer to the third-party implementation of MinRoot in hard-
+ware by Supranational [53]. They report latency benchmarks and chip sizes [55].
+For the second issue we had to choose between existing models in the parallel
+computation analysis (cf. a survey in [43]) and some ad-hoc model. We resorted
+to the second option for two reasons:
+– Our model matches nicely with the existing hardware implementation by
+Supranational.
+– We assign realworld-inspired numbers to memory access and CPU access
+timings, which scale reasonably with the network size.
+1.2
+Notations and Assumptions
+We focus on the latency of evaluating VDFs in parallel from an algorithmic point
+of view. In particular we evaluate the latency of the computation and neglect
+the latency of communication between the processors, and implementation issues
+such as large fan-in or large fan-out.
+While the VDF we study naturally works with modular values in Fp, in
+this paper, we sometimes consider the values as integers instead; we believe this
+should be clear depending on the context. The notation x mod q refers to the
+integer in {0, 1, . . . , q −1} that is congruent to x. When taking logarithms, we
+default to base-2 (but usually write it out unless it does not matter, such as in
+O-expressions).
+Latency Assumptions. We consider the following results on low-latency arith-
+metic operations:
+Integer addition: Addition of two n-bit integers has a latency of O(log(n))
+using a carry look-ahead adder (e.g. the Brent-Kung adder [13]).
+Addition of k n-bit integers has a latency of O(log(k) + log(n)), using a tree
+of carry-save adders [24], followed by a carry look-ahead adder.
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+463
+Integer multiplication: Multiplication of two n-bit integers has a latency of
+O(log(n)) using a tree of carry-save adders (e.g. a Wallace tree [57]) followed
+by a carry look-ahead adder.
+Trial division: Trial division of an up to n-bit integer x by a hardwired constant
+c of at most m < n bits can e.g. be performed by checking whether x ·
+c−1 mod 2n+m has at most n bits if c is odd. Since division by powers of two
+is essentially free and c−1 mod 2n+m can be precomputed, trial divisions by
+such constants have latency O(log n).
+Modular reduction: Modular reduction of a 2n-bit value modulo an n-bit value
+has a latency of O(log(n)). For instance, the Barrett reduction [8] computes
+the reduction using integer division by a constant, which is computed using
+an integer multiplication.
+The results above imply that modular addition Add, modular multiplication Mul,
+and modular reduction (this includes trial division) Mod in Fp all have a latency
+of O(log(log(p))). For simplicity, we assume that those operations have the same
+latency, and consider it as one unit of time (for practical purposes, this time unit
+is estimated to be 0.9 ns in an ASIC implementation, following the Supranational
+implementation of MinRoot).
+Adding up to log2(p) ≈256 values (integers smaller than p or modular values
+in Fp) also has latency O(log(log(p))); we assume this also corresponds to one
+unit. Trial division of 256-bit integers by hardwired constants cost essentially
+the same and we assume unit latency for this.
+We also assume that a multiply-and-add operation (x·y+z) has unit latency,
+because the addition term can be included in the tree of carry-save adders.
+A table lookup in a table with k entries, denoted by Table(k), has a latency
+O(log(k)) when implemented as a combinatorial circuit. For small tables (up to
+log2(p) ≈256 entries), we treat this as having unit latency. Larger tables must
+be stored in RAM, and have a larger latency. Assuming a DDR RAM with a
+latency of 5 ns, we consider that a memory access has a cost of 6 units of time.
+When evaluating the number of processors required to implement an algo-
+rithm, we consider that one processor corresponds to a circuit of roughly the size
+of a modular multiplier. Adding up to log2(p) values and table lookups with up
+to log2(p) values are each assumed to require one processor.
+These latency estimations are strongly dependent on the architecture used to
+implement a circuit, and are therefore somewhat arbitrary.5 Nonetheless, they
+are useful to compare algorithms in a concrete setting, when an asymptotic com-
+plexity estimate is hard to derive. In particular, we evaluate all our algorithms
+in the context of a 256-bit prime, to match the parameters of MinRoot, since
+we have ASIC implementation results available. The implementation from [53]
+uses algorithms for addition, multiplication, and modular reduction that roughly
+match these latency assumptions.
+5 The Supranational team mentioned in private communication that it should be pos-
+sible to reduce the latency by a factor of up to 3 at the cost of longer and more
+expensive circuit scrutiny (e.g. better layout), using smaller technical process, larger
+lookup tables etc.
+
+464
+A. Biryukov et al.
+1.3
+Our Results
+We study how to compute VDF functions in parallel in order to achieve a lower
+latency than the described standard implementations. Instead of looking for
+shortcuts when iterating a large number of rounds, we focus on the round func-
+tion itself, and the most expensive operation, the root computation. We are able
+to provide some algorithms that achieve latency gains that clearly break the orig-
+inal security claims, considering our (reasonable) model. Despite breaking the
+security claims, it is still unclear whether our algorithms can be implemented in
+practice, as they require a large number of parallel processors. Even if the prac-
+ticality of our algorithms might be debatable, they clearly show that computing
+a root
+a√x in Fp via square and multipy is not necessarily sequential. Several
+previous works [11,29,32,52] assume that there is no parallel algorithm with
+lower latency than the square and multiply algorithm with latency log2(p), but
+our results show that this assumption is wrong.
+We explore several ideas to evaluate monomial functions in parallel in Sect. 2.
+Our best algorithm is a smoothness-based algorithm in Sect. 2.2 that uses the
+same basic ideas as a paper from Adleman and Kompella [2]. We propose various
+optimizations of this algorithm in Sect. 3, and prove a close connection to the dis-
+crete logarithm problem in Sect. 4. We demonstrate the impact of our methods
+on several VDF constructions in Sect. 5. In Sect. 6, we consider the related prob-
+lem of evaluating low-degree functions in parallel. In Sect. 7 we brieﬂy discuss
+practical issues to implement our algorithms. Finally, in conclusion we discuss
+possible tweaks of algebraic VDF functions to improve their security.
+Table 1 shows a summary of our results, with concrete number corresponding
+to the MinRoot setting with a 256-bit prime.
+Table 1. Summary of our attacks to compute
+a√x, with concrete speedups for a 256-bit
+prime (as in MinRoot).
+Algo
+T
+#CPU
+M
+speedup Techniques
+naive
+256
+1
+0
+1
+Fast exponentiation
+1
+8
+2128
+2128
+32
+Baby-step, giant-step
+2
+6
+254.5
+0
+42
+Smoothness
+3
+13
+248
+259.5
+20
+Smoothness with medium-size factor
+4
+14
+240
+259.5
+18
+Smoothness with medium-size factor and pre-ﬁlter
+5
+21
+236
+264
+12
+Smoothness with special shape of p
+6
+54
+234
+240
+4.7
+Smoothness with rational reconstruction
+7
+13
+229
+240
+20
+Smoothness with parallel smoothness test
+8
+68
+225
+240
+3.7
+Smoothness with parallel rational reconstruction
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+465
+2
+Low-Latency Evaluation of Power Functions
+We explore in this section how to reduce the latency of root functions using their
+homomorphism property. We propose algorithms that make use of the fact that
+monomial functions f over Fp have the following properties:
+– f is easy to precompute on any single input.
+– f(x · y) = f(x) · f(y), ∀x, y ∈Fp.
+In the following, we consider roots f(x) =
+a√x = x1/e mod p−1 in Fp, where
+gcd(a, p −1) = 1. We take p ≈2256 for concrete examples to match the MinRoot
+parameters.
+The root is the most expensive operation in VDF constructions, and has a
+latency of log2(p) squaring in the standard implementation. We show in this
+section two basic algorithms for evaluating it with smaller latency. These algo-
+rithms will be reﬁned and improved in the next section.
+In an actual VDF such as MinRoot, the round function is applied a large
+number (niterations ≈240) of times. Due to that, we really care about expected
+(over a random choice of input) time/latency. For the probabilistic algorithms
+in this and the next sections, we therefore aim for a good, but not necessarily
+overwhelming success probability. See 7.1 for some further discussion.
+2.1
+A Baby-Step Giant-Step Approach
+We ﬁrst propose a simple algorithm using precomputation. The MinRoot sub-
+mission document [29] also described a precomputation attack, but in our case
+we target the root operation instead of targeting the iterated function MinRoot.
+Additionally, we use a self-randomization property to make the attack successful
+for any given input instead of having a multi-target attack. Let α, β > 0 be two
+parameters.
+Precomputation. We precompute the following values:
+– Compute
+a√
+i for i ≤α√p.
+– Compute ra, r−1 for a set of β⌊√p⌋random values r.
+Online phase. Given a challenge x, do the following in parallel with β⌊√p⌋
+processors:
+1. Pick one of the randomly generated r.
+2. Compute y = x · ra mod p.
+3. If y ≤α√p, then return
+a√y · r−1.
+This algorithm is similar to the baby step-giant step algorithm to compute
+discrete logarithms. Due to the birthday paradox, its probability of success is
+approximately 1−exp(−αβ), so one can ﬁx reasonably small values α, β ∈O(1).
+The method has a latency of two multiplications and one table lookup. This
+implies T = 2+6 = 8 time units using the assumptions of Sect. 1.2, using O(√p)
+precomputations, and β√p = O(√p) parallel processors, versus the T = 256 of
+the sequential computation.
+
+466
+A. Biryukov et al.
+For MinRoot, with p ≈2256, this requires approximately 2128 precomputa-
+tions and parallel processors. Since MinRoot claims 128 bits of security, this
+algorithm has a very close complexity to the claim, and shows that it is at best
+tight.
+In practice, each of the 2128 processors will use a diﬀerent r that can be
+hard-coded in the processor, together with ra and r−1. The algorithm requires
+a memory of size √p. However, note that for uniformly random input, only α · β
+processors are expected to succeed, and only a single one of those needs to access
+the memory for each root computation.
+Algorithm 1: Using precomputation to evaluate
+a√x
+Tgeneral = 2Mul + Table(M)
+TMinRoot = 8
+#CPU = 2128
+M = 2128
+speedup : 32
+2.2
+An Approach Using Smoothness
+We now describe an algorithm based on smoothness, which is similar to a pre-
+vious work published by Adleman and Kompella in STOC ’88 [2]. This algo-
+rithm uses smoothness to compute some arithmetic functions with logarithmic
+depth and a large number of processors. Starting with the randomization step of
+Sect. 2.1, the main idea is to assume that the value y = x·ra mod p is B-smooth
+when lifted to the integers, i.e. it only has prime factors smaller than B, for
+some bound B.
+Preliminaries. We use π(x) to denote the prime counting function π(x) = #{p ≤
+x | p is prime}. According to the prime number theorem [38, Theorem 6.9], we
+have π(x) ≈x/ ln(x).
+We use the following result by Dickman to estimate the probability of a
+random n-bit number to be B-smooth:
+Theorem 1. ([38, Theorem 7.2], [21]). Let ψ(x, y) be the number of positive
+integers not exceeding x composed entirely of prime numbers not exceeding y,
+and let ρ(u) be [the Dickman function]. Then, for any U ≥0 we have
+ψ(x, x1/u) = ρ(u)x + O
+
+x
+log(x)
+
+uniformly for 0 ≤u ≤U and all x ≥2.
+In particular, the probability that an n-bit number is B-smooth is approximately
+ρ (n/ log2(B)).
+Finally we use the following result, with Q(x) the number of square-free
+integers not exceeding x:
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+467
+Theorem 2. ([38, Theorem 2.2]). Far all x ≥1
+Q(x) = 6
+π2 x + O(x1/2)
+The algorithm works as follows:
+Precomputation.
+– Compute
+a√q for all small primes q ≤B
+– Compute ra, r−1 for a set of R random values r
+Online phase. Given a challenge x, R groups of processors (each group of size
+π(B)) will do the following in parallel (steps 4 and 5 use π(B) processors,
+and the other steps use a single processor):
+1. Pick one of the randomly generated r (one value per group)
+2. Compute y = x · ra mod p
+3. Lift y to the integers
+4. Perform trial division of y by all primes q ≤B, in parallel. Denote {qi}
+the set of primes that divide y
+5. Compute z = 
+a√qi · r−1 mod p (all terms are precomputed)
+6. If za = x return z
+The algorithm succeeds if the value y at step 2 is B-smooth and square free.
+In this case y =  qi, hence
+a√x =
+a√y · r−1 = 
+a√qi · r−1. The probability
+of y being B-smooth and square-free can be approximated as ρ(256/ log2(B)) ×
+6/π2 by heuristically assuming that B-smoothness and being square-free are
+independent; therefore we choose R ≫π2/6ρ(256/ log2(B)), and we obtain a
+high probability of success, thanks to the randomization done in step 1. Note that
+the required heuristic can be greatly weakened by the optimization of allowing
+square factors discussed below and we successfully tested the heuristic for the
+parameters of interest (cf. the discussion on page 12).
+This algorithm is similar to the index calculus one to compute discrete log-
+arithms. Its complexity is sub-exponential. We now discuss some optimizations
+to make the algorithm closer to usable in practice.
+Allowing Square Factors in y. For a prime q with qe ≤B < qe+1, we do trial
+division with q, q2, . . . qe, and each trial adds a copy of q to the set {qi} if
+it is successful. With this tweak, the algorithm succeeds as long as y is B-
+powersmooth, i.e. all prime powers qν dividing y satisfy qν < B. There is no
+simple formula to evaluate the complexity of this variant, but with the param-
+eters we use, the probability of being B-powersmooth is essentially the same as
+being B-smooth; therefore we increase the success rate by a factor π2/6 ≈1.64
+(the inverse probability of being square-free) with a very small increase in the
+number of processors.
+
+468
+A. Biryukov et al.
+Avoiding the Final Test. The purpose of the ﬁnal test, computing za, is to verify
+if y is B-smooth. In order to avoid the latency of computing this, we can check if
+the qi factors are enough and we are missing no bigger ones by precomputing an
+approximation of log(qi) and check if  log(qi) ≈log(y) ≈log(p) to detect when
+y is B-smooth. Note that the approximation does not need to be very good: on
+failure, za diﬀers from y by at least some prime factor that was not found, which
+is at least 2 (and for square-free y, at least B). We can improve this and rule
+out missing very small prime factors q by testing divisibility by qν for larger ν
+up to qν < p rather than qν < B for very small q at a very small increase in the
+number of processors.
+Finally, we obtain the Algorithm of Fig. 4, where black boxes represent pro-
+cessors and green boxes represent groups of processors. For simplicity, we assume
+that a single group of processors will succeed and return a value. The latency
+is one multiplication, one trial division, and the ﬁnal multiplication of several
+terms. We assume that the multiplication circuit can eﬃciently deal with empty
+factors and the complexity depends on the number of non-unit terms in the
+product.
+Using Precomputed Discrete Logarithms. In case it is not practical to build a
+multiplication circuit dealing only with the non-empty terms, we propose an
+alternative approach. Instead of having each processor returning zi =
+a√qi, we
+precompute the discrete logarithm of zi in Fp using a generator g. If we denote
+the logarithm as νi with zi = gνi (and νi = 0 for empty factors) we can replace
+the product z =  zi mod p by a sum ν =  νi mod p−1 and an exponentiation
+z = gν. Using the assumptions of Sect. 1.2, the sum of π(B) terms has latency
+only log2(π(B))/8. To compute the exponentiation with low latency, we split ν
+into 32 bytes, and use table lookups for each byte followed by a multiplication
+tree with latency 5.
+Concrete Parameters for log2(p) ≈256. Parameters that minimize the total
+complexity can be chosen as:
+B = 235
+R = 224
+With those parameters, there are 224 groups of processors, and each group has
+roughly π(235) ≈230.5 processors to do trial division in parallel (a total of 254.5
+processors). This succeeds with high probability because the probability that a
+256-bit number is 235-smooth can be approximated as ρ(256/35) ≈2−21.6 ≫
+1/R, and we assume than the probability of being 235-powersmooth is the same.
+To verify this estimate, we performed experiments with Bach’s algorithm to
+generate factored random numbers [7]. Out of 230 random 256-bit numbers, we
+observed 367 235-smooth numbers (a fraction of 2−21.5); all of them are also 235-
+powersmooth, and 169 of them are square-free (a fraction of 2−22.6). This closely
+matches the theoretical estimation. In order to deal with factors qν < B, we
+actually need slightly more than π(B) processors but the increase is negligible
+(230.5 + 214.1).
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+469
+r = 2
+y ←x · 2a mod p
+q = 2
+If 2 | y
+ℓ2 ←log 2
+z2 ←
+a√
+2
+Else
+ℓ2 ←0
+z2 ←1
+q = 3
+If 3 | y
+ℓ3 ←log 3
+z3 ←
+a√
+3
+Else
+ℓ3 ←0
+z3 ←1
+q = 4
+If 4 | y
+ℓ4 ←log 2
+z4 ←
+a√
+2
+Else
+ℓ4 ←0
+z4 ←1
+. . .
+ℓ← ℓq
+z ← zq mod p
+If ℓ≈log p
+Ret z · 2−1 mod p
+. . .
+r
+y ←x · ra mod p
+q = qe
+0
+If q | y
+ℓq ←log q0
+zq ←
+a√q0
+Else
+ℓq ←0
+zq ←1
+. . .
+ℓ← ℓq
+z ← zq mod p
+If ℓ≈log p
+Ret z · r−1 mod p
+Fig. 4. Algorithm using B-smooth numbers
+Assuming that we can neglect the communication time, the latency of this
+algorithm is one multiplication, one trial division, and about 4 multiplications
+at the end (assuming there are at most 15 primes in the decomposition of y), for
+a total latency of 6 units. This algorithm does not use any table lookup, each
+processor only uses a single hard-coded value for
+a√q0, ra, and r−1.
+Algorithm 2: Using smoothness to evaluate
+a√x
+Tgeneral = 6Mul
+TMinRoot = 6
+#CPU = 254.5
+M = 0
+a
+speedup : 42
+aWe write M = 0 because there are no table lookups in this algorithm,
+but each processor uses a constant amount of memory, resulting in 254.5
+memory cells in total.
+Alternatively, parameters can be chosen to minimize the latency:
+B = 264
+R = 210
+With those parameters the total number of processors is somewhat higher at
+268.5 but we expect fewer factors qi so that the ﬁnal multiplication only has
+latency 3 (assuming at most 7 primes), and the total latency is 5 units.
+
+470
+A. Biryukov et al.
+3
+Optimizing the Smoothness Algorithm
+In this section we present several ideas that allow us to reduce the number of
+CPUs needed in the smoothness algorithm. Our aim is to make our algorithm
+as close to practical as possible, and for doing this we will reduce the speedup
+provided by the algorithm in the previous section and provide diﬀerent trade-
+oﬀs. When combined, we are able to reduce the number of processors required
+below 230 (with a 256-bit prime). This has allowed us to run experiments on the
+full algorithm (the code is available as supplementary material7).
+3.1
+Using Almost-Smooth Numbers
+Our ﬁrst improvement relaxes the constraint of y being B-smooth to allow a
+single medium-size factor, in addition to an arbitrary number of small ones.
+Formally, we say that an integer is (B, B′)-almost-smooth (with B′ > B) if all
+its prime factors are smaller than B′, and at most one factor is larger than B. It
+will require a large precomputed table to deal with the bigger factor, but this will
+allow to increase the probability of y verifying the condition for similar values
+of B, reducing R and the overall number of processors needed.
+After doing trial division, we detect that y is almost-smooth by checking the
+magnitude of the rough part after removing all factors smaller than B. Since
+we are mostly interested in cases with B′ < B2, if the rough part is smaller
+than B′ then there is a single prime factor between B and B′ (or none if y is
+B-smooth). We precompute the roots of all prime numbers between B and B′
+and the processor that ﬁnds an almost-smooth y will make a table lookup to
+recover it.
+In practice, we modify the algorithm to compute z−1 in parallel with the
+computation of z, using precomputed tables of q−1/a
+i
+= 1/ a√qi. We evaluate
+z−1 as ¯z ← q−1/a
+i
+mod p, and we compute the rough part as y·¯z. The resulting
+algorithm is shown as Fig. 5.
+We know no simple analytic way to compute the probability of almost-
+smoothness, but we could estimate it from experiments.
+Concrete Parameters for log2(p) ≈256. Good parameters can be chosen as:
+B = 232
+B′ = 265
+R = 220
+Experimentally, the probability of a 256-bit number to be (232, 265)-almost-
+smooth is about 2−18; this is a signiﬁcant increase compared to the probability
+of begin 232-smooth (ρ(256/32) ≈2−24.9). Therefore with R = 220 there is a
+high probability of success.
+The latency increases because of the table-lookup. Using our assumptions,
+this has a latency of 6; we obtain a latency of one multiplication, one trial divi-
+sion, 4 multiplications to compute y ·  ¯zq, one table lookup, and one ﬁnal
+multiplication. This algorithm requires a huge amount of memory, but we
+7 https://github.com/Cryptosaurus/VDF_cryptanalysis_code.
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+471
+stress that the memory is not accessed simultaneously by all processors; for
+each computation of
+a√x only a few processors succeed (those that get an
+almost-smooth y) and only one of them needs to make a memory access.
+Algorithm 3: Using smoothness to evaluate
+a√x, with a medium-size
+factor
+Tgeneral = 6Mul + Mod + Table(M)
+TMinRoot = 13
+M = 259.5
+#CPU = 248
+speedup : 20
+r = 2
+y ←x · 2a mod p
+q = 2
+If 2 | y
+ℓ2 ←log 2
+z2 ←
+a√
+2
+¯z2 ←2
+−1
+a
+Else
+ℓ2 ←0
+z2 ←1
+¯z2 ←1
+q = 3
+If 3 | y
+ℓ3 ←log 3
+z3 ←
+a√
+3
+¯z3 ←3
+−1
+a
+Else
+ℓ3 ←0
+z3 ←1
+¯z3 ←1
+q = 4
+If 4 | y
+ℓ4 ←log 2
+z4 ←
+a√
+2
+¯z4 ←2
+−1
+a
+Else
+ℓ4 ←0
+z4 ←1
+¯z4 ←1
+. . .
+ℓ← ℓq
+z ← zq mod p
+¯z ← ¯zq mod p
+(¯z = z−1 mod p)
+If ℓ≥log p −log B′
+w ←
+a√y · ¯z
+Precomputed, withy · ¯z ≤B′)
+Ret z · w · 2−1 mod p
+. . .
+r
+y ←x · ra mod p
+q = qe
+0
+If q | y
+ℓq ←log q0
+zq ←
+a√q0
+¯zq ←q0
+−1
+a
+Else
+ℓq ←0
+zq ←1
+¯zq ←1
+. . .
+ℓ← ℓq
+z ← zq mod p
+¯z ← ¯zq mod p
+If ℓ≥log p −log B′
+w ←
+a√y · ¯z
+Ret z · w · r−1 mod p
+(
+Fig. 5. Improved algorithm using (B, B′)-almost-smooth numbers
+3.2
+Pre-ﬁltering
+We observe that the randomizing step (y ←x·ra mod p) uses only one processor
+per group, so that many processors sit idle during this step. To optimize the
+algorithm, we can try several values r in each group, and keep the value y =
+x · ra mod p that seems more promising in each group. For instance, with a
+smoothness bound B = 232 as above, each group has π(B) ≈227.6 processors.
+
+472
+A. Biryukov et al.
+We can pick 227.6 random r’s in each group and keep the smallest value y =
+x · ra mod p; we expect y to be of size 256 −27.6 ≈228 bits which increases the
+probability of smoothness.
+For a more advanced ﬁltering, we do a smoothness test with a smaller bound
+B0 < B, and we keep the candidate y with the largest B0-smooth part (or,
+we keep candidates with a B0-smooth part larger than some threshold t). This
+ﬁltering requires π(B0) processors, so we can chain it with a ﬁrst step that
+keep the smallest y out of π(B0) candidates. Figure 6 shows this pre-ﬁltering
+algorithm.
+Concrete Parameters for log2(p) ≈256. Parameters can be chosen as:
+B = 232
+B′ = 265
+B0 = 220
+t = 276
+R = 212
+Experimentally, the probability of having a 220-smooth part larger than t =
+276 is about 2−9.3 for a 256-bit value. With the parameters above, we consider
+π(B)/π(B0) ≈211.3 candidates y in each group, therefore with high probability
+one of them will pass the ﬁlter. After ﬁltering those candidates, the probability
+that they are (232, 265)-almost-smooth is about 2−11.
+Using the initial ﬁlter the size of y is reduced by 10 bits; this increases the
+probability to roughly 2−9.5.
+Algorithm 4: Using smoothness to evaluate
+a√x, with medium-size fac-
+tor and pre-ﬁlter
+Tgeneral = 7Mul + Mod + Table(M)
+TMinRoot = 14
+M = 259.5
+#CPU = 240
+speedup : 18
+3.3
+Exploiting the Shape of p
+The prime used in MinRoot has a special shape: p = 232q + 1. Therefore, the
+low 32-bits of a product x · y mod p with y < 232 only depend on the lowest and
+highest 32 bits of x (and y). We use this property to improve our algorithm, by
+precomputing values r with ra < 232 that generate a product x · ra with zeros
+in the least signiﬁcant bits, given the low and high bits of x. This will allow to
+reduce R for similar parameters.
+To take advantage of this, we modify the online algorithm to perform two
+steps of randomization: ﬁrst with an arbitrary r0, then with the precomputed
+value r1:
+Precomputation. Initialize table T :
+– For all xlow < 232, xhigh < 232, consider x = xlow + 2224xhigh
+– For all y < 232, if LSB32
+
+x · y mod p
+
+= 0, set T [xlow, xhigh] ←
+a√y
+Online phase. Given a challenge x:
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+473
+r′ = {2, 3, . . .}
+r′ = 2
+y2 ←x · 2a mod p
+r′ = 3
+y3 ←x · 3a mod p
+. . .
+y′ ←min yr
+r′ ←argmin yr
+q = 2
+If 2 | y′
+ℓ2 ←log 2
+Else
+ℓ2 ←0
+q = 3
+If 3 | y′
+ℓ3 ←log 3
+Else
+ℓ3 ←0
+q = 4
+If 4 | y′
+ℓ4 ←log 2
+Else
+ℓ4 ←0
+. . .
+If  ℓq > t
+y ←y′
+r ←r′
+r′ = {r1, r2, . . .}
+r′ = ri
+yri ←x · ra
+i mod p
+. . .
+y′ ←min yr
+r′ ←argmin yr
+q = qe
+0
+If q | y′
+ℓq ←log q0
+Else
+ℓq ←0
+. . .
+If  ℓq > t
+y ←y′
+r ←r′
+. . .
+Collect y and r from one of the successful pre-filtering CPUs
+Proceed with trial division of y and the rest of the algorithm (seeFigure 5)
+Fig. 6. Pre-ﬁltering step (only one CPU group shown)
+1. Pick one of the randomly generated r0
+2. Compute y0 = x · ra
+0 mod p
+3. Recover the precomputed value r1 = T [LSB32(y0), MSB32(y0)]
+4. Compute y1 = y0 · ra
+1 mod p
+This produces a value y1 that is a multiple of 232, therefore the eﬀective length
+for the smoothness test is reduced by 32 bits.
+Concrete Parameters for MinRoot. We keep the same smoothness parameters as
+above, but we reduce the number of groups needed:
+B = 232
+B′ = 265
+B0 = 220
+t = 276
+R = 28
+By reducing the size of y by an extra 32 bits, we obtain 214-bit values; after
+ﬁltering candidates with a 220-smooth part larger than t = 276, the probability
+that they are (232, 265)-almost-smooth is about 2−6, corresponding to a gain of
+3.5 bits.
+
+474
+A. Biryukov et al.
+Algorithm 5: Using smoothness to evaluate
+a√x, with medium-size fac-
+tor, pre-ﬁlter, and the special shape of p
+Tgeneral = 8Mul + Mod + 2Table(M)
+a
+TMinRoot = 21
+M = 264
+#CPU = 236
+speedup : 12
+a This algorithm also requires a precomputation of 296 roots
+However this variant requires a memory access to the table T from each
+processor doing the initial randomization, therefore this is unlikely to be an
+improvement in practice with a huge table. Trade-oﬀs with a smaller table (con-
+trolling fewer bits of y) might be more practical; for instance, we can use tables
+of size 232 to control 16 bits of y (each processor could hold a copy of table). We
+obtain 230-bit values, and the probability that they are (232, 265)-almost-smooth
+after ﬁltering is about 2−7.6.
+In the end, this technique produces small improvements, and cannot be used
+together with the techniques proposed in the following sections.
+3.4
+Rational Reconstruction
+Rational reconstruction takes an element x in Fp and writes it as a fraction:
+x = α/β with α, β ∈Fp. Wang proposed an algorithm that ﬁnds a solution with
+α ≈β ≈√p, based on the extended Euclidean algorithm [58]. Indeed, running
+the extended Euclidean algorithm on x and p generates a series of relations ui ×
+x+vi×p = wi. Each relation deﬁnes a rational reconstruction: x ≡wi/ui mod p.
+During the extended Euclidean algorithm, the magnitude of (ui) and (vi) are
+increasing while (wi) is decreasing; if we stop after half the number of iterations
+we obtain ui ≈wi ≈√p.
+The online algorithm can be improved as follows using rational reconstruc-
+tion:
+1. Pick one of the randomly generated r
+2. Compute y = x · ra mod p
+3. Reconstruct a fraction y = α/β
+4. Lift α and β to the integers
+5. Do trial division of α and β
+If α and β are both smooth, we easily deduce
+a√x from precomputed tables:
+a√x =
+
+a	
+q′
+j ·
+
+q
+−1
+a
+i
+· r−1
+if β =
+
+qi and α =
+
+q′
+j
+Since α and β are of the order of √p, they are signiﬁcantly more likely to be
+smooth and we can use a smaller bound B. The smoothness test for α and β is
+done in parallel, using 2 × π(B) processors.
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+475
+Latency of Rational Reconstruction. In practice, variants of the binary GCD
+algorithm (such as the plus-minus algorithm of Brent and Kung [14]) should have
+a lower latency than the Euclidean algorithm because they only use addition and
+subtractions. Extended versions of the binary GCD algorithm produce relations
+of the form ui × x + vi × p = wi × 2zi, that can also be used in our case.
+A recent work [51] studies low-latency implementation of extended GCD
+algorithms. They describe an ASIC built on 16nm that performs extended GCD
+of 256-bit integers with latency 89ns in constant time. For rational reconstruc-
+tion, only half the rounds are necessary. Moreover, the constant-time circuit uses
+more rounds than required on average to maintain a constant time, and the cir-
+cuit uses 16nm technology while the Supranational implementation of MinRoot
+uses 12nm technology. Therefore, we estimate that the regular extended GCD
+algorithm for n-bit numbers has latency EGCD(n) =
+5
+16n, and thus rational
+reconstruction would have a latency of roughly 40 time units.
+To reduce the latency further, some GCD algorithms use precomputed tables
+to reduce the number of iterations, such as the right-shift k-ary algorithm of
+Sorenson [50], with only O(log(n)/k) iterations using tables of size k. Further
+work would be needed to evaluate the latency of such algorithms when a massive
+number of processors and precomputation is available.
+Concrete Parameters for log2(p) ≈256. We combine rational reconstruction
+with the pre-ﬁltering step: we consider many fractions α/β, and we only keep
+fractions where α and β both have a large B0-smooth factor. Parameters can be
+chosen as:
+B = 224
+B′ = 245
+B0 = 216
+t = 228
+R = 213
+Experimentally, the probability of having a 216-smooth part larger than t = 228
+is about 2−2.9 (2−5.8 for a pair (α, β)). With the parameters above, we consider
+π(B)/π(B0) ≈27.4 candidates y = α/β in each group, therefore with high
+probability one pair (α, β) will pass the ﬁlter. After ﬁltering those candidates,
+the probability that they are (224, 245)-almost-smooth is about 2−5.5 (2−11 for a
+pair (α, β)).
+Algorithm 6: Using smoothness to evaluate
+a√x, with medium-size fac-
+tor, pre-ﬁlter, and rational reconstruction
+Tgeneral = 0.5EGCD(p) + Table(M) + 7Mul + Mod
+TMinRoot = 54
+M = 240
+#CPU = 234
+speedup : 4.7
+3.5
+Parallel Smoothness Test
+We propose here another idea that can be used to reduce the latency, at the
+expense of more communication. Instead of randomizing with y ←x · ra mod p
+
+476
+A. Biryukov et al.
+for random r until the value y is smooth when lifted to the integers, we can
+compute y ←x + r · p over the integers, for small r ∈{0, 1, . . . R}. We obtain
+slightly larger integers, but again if one of them is smooth we can compute
+a√y mod p and deduce
+a√x mod p =
+a√y mod p.
+The advantage of this approach is that we can test all candidates y for
+smoothness simultaneously. Indeed, we don’t have to do trial division for all
+x + r · p and all small prime powers qi. We just have to compute x mod qi, and
+we directly know the values of r for which x + r · p is divisible by qi: those
+with r ≡−x · p−1 mod qi. Since p is prime, it is always invertible mod qi and
+p−1 mod qi can be precomputed. Figure 7 shows this algorithm.
+In a model with free communication (e.g. with a parallel RAM that can be
+accessed simultaneously by each processor), this should be quite eﬃcient: each
+processor doing trial division just has to send a list of candidates r such that
+x + r · p is divisible by qi, and one processor per candidate r will merge the
+data (with a parallel RAM: each processor writes the factor found in a region
+dedicated to a given candidate r).
+The main factor for the complexity of this algorithm is the number of mes-
+sages to send; on average it is equal to 
+qν<B
+R
+qν . In order to minimize latency,
+we use multiple processors for small factors qi, so that each processor has a single
+message to send; therefore, the number of processor is 
+qν<B⌈R
+qν ⌉.
+When taking communication into account, there will be some cost to pay to
+route the messages. Using a hypercube topology (each processor is connected to
+log(n) other processors), n processors can route n messages in probabilistic time
+O(log(n)) [56].
+Concrete Parameters for log2(p) ≈256. This idea can be combined with the
+use of almost-smoothness, but not with pre-ﬁltering because we consider many
+values of y simultaneously. We consider the following parameters:
+B = 232
+B′ = 245
+R = 226
+With
+those
+parameters,
+the
+number
+of
+processors
+for
+trial
+division
+is
+
+qν<B⌈R
+qν ⌉= 228.8, and the average number of messages to route is 
+qν<B
+R
+qν =
+228 (slightly higher than π(B) ≈227.6). Each candidate y is a 256+26 = 282-bit
+number. The probability that they are (232, 245)-almost-smooth is about 2−24,
+so that the algorithm succeeds with high probability.
+Algorithm 7: Using smoothness to evaluate
+a√x, with medium-size fac-
+tor, and parallel smoothness test
+Tgeneral = Table(M) + 6Mul + Mod
+TMinRoot = 13
+M = 240
+#CPU = 229
+speedup : 20
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+477
+q = 2
+¯x ←x mod 2
+ForAll 0 ≤i < R
+If i ≡−¯x · p−1 mod 2
+ℓi
+2 ←log 2
+zi
+2 ←
+√
+2
+Else
+ℓi
+2 ←0
+zi
+2 ←1
+q = 3
+¯x ←x mod 3
+ForAll 0 ≤i < R
+For i ≡−¯x · p−1 mod 3
+ℓi
+3 ←log 3
+zi
+3 ←
+√
+3
+Else
+ℓi
+3 ←0
+zi
+3 ←1
+. . .
+q = qe
+0
+¯x ←x mod q
+ForAll 0 ≤i < R
+For i ≡−¯x · p−1 mod q
+ℓi
+q ←log q0
+zi
+q ←√q0
+Else
+ℓi
+q ←0
+zi
+q ←1
+r = 0
+y = x
+ℓ←
+q ℓ0
+q
+z ←
+q z0
+q mod p
+If ℓ≈log p
+// y is smooth
+Return z
+r = 1
+y = x + p
+ℓ←
+q ℓ1
+q
+z ←
+q z1
+q mod p
+If ℓ≈log 2p
+// y is smooth
+Return z
+. . .
+r
+y = x + rp
+ℓ←
+q ℓr
+q
+z ←
+q zr
+q mod p
+If ℓ≈log r + log p
+// y is smooth
+Return z
+Fig. 7. Parallel smoothness test. We use a for “ForAll i” loop in the algorithmic
+description, but a real implementation will directly iterate over values of i such that
+i ≡−¯x · p−1 mod q.
+3.6
+Parallel Smoothness Test and Rational Reconstruction
+Finally, we combine the ideas of rational reconstruction and the parallel smooth-
+ness test. First, we use rational reconstruction on x, to obtain two diﬀerent frac-
+tions x = α/β mod p = γ/δ mod p. Using intermediate values from the extended
+Euclidean algorithm, we just keep two consecutive steps, and we expect α, β, γ,
+and δ to be slightly larger than √p. We observe that for any r we have (assuming
+β + δ · r ̸≡0 mod p):
+α + γ · r
+β + δ · r ≡β · x + δ · x · r
+β + δ · r
+mod p ≡x mod p
+Therefore, we consider a series of fractions α+γ·r
+β+δ·r for small r ∈{0, 1, . . . R} and
+deduce
+a√x when α + γ · r and β + δ · r (integers of magnitude roughly R · √p)
+are simultaneously smooth. As in the previous section, we obtain the divisibility
+information on all candidates (α+γ·r or β+δ·r) with a single modular reduction.
+Concretely, when doing trial division of α + γ · r by qi, we have α + γ · r ≡
+0 mod qi
+⇐⇒r ≡−α · γ−1 mod qi. Therefore each processor must compute
+α mod qi and γ−1 mod qi; this diﬀers from Sect. 3.5 where p−1 mod qi was pre-
+computed. We note that γ is not necessarily invertible in Zqi, but having a
+non-invertible value is relatively rare and we neglect it to simplify the analysis
+(this only introduces some false negatives).
+
+478
+A. Biryukov et al.
+There are several possibilities to compute γ−1 mod qi: we can precompute
+a table of inverses in Zqi, or can compute it on the ﬂy using either the
+extended Euclidean algorithm or as γϕ(qi)−1 mod qi using Euler theorem. Using
+the assumptions of Sect. 1.2, the fastest approach is a precomputed table, with
+latency 6 units, but it requires a large amount of memory.
+Concrete Parameters for log2(p) ≈256. We consider the following parameters:
+B = 227
+B′ = 245
+R = 221
+With
+those
+parameters,
+the
+number
+of
+processors
+for
+trial
+division
+is
+
+qν<B⌈R
+qν ⌉= 223.9 (224.9 to do trial division of α + γ · r and β + δ · r in
+parallel), and the average number of messages to route is 
+qν<B
+R
+qν = 223 (224
+when considering both the numerator and denominator). Each candidate y is a
+128 + 21 = 149-bit number. The probability that they are (227, 245)-almost-
+smooth is about 2−9.2, so that the algorithm succeeds with high probability
+after 221 attempts.
+We assume that γ−1 mod qi is computed on the ﬂy (using precomputed tables
+would require a memory of size 248.8). Following the latency estimate for the
+extended GCD algorithm in Sect. 3.4, we assume that computing inverses in
+Zqi has latency
+5
+16 log2(qi), which we round up to log2(qi)/2 ≈14 units.
+Algorithm 8: Using smoothness to evaluate
+a√x, with medium-size fac-
+tor, rational reconstruction, and parallel smoothness test
+Tgeneral = 0.5EGCD(p) + EGCD(B) + Table(M) + 7Mul + Mod
+TMinRoot = 68
+M = 240
+#CPU = 225
+speedup : 3.7
+We have implemented (a serialized version of) this algorithm in practice with
+those parameters, and it succeeds with probability more than 99% (2 failures
+out of 1000 trials). When working with a 128-bit prime p (as in Veedo), the
+attack requires only 213 processors and 240 memory (with B = 214, B′ = 245,
+R = 29), which might be implementable in practice (as a reference, the largest
+GPUs today have more than 214 cores and some motherboards support 12TB of
+memory). The code is available as supplementary material7.
+4
+Relation with Discrete Logarithm
+We observe that the algorithms in Sects. 2 and 3 are very close to classical
+algorithms for the discrete logarithm problem: Sect. 2.1 is similar to the baby-
+step giant-step algorithm [47], and Sect. 2.2 is similar to index calculus [1]. In
+the full version [9] we describe another algorithm similar to the Pohlig-Hellman
+algorithm [40].
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+479
+4.1
+Advanced Logarithm Methods
+It is natural to consider more advanced discrete logarithm algorithms in the
+context of low-latency computation of roots.
+Using ECM. The elliptic curve method [34] (ECM) is a factorization algorithm
+that is particularly eﬃcient to ﬁnd small factors. It could be used instead of trial
+division for smoothness tests in the index calculus type attacks. The idea would
+be to precompute some curves so that the value you want has smooth order. But
+it is unclear how to make this work, or whether the amount of computation for
+doing ECM would end up being within the desired constraints.
+Using NFS-type algorithms. The complexity of index calculus for the discrete log-
+arithm problem is in the class L[1/2]. There are more eﬃcient algorithms known,
+with complexity in the class L[1/3], such as the Number Field Sieve [26]. Unfortu-
+nately, these algorithms seem to have an intrinsically sequential structure. Further
+work is needed to evaluate the potential of these ideas, but the apparent sequen-
+tiality is a serious obstacle in the context of low-latency algorithms.
+4.2
+Reduction to Parallel Discrete Logarithm
+On another hand, we show that a large class of attacks on algebraic VDFs,
+which includes all our attacks, is reducible to the parallel discrete logarithm
+computation. Informally, an attack that computes roots by precomputation and
+low-latency multiplications may be used to compute the discrete log.
+Deﬁnition 1. We call an algorithm A algebraic w.r.t. precomputed memory C =
+[c1, c2, . . . , ck] if on input x it outputs a result in the form
+A(x; C) →(y, d1, d2, . . . , dk, d′)
+(1)
+such that
+y = cd1
+1 cd2
+2 · · · cdk
+k xd′
+(2)
+It is easy to see that all algorithms from Sect. 3 are algebraic: the result is
+always a product of some powers of stored values, which in our case are numbers
+with known roots.
+Theorem 3. Let p be a prime, and let DL be an algorithm that computes the
+discrete logarithm in Fp with computational cost TDL(p). Let A be a parallel
+algebraic algorithm that computes the power function
+f(x) = xd mod p
+using D processors and memory in online time (latency) L and precomputation
+time T and produces a result in the form (2), where d−d′ is coprime with p−1.
+Then there exists a parallel algorithm B that computes the discrete logarithm in
+Fp (using base g) in time L′ = L + log2 k using D processors and memory and
+precomputation time T + D · TDL(p).
+
+480
+A. Biryukov et al.
+Proof. We construct such an algorithm as follows. For each precomputed memory
+element we precompute its discrete logarithm in time TDL(p) spending the total
+of at most D · TDL(p) precomputation and store it together with the value ci.
+In the online phase we run A as a subroutine for x and obtain
+xd = cd1
+1 cd2
+2 · · · cdk
+k xd′
+Given {ci, di}, d′ we retrieve the log of each ci from the memory and compute
+logg x =
+ di logg ci
+d −d′
+in time log2 k using k processors. This ends the proof.
+Therefore, any algebraic attack implies a parallel discrete logarithm compu-
+tation with the same online latency and the same online computational complex-
+ity. Given that the latter problem has received some public scrutiny [18,48,49]
+(and impacts the real-world security of Diﬃe-Hellman [3]), we may guess that
+a further progress in low-latency attacks on algebraic VDFs, in particular the
+reduction in the CPU number D, would require a non-algebraic approach.
+5
+Application to VDF Constructions
+The previous algorithms break the sequentiality of several VDF construc-
+tions, such as MinRoot [29], VeeDo [52] and Sloth++ [11]. An attacker with a
+large number of processors can compute the round function several times faster
+than a legitimate user, if we neglect communication and memory cost.
+In particular, it contradicts the security claims of MinRoot: for instance, using
+the algorithm of Sect. 3.5, an attacker with 229 processors can compute the round
+function about 20 times faster than a legitimate user.
+5.1
+Optimization for Iterated MinRoot
+We can save the latency of the initial multiplication used by r′a in the next round
+if the processor that succeeds broadcasts the factors to be multiplied (
+
+a√qi
+
+and
+r−1) rather than the ﬁnal reduced result. Then each processor would compute
+the randomized input for the next round as:
+(u′ + v′) · r′a = (
+a√
+u + v + (u + i)) · r′a
+=
+
+a√qi · r−1 · r′a + (u + i) · r′a
+This results in a product with one more term, but it does not aﬀect the latency
+if the number of terms was not a power of two. The term (u + i) · r′a is added
+using a multiply-and-add operation at the end, so that the latency of a MinRoot
+round is still just the latency of the a-th root.
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+481
+5.2
+Application to Sloth++
+Sloth++ uses square roots in Fp2. The precomputation attack from Sect. 2.1 can
+be applied directly, but attacks from Sect. 2.2 and 3 rely on smoothness and
+there is no direct way to apply it in Fp2. Instead, we show how to reduce the
+computation of square roots in Fp2 to square roots in Fp.
+We assume that Fp2 is constructed as Fp[X]/
+
+X2 + α
+
+. An element b of Fp2
+is a polynomial b0 +b1X. The square root z = z0 +z1X of b = b0 +b1X satisﬁes:
+z2 = b
+(z0 + z1X)2 = b0 + b1X
+z2
+0 −αz2
+1 + 2z0z1X = b0 + b1X
+
+2z0z1
+= b1
+z2
+0 −αz2
+1
+= b0
+
+z0
+= b1/2z1
+(assuming z1 ̸= 0)
+a2
+1
+4z2
+1 −αz2
+1
+= b0
+We denote u = z2
+1 and we obtain a quadratic equation in u:
+b2
+1
+4u −αu = b0
+b2
+1
+4 −αu2 = b0 · u
+We solve this equation by computing a square root in Fp, and deduce z0 and z1
+using another square root operation in Fp, an inverse and a few multiplications.
+The inverse in Fp can be computed with the low latency algorithms of Sects. 2
+and 3.
+5.3
+Bigger Moduli
+It is natural to ask how our attacks scale with modulus size. Given the relation
+with discrete logarithm computation (Sect. 4), we expect that the number of
+CPUs needed for the attack becomes less feasible with moduli of 1024 bits and
+higher, as it happens with the RSA/DSA security. As diﬀerent applications may
+be okay with the number of CPUs above a certain threshold, we provide attack
+complexity estimates for moduli sizes up to 2048 bits in Table 2.
+Due to the space limit, we do not list the latency numbers and speedups in
+the table. However we note that the speedup in our model actually grows as the
+modulus increases. This is due to the fact that the plain root computation grows
+linearly with the modulus size, whereas, for example, the memory access cost is
+sublinear in it as long as the memory itself grows slower than prime p.
+6
+Low-Latency Evaluation of Low-Degree Exponentiation
+We now consider a diﬀerent problem: how to compute xd with a small d in
+parallel faster than with the standard square and multiply. This can be directly
+
+482
+A. Biryukov et al.
+Table 2. Scalability of smoothness-based attacks. The numbers are given in log2 and
+assume an attack with success rate 1 −exp(−1) (lower than the rates in Section 3).
+The code to compute these numbers is available at https://github.com/Cryptosaurus/
+VDF/tree/master/code/alt_code.
+Algorithm
+Sec. 2.2
+Sec. 3.1
+Sec. 3.5
+Sec. 3.6
+Modulus (bits)
+#CPU
+M
+#CPU
+M
+#CPU
+M
+#CPU
+96
+27
+34
+22
+29
+13
+27
+11
+128
+33
+36
+28
+30
+17
+29
+14
+192
+43
+41
+38
+40
+22
+34
+19
+256
+51
+51
+47
+41
+27
+40
+23
+384
+67
+57
+62
+49
+34
+44
+30
+512
+80
+63
+75
+59
+41
+53
+36
+768
+102
+78
+98
+65
+53
+62
+47
+1024
+121
+92
+117
+74
+62
+69
+57
+1536
+154
+108
+150
+91
+79
+87
+72
+2048
+184
+105
+180
+108
+94
+102
+85
+applied if the round function uses xe with small e rather than
+a√x with small
+a. Moreover, those techniques can be used to reduce the latency of the root
+computation in a VDF: an algorithm to compute xd with latency smaller than
+log2(d) squarings can speed up computing xe with arbitrary e by replacing the
+square and multiply algorithm by a d-th power and multiply algorithm; if done
+naively, each step now requires up to d −1 multiplications, but those can be
+parallelized and do not aﬀect the latency much.
+6.1
+Algorithm Using Shares and LUTs
+Let us consider that we split each ﬁeld element into a sum of s shares from a
+smaller domain, say, s = 2. We then have that x ∈Fp is equal to x = ℓ+ h,
+where for instance ℓcorresponds to the lowest bits and h to the highest bits of
+x. The overall idea consists in precomputing some monomials in order to speed
+up the computation of the VDF primitive we consider.
+In general, we have that (with operations in Fp )
+(ℓ+ h)d =
+d
+
+i=0
+d
+i
+
+ℓihd−i
+Suppose that an adversary has precomputed
+d
+i
+
+ℓi and hi for all values of i,
+and for all possible ℓand h (recall that ℓand h live in spaces that are much
+smaller than Fp). Assume also that they have access to several parallel processors,
+then it is possible to compute (ℓ+h)d with a latency of 1 lookup, 1 multiplication,
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+483
+and whatever is needed for additions and reduction mod p. After optimizing away
+2 trivial tables for i = 0 and i = d, overall, 2d processors are needed for this to
+work (to access 2d LUTs in parallel).
+If d ≤4 such a technique turns out not to be too interesting. However, as
+the degree d increases, this technique becomes more interesting since the latency
+does not change when d increases, only the number of processors needed (and
+the number of tables). Overall, in order to evaluate (h + ℓ)d, we need:
+– 2d parallel processors,
+– 2d tables of size roughly p1/2,
+– a latency of 1 lookup, 1 multiplication, and many additions.
+This can be generalized to a higher number s of shares, in which case the
+numbers above become (without optimizing away some trivial tables)
+– s
+d+s−1
+d
+
+= s
+d+s−1
+s−1
+
+parallel processors,
+– tables of size roughly p1/s,
+– a latency of 1 lookup, log2(s) multiplications (since we don’t have to do them
+sequentially), and many additions.
+Again, while the overall complexity (and in particular the latency) increases
+with s, the latency does not depend on d. Thus, this technique can be become
+interesting when the degree is higher, in particular if d is much bigger than s.
+Concrete Parameters for log2(p) ≈256. For instance, with d = 216 and s = 4,
+we obtain a circuit to evaluate x216 using 4 × 246 = 248 parallel processors, each
+using a table of size 264, with a latency of 1 lookup, 2 multiplications and a
+modular sum of 246 terms. Using the assumptions in Sect. 1.2, the tables would
+be stored in RAM with an access latency of 6 units, and the sum of 246 terms
+has a latency of 6 (using a tree with 6 levels where each level adds 256 terms).
+This corresponds to a latency of 6 + 2 + 6 = 14, which is smaller than a direct
+evaluation with latency 16.
+However the memory requirements of this algorithm are prohibitive, with
+sd = 218 tables of size 264, and a total of 248 accesses to the tables.
+Algorithm 9: Using shares and LUTs to evaluate x216
+T = 14
+#CPU = 248
+M = 282
+speedup : 16/14
+6.2
+Extensions
+The above method can be applied to directly compute r consecutive applications
+of a VDF round function. Furthermore, we observe the bottleneck is the large
+tables of size
+s√p for maps of the form x →C · xi each. However, the functions
+computed by those tables are amenable to the very same technique and we can
+use the technique recursively with l layers by splitting the shares into sub-shares.
+We refer to the full version [9] for more details. The results are given in Table 3.
+
+484
+A. Biryukov et al.
+Table 3. Comparison of highly parallel low latency computation with standard VDF
+(only counting the multiplications in the latency).
+Metric
+Compressed
+Recursive with l layers
+Standard VDF
+Tables (in bits)
+er2
+log2 p
+s
+log2 p
+er2
+log2 p
+sl
+log2 p
+0
+Processors
+er+s−1
+s−1
+ e2r
+2
+er+s−1
+s−1
+l e2r
+2
+1 or 2
+Latency (in log2 p bit MUL)
+2 + ⌈log2(s)⌉
+2 + l⌈log2(s)⌉
+⌈log2(e)⌉· r
+7
+Practical Issues
+The previous sections mostly consider ideal implementations of VDF from an
+algorithmic point of view. In this section we brieﬂy discuss some practical issues,
+such as the communication cost.
+7.1
+Dealing with Errors
+The algorithms given in this paper are probabilistic. Since we consider only the
+round function
+a√x, and VDFs use a large number of iterations (typically 240 for
+MinRoot), we need a very high success rate in order to successfully compute the
+full VDF function.
+However, it is easy to deal with rare erroneous computations, because the
+computations can be eﬃciently checked (if y =
+a√x then ya = x). One option
+is to repeat the algorithm when it fails; this increases the latency but if the
+failure rate is small, the average latency stays small. Another option is to run the
+standard implementation in parallel to the attack. If the attack succeeds we have
+the result with low latency, and if it fails we wait until the standard algorithm
+succeeds. If the failure rate is small, the average latency is still small.
+7.2
+Communication Cost
+The analysis above essentially neglects communication costs. In practice, this is
+likely to be an important bottleneck, because communication between millions
+of CPUs takes time, and requires a large communication network; this is likely to
+dominate the cost of the machine [60]. The setting is quite diﬀerent from usual
+cryptanalytic attacks, often embarrassingly parallel and not requiring commu-
+nication between the processors (e.g. brute-force key search). Since our attacks
+target the round function, all cores must synchronize at least after each round,
+to collect the result from the core that succeeded and broadcast it to other cores
+(some algorithms might require even more communication). In this section, we
+brieﬂy discuss how to implement those communications, and how practical this
+might be.
+Massive Communication Network. In many of the discussed settings with high
+available parallelism it is necessary to broadcast a short input (e.g. 256 bits) with
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+485
+very low latency to a large set of processors and later to collect short outputs
+from a small random subset of “successful” processors.
+With more than 220 processors, this would probably require too long wires
+for such broadcast and retrieval. Alternatives could be broadcasting wirelessly or
+even over the optical domain. Indeed the speed of optics might make it possible
+to ﬂash with low latency the common input to the ﬁeld of processors and later,
+with a few receiving detectors to retrieve outputs from a handful of lucky proces-
+sors. There is ongoing research on integrating optical elements into existing chip
+design [6], and the hypothetical Twinkle factoring device by Shamir also used in
+optics for ﬁnding B-smooth numbers [45].
+7.3
+Physical Constraints
+Speed of Light. We want the attack to be faster than the standard implemen-
+tation. Taking the Supranational implementation of MinRoot as a benchmark,
+the attack must have a latency of at most 230ns; during this time light can only
+travel 70 m; if we aim for an attack twice as fast as the standard implemen-
+tation, light can only travel 35 m. This limits the physical size of the machine
+that runs the attacks: it should be within a sphere of diameter 35 m. Assuming
+that each processor has a volume of 0.025mm2, at most π
+6 35m3/0.025mm2 ≈250
+processors can communicate within one round.
+Cooling Limit. Assuming each core consumes 1W of power, the limit above
+would result in a power density of 50 GW
+m3 , far exceeding the power density of a
+nuclear reactor.
+The largest nuclear reactor in the world is the Taishan EPR, rated at 1.66
+GW, and 4.59 GW of thermal capacity. This is a major constraint on building
+nuclear power plants leading us to claim that it is near impossible to build a
+system dissipating more than 100 GW of thermal power in one location on land.
+Adding an “engineering safety factor of 10” gives a limit of 1 TW, leading to a
+limit of about 240 cores in a single machine.
+Practical Engineering Constraints. Practical engineering constraints are very
+likely to lead to much lower limits than any of the above. It completely ignores
+power supply, cooling, and space for interconnect for communications, which
+will far exceed the size of the cores. However, the point of designing for “128 bit
+security” is to account for future improvements by adding safety margins, and
+so it is unclear how much practical engineering problems should inﬂuence this if
+they can’t be translated into clear physical limits.
+8
+Conclusion
+In this paper we propose several algorithms to compute roots in a ﬁnite ﬁeld Fp
+with low latency. Even though it is not clear how eﬃcient those algorithms would
+be if implemented in practice, they clearly show that computing roots is not a
+
+486
+A. Biryukov et al.
+sequential operation, breaking an assumption used in several VDF constructions.
+In particular, MinRoot is a VDF candidate that was proposed as a randomness
+beacon in the core layer of the Proof-of-Stake Ethereum protocol, but this project
+has been put on hold following our results [28].
+Possible Tweaks. In order to limit the impact of these results, we considered some
+options to construct a VDF that would plausibly not be aﬀected by the attacks.
+We have not looked into these alternatives in detail, and we do not claim that
+they are secure, but they could oﬀer ideas for further analysis.
+Using a low degree round function. Our strongest attacks (in Sects. 2 and 3)
+compute
+a√x with low latency. This breaks the VDF property because the
+standard implementation requires about log2(p) squarings to compute the
+root. An option could be to use xe with small e in the round function instead
+of
+a√x: this reduces the latency of the standard implementation and the
+algorithms of Sect. 2 are no longer competitive.
+However, the algorithms of Sect. 6 show that a low-degree round function
+can also be sped up to a smaller extend using parallel computation.
+Using a larger prime p. All the algorithms that we proposed have a complexity
+(number of processors) that is at best sub-exponential in p: the number of
+processors required to obtain a given advantage increases with p. If p is
+chosen large enough, it might be possible to achieve a suﬃcient security
+level.
+However, further work is required to gain conﬁdence on the non-existence of
+better attacks, because the ﬁeld has been barely explored.
+Using Extension Fields (as in Sloth++). While taking square roots over
+Fp2 reduces to solving a quadratic equation over Fp, which is solved by taking
+square roots over Fp (quadratic formula), this doesn’t appear to be the case
+for cube roots or higher. The cubic formula may be useful, but for roots
+larger than 3 it isn’t clear how to leverage the attack over Fp. On the other
+hand, the attack may generalize more directly to extension ﬁelds, using a
+suitable smoothness basis for the extension ﬁeld (similar to index calculus
+being extended to NFS).
+Using Elliptic Curve Groups. Another approach is to use elliptic curve
+groups for the round permutation because there is no straightforward notion
+of smoothness as there is in ﬁnite ﬁelds. Index calculus is less eﬀective for
+solving DL on elliptic curve groups too. For instance, the round function
+could use r × x, with x a curve point and r such that 3r = 1 mod q (assum-
+ing the EC group over Fp has order q). However, between rounds we would
+need to interleave this with some permutation on the curve group that is
+simple/algebraic over Fp and not a scalar multiplication.
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+487
+Acknowledgements. This work was started during a gathering organized by
+Ethereum Foundation, where experts were invited to analyze the MinRoot VDF.
+A
+technical report of the gathering is available at [28]. We would like to thank Ethereum
+Foundation for organizing the gathering, and all the participants for fruitful discus-
+sions. In particular, Dankrad Feist contributed to the discussion of physical constraints,
+and Anne Canteaut and Itai Dinur contributed appendices in the full version of this
+paper.
+Gaëtan Leurent is supported by project Cryptanalyse from PEPR Cybersécurité
+(22-PECY-0010). Alex Biryukov was funded in part by the Luxembourg National
+Research Fund (FNR), project CryptoFin C22/IS/17415825.
+References
+1. Adleman, L.M.: A subexponential algorithm for the discrete logarithm problem
+with applications to cryptography (abstract). In: 20th Annual Symposium on
+Foundations of Computer Science, San Juan, Puerto Rico, 29-31 October 1979,
+pp. 55–60. IEEE Computer Society (1979). https://doi.org/10.1109/SFCS.1979.2
+2. Adleman, L.M., Kompella, K.: Using smoothness to achieve parallelism (abstract).
+In: 20th ACM STOC, pp. 528–538. ACM Press (May 1988). https://doi.org/10.
+1145/62212.62264
+3. Adrian, D., et al.: Imperfect forward secrecy: How Diﬃe-Hellman fails in practice.
+In: Ray, I., Li, N., Kruegel, C. (eds.) ACM CCS 2015, pp. 5–17. ACM Press (Oct
+2015). https://doi.org/10.1145/2810103.2813707
+4. Ahrens, K., Zumbrägel, J.: DEFEND: towards veriﬁable delay functions from endo-
+morphism rings. In: IACR Cryptol. ePrint Arch, p. 1537 (2023). https://eprint.iacr.
+org/2023/1537
+5. Arun, A., Bonneau, J., Clark, J.: Short-lived Zero-Knowledge Proofs and Signa-
+tures. In: Agrawal, S., Lin, D. (eds.) Advances in Cryptology – ASIACRYPT 2022:
+28th International Conference on the Theory and Application of Cryptology and
+Information Security, Taipei, Taiwan, December 5–9, 2022, Proceedings, Part III,
+pp. 487–516. Springer Nature Switzerland, Cham (2022). https://doi.org/10.1007/
+978-3-031-22969-5_17
+6. Atabaki, A.H., et al.: Integrating photonics with silicon nanoelectronics for the
+next generation of systems on a chip. Nature 556(7701), 349–354 (2018). https://
+doi.org/10.1038/s41586-018-0028-z
+7. Bach, E.: How to generate factored random numbers. SIAM J. Comput. 17(2),
+179–193 (1988). https://doi.org/10.1137/0217012
+8. Barrett, P.: Implementing the Rivest Shamir and Adleman Public Key Encryp-
+tion Algorithm on a Standard Digital Signal Processor. In: Odlyzko, A.M. (ed.)
+CRYPTO 1986. LNCS, vol. 263, pp. 311–323. Springer, Heidelberg (1987). https://
+doi.org/10.1007/3-540-47721-7_24
+9. Biryukov, A., et al.: Cryptanalysis of algebraic veriﬁable delay functions. Cryptol-
+ogy ePrint Archive (2024), full version
+10. Blum, M.: Coin ﬂipping by telephone. In: Proceedings of the IEEE Spring COM-
+PCOM, pp. 133–137 (1982)
+11. Boneh, D., Bonneau, J., Bünz, B., Fisch, B.: Veriﬁable delay functions. In:
+Shacham, H., Boldyreva, A. (eds.) Advances in Cryptology – CRYPTO 2018: 38th
+Annual International Cryptology Conference, Santa Barbara, CA, USA, August
+19–23, 2018, Proceedings, Part I, pp. 757–788. Springer International Publishing,
+Cham (2018). https://doi.org/10.1007/978-3-319-96884-1_25
+
+488
+A. Biryukov et al.
+12. Boneh, D., Franklin, M.K.: Eﬃcient generation of shared RSA keys (extended
+abstract). In: Kaliski Jr., B.S. (ed.) CRYPTO’97. LNCS, vol. 1294, pp. 425–439.
+Springer, Heidelberg (Aug 1997). https://doi.org/10.1007/BFb0052253
+13. Brent, R.P., Kung, H.T.: A regular layout for parallel adders. IEEE Trans. Comput.
+31(3), 260–264 (1982). https://doi.org/10.1109/TC.1982.1675982
+14. Brent, R.P., Rung, H.: A systolic algorithm for integer GCD computation. In:
+1985 IEEE 7th Symposium on Computer Arithmetic (ARITH), pp. 118–125. IEEE
+(1985)
+15. Buterin, V.: Randao++. https://redd.it/4mdkku (2017)
+16. Chen, M., et al.: Multiparty generation of an RSA modulus. In: Micciancio, D.,
+Ristenpart, T. (eds.) Advances in Cryptology – CRYPTO 2020: 40th Annual Inter-
+national Cryptology Conference, CRYPTO 2020, Santa Barbara, CA, USA, August
+17–21, 2020, Proceedings, Part III, pp. 64–93. Springer International Publishing,
+Cham (2020). https://doi.org/10.1007/978-3-030-56877-1_3
+17. Cline, D., Dryja, T., Narula, N., CommitO: Clockwork: An exchange protocol for
+proofs of non front-running (2020)
+18. Coppersmith, D., Shparlinski, I.: On polynomial approximation of the discrete
+logarithm and the Diﬃe-Hellman mapping. J. Cryptol. 13, 339–360 (2000)
+19. De Feo, L., Masson, S., Petit, C., Sanso, A.: Veriﬁable delay functions from super-
+singular isogenies and pairings. In: Galbraith, S.D., Moriai, S. (eds.) Advances in
+Cryptology – ASIACRYPT 2019: 25th International Conference on the Theory
+and Application of Cryptology and Information Security, Kobe, Japan, December
+8–12, 2019, Proceedings, Part I, pp. 248–277. Springer International Publishing,
+Cham (2019). https://doi.org/10.1007/978-3-030-34578-5_10
+20. Deb, S., Kannan, S., Tse, D.: PoSAT: proof-of-work availability and unpredictabil-
+ity, without the work. In: Borisov, N., Diaz, C. (eds.) Financial Cryptography and
+Data Security: 25th International Conference, FC 2021, Virtual Event, March 1–5,
+2021, Revised Selected Papers, Part II, pp. 104–128. Springer Berlin Heidelberg,
+Berlin, Heidelberg (2021). https://doi.org/10.1007/978-3-662-64331-0_6
+21. Dickman, K.: On the frequency of numbers containing prime factors of a certain
+relative magnitude. Arkiv for matematik, astronomi och fysik 22(10), A–10 (1930)
+22. Dobson, S., Galbraith, S.D., Smith, B.A.: Trustless unknown-order groups.
+ArXiv:abs/2211.16128,
+https://api.semanticscholar.org/CorpusID:236932351
+(2022)
+23. Drake, J.: Minimal vdf randomness beacon. https://ethresear.ch/t/minimal-vdf-
+randomness-beacon/3566 (2018)
+24. Earle, J.: Latched carry-save adder. IBM Tech. Disclosure Bull. 7(10), 909–910
+(1965)
+25. Fisch, B.: Tight proofs of space and replication. In: Ishai, Y., Rijmen, V. (eds.)
+EUROCRYPT 2019. LNCS, vol. 11477, pp. 324–348. Springer, Cham (2019).
+https://doi.org/10.1007/978-3-030-17656-3_12
+26. Gordon, D.M.: Discrete logarithms in GF(P) using the number ﬁeld sieve. SIAM
+J. Discret. Math. 6(1), 124–138 (1993). https://doi.org/10.1137/0406010
+27. Hazay, C., Mikkelsen, G.L., Rabin, T., Toft, T., Nicolosi, A.A.: Eﬃcient RSA key
+generation and threshold paillier in the two-party setting. J. Cryptol. 32(2), 265–
+323 (Apr2019). https://doi.org/10.1007/s00145-017-9275-7
+28. Herold, G., et al.: Statement regarding the public report on the analysis
+of minroot. https://ethresear.ch/t/statement-regarding-the-public-report-on-the-
+analysis-of-minroot/16670 (Sep 2023)
+
+Cryptanalysis of Algebraic Veriﬁable Delay Functions
+489
+29. Khovratovich, D., Maller, M., Tiwari, P.R.: MinRoot: Candidate sequential func-
+tion for ethereum VDF. Cryptology ePrint Archive, Report 2022/1626 (2022).
+https://eprint.iacr.org/2022/1626
+30. Kiayias, A., Russell, A., David, B., Oliynykov, R.: Ouroboros: a provably secure
+proof-of-stake blockchain protocol. In: Katz, J., Shacham, H. (eds.) Advances in
+Cryptology – CRYPTO 2017: 37th Annual International Cryptology Conference,
+Santa Barbara, CA, USA, August 20–24, 2017, Proceedings, Part I, pp. 357–388.
+Springer International Publishing, Cham (2017). https://doi.org/10.1007/978-3-
+319-63688-7_12
+31. Kothapalli, A., Setty, S., Tzialla, I.: Nova: recursive zero-knowledge arguments
+from folding schemes. In: Dodis, Y., Shrimpton, T. (eds.) Advances in Cryptology
+– CRYPTO 2022: 42nd Annual International Cryptology Conference, CRYPTO
+2022, Santa Barbara, CA, USA, August 15–18, 2022, Proceedings, Part IV, pp.
+359–388. Springer Nature Switzerland, Cham (2022). https://doi.org/10.1007/978-
+3-031-15985-5_13
+32. Lenstra, A.K., Wesolowski, B.: A random zoo: sloth, unicorn, and trx. Cryptology
+ePrint Archive, Report 2015/366 (2015). https://eprint.iacr.org/2015/366
+33. Lenstra, A.K., Wesolowski, B.: Trustworthy public randomness with sloth, unicorn,
+and trx. Int. J. Appl. Cryptogr. 3(4), 330–343 (2017) https://doi.org/10.1504/
+IJACT.2017.10010315
+34. Lenstra, H.W.: Factoring integers with elliptic curves. Ann. Math. 126(3), 649–673
+(1987). http://www.jstor.org/stable/1971363
+35. Mahmoody, M., Moran, T., Vadhan, S.P.: Publicly veriﬁable proofs of sequential
+work. In: Kleinberg, R.D. (ed.) ITCS 2013, pp. 373–388. ACM (Jan 2013). https://
+doi.org/10.1145/2422436.2422479
+36. Mahmoody, M., Smith, C., Wu, D.J.: Can veriﬁable delay functions be based on
+random oracles? In: Czumaj, A., Dawar, A., Merelli, E. (eds.) ICALP 2020. LIPIcs,
+vol. 168, pp. 83:1–83:17. Schloss Dagstuhl (Jul 2020). https://doi.org/10.4230/
+LIPIcs.ICALP.2020.83
+37. Medley, L., Loe, A.F., Quaglia, E.A.: Sok: Delay-based cryptography. In: 36th IEEE
+Computer Security Foundations Symposium, CSF 2023, Dubrovnik, Croatia, July
+10-14, 2023, pp. 169–183. IEEE (2023). https://doi.org/10.1109/CSF57540.2023.
+00028
+38. Montgomery, H.L., Vaughan, R.C.: Multiplicative number theory I: Classical the-
+ory. No. 97, Cambridge university press (2007)
+39. Pietrzak, K.: Simple veriﬁable delay functions. In: Blum, A. (ed.) ITCS 2019.
+vol. 124, pp. 60:1–60:15. LIPIcs (Jan 2019). https://doi.org/10.4230/LIPIcs.ITCS.
+2019.60
+40. Pohlig, S.C., Hellman, M.E.: An improved algorithm for computing logarithms
+over gf(p) and its cryptographic signiﬁcance (corresp.). IEEE Trans. Inf. Theory
+24(1), 106–110 (1978). https://doi.org/10.1109/TIT.1978.1055817
+41. Rivest, R.L., Shamir, A., Wagner, D.A.: Time-lock Puzzles and Timed-release
+Crypto. Technical Report, Massachusetts Institute of Technology (1996)
+42. Rotem, L., Segev, G.: Generically speeding-up repeated squaring is equivalent to
+factoring: sharp thresholds for all generic-ring delay functions. In: Micciancio, D.,
+Ristenpart, T. (eds.) Advances in Cryptology – CRYPTO 2020: 40th Annual Inter-
+national Cryptology Conference, CRYPTO 2020, Santa Barbara, CA, USA, August
+17–21, 2020, Proceedings, Part III, pp. 481–509. Springer International Publishing,
+Cham (2020). https://doi.org/10.1007/978-3-030-56877-1_17
+43. Savage, J.E.: Models of Computation, vol. 136. Addison-Wesley Reading, MA
+(1998)
+
+490
+A. Biryukov et al.
+44. Schindler, P., Judmayer, A., Hittmeir, M., Stifter, N., Weippl, E.R.: RandRun-
+ner: Distributed randomness from trapdoor VDFs with strong uniqueness. In:
+NDSS 2021. The Internet Society (Feb 2021)
+45. Shamir, A.: Factoring large numbers with the TWINKLE Device: (extended
+abstract). In: Koç, Ç.K., Paar, C. (eds.) Cryptographic Hardware and Embedded
+Systems: First InternationalWorkshop, CHES’99 Worcester, MA, USA, August
+12–13, 1999 Proceedings, pp. 2–12. Springer Berlin Heidelberg, Berlin, Heidelberg
+(1999). https://doi.org/10.1007/3-540-48059-5_2
+46. Shani, B.: A note on isogeny-based hybrid veriﬁable delay functions. Cryptology
+ePrint Archive, Report 2019/205 (2019). https://eprint.iacr.org/2019/205
+47. Shanks, D.: Class number, a theory of factorization, and genera. In: Proceedings
+of the Symp. Math. Soc., 1971. vol. 20, pp. 415–440 (1971)
+48. Shparlinski, I.: Number theoretic methods in cryptography: Complexity lower
+bounds, vol. 17. Birkhäuser (2012)
+49. Sorenson, J.: Polylog depth circuits for integer factoring and discrete logarithms.
+Inf. Comput. 110(1), 1–18 (1994)
+50. Sorenson, J.: Two fast GCD algorithms. J. Algorithms 16(1), 110–144 (1994).
+https://doi.org/10.1006/jagm.1994.1006
+51. Sreedhar, K., Horowitz, M., Torng, C.: A fast large-integer extended GCD algo-
+rithm and hardware design for veriﬁable delay functions and modular inversion.
+IACR TCHES 2022(4), 163–187 (2022). https://doi.org/10.46586/tches.v2022.i4.
+163-187
+52. StarkWare: Presenting: VeeDo. https://medium.com/starkware/presenting-veedo-
+e4bbﬀ77c7ae (2020)
+53. Supranational LLC: MinRoot VDF Hardware Engine (2022). https://github.com/
+supranational/minroot_hardware
+54. Supranational
+LLC:
+Minroot
+ASIC
+Driver
+(2023).
+https://github.com/
+supranational/minroot_driver
+55. Supranational LLC: MinRoot VDF ASIC (2023). private presentation
+56. Valiant, L.G.: A scheme for fast parallel communication. SIAM J. Comput. 11(2),
+350–361 (1982). https://doi.org/10.1137/0211027
+57. Wallace, C.S.: A suggestion for a fast multiplier. IEEE Trans. Electron. Comput.
+13(1), 14–17 (1964). https://doi.org/10.1109/PGEC.1964.263830
+58. Wang, P.S.: A p-adic algorithm for univariate partial fractions. In: Wang, P.S. (ed.)
+Proceedings of the Symposium on Symbolic and Algebraic Manipulation, SYMSAC
+1981, Snowbird, Utah, USA, August 5-7, 1981, pp. 212–217. ACM (1981). https://
+doi.org/10.1145/800206.806398
+59. Wesolowski, B.: Eﬃcient veriﬁable delay functions. In: Ishai, Y., Rijmen, V. (eds.)
+Advances in Cryptology – EUROCRYPT 2019: 38th Annual International Con-
+ference on the Theory and Applications of Cryptographic Techniques, Darmstadt,
+Germany, May 19–23, 2019, Proceedings, Part III, pp. 379–407. Springer Interna-
+tional Publishing, Cham (2019). https://doi.org/10.1007/978-3-030-17659-4_13
+60. Wiener, M.J.: The full cost of cryptanalytic attacks. J. Cryptol. 17(2), 105–124
+(2004). https://doi.org/10.1007/s00145-003-0213-5
+

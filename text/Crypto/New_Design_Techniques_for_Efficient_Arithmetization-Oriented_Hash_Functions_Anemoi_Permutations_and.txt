@@ -1,0 +1,1920 @@
+New Design Techniques for Eﬃcient
+Arithmetization-Oriented Hash
+Functions: Anemoi Permutations and Jive
+Compression Mode
+Cl´emence Bouvier1,2(B), Pierre Briaud1,2, Pyrros Chaidos3, L´eo Perrin2,
+Robin Salen4, Vesselin Velichkov5,6, and Danny Willems7,8
+1 Sorbonne University, Paris, France
+2 Inria, Paris, France
+3 National & Kapodistrian University of Athens, Athens, Greece
+4 Toposware, Inc., Boston, USA
+5 University of Edinburgh, Edinburgh, Scotland
+6 Clearmatics, London, England
+7 Nomadic Labs, Paris, France
+8 LIX, Paris, France
+anemoi@inria.fr
+Abstract. Advanced cryptographic protocols such as Zero-knowledge
+(ZK) proofs of knowledge, widely used in cryptocurrency applications
+such as Zcash, Monero, Filecoin, Tezos, Topos, demand new crypto-
+graphic hash functions that are eﬃcient not only over the binary ﬁeld
+F2, but also over large ﬁelds of prime characteristic Fp. This need
+has been acknowledged by the wider community and new so-called
+Arithmetization-Oriented (AO) hash functions have been proposed,
+e.g. MiMC-Hash, Rescue–Prime, Poseidon, Reinforced Concrete and
+Griffin to name a few.
+In this paper we propose Anemoi: a new family of ZK-friendly permuta-
+tions, that can be used to construct eﬃcient hash functions and compres-
+sion functions. The main features of these algorithms are that 1) they
+are designed to be eﬃcient within multiple proof systems (e.g. Groth16,
+Plonk, etc.), 2) they contain dedicated functions optimised for speciﬁc
+applications (namely Merkle tree hashing and general purpose hashing),
+3) they have highly competitive performance e.g. about a factor of 2
+improvement over Poseidon and Rescue–Prime in terms of R1CS con-
+straints, a 21%–35% Plonk constraint reduction over a highly optimized
+Poseidon implementation, as well as competitive native performance,
+running between two and three times faster than Rescue–Prime, depend-
+ing on the ﬁeld size.
+On the theoretical side, Anemoi pushes further the frontier in under-
+standing the design principles that are truly entailed by arithmetization-
+orientation. In particular, we identify and exploit a previously unknown
+relationship between CCZ-equivalence and arithmetization-orientation.
+In addition, we propose two new standalone components that can be
+easily reused in new designs. One is a new S-box called Flystel, based
+c
+⃝International Association for Cryptologic Research 2023
+H. Handschuh and A. Lysyanskaya (Eds.): CRYPTO 2023, LNCS 14083, pp. 507–539, 2023.
+https://doi.org/10.1007/978-3-031-38548-3_17
+
+508
+C. Bouvier et al.
+on the well-studied butterﬂy structure, and the second is Jive – a new
+mode of operation, inspired by the “Latin dance” symmetric algorithms
+(Salsa, ChaCha and derivatives). Our design is a conservative one: it
+uses a very classical Substitution-Permutation Network structure, and
+our detailed analysis of algebraic attacks highlights can be of indepen-
+dent interest.
+Keywords: Anemoi · Flystel · Jive · Arithmetization-oriented · Hash
+functions · CCZ-equivalence · Plonk · R1CS · AIR · Merkle tree ·
+Zero-knowledge · Arithmetic circuits · Algebraic attacks
+1
+Introduction
+In recent years we have seen a rapid surge of interest in the practical application
+of an old cryptographic construction known as zero-knowledge (ZK) proofs of
+knowledge. Such protocols allow a prover P to convince a veriﬁer V that a certain
+statement x is true without revealing any additional information beyond the fact
+that it is veriﬁably correct. Such a piece of information may, for example, be that
+the result of a speciﬁed complex computation is 1. ZK proofs of knowledge, and
+more generally computational integrity proofs, allow V to verify that the result
+of the proven computation is correct without having to perform the computation
+herself. In fact, to verify correctness, V does not even need to know some of the
+details of the computation e.g., its intermediate values or any potentially secret
+inputs.
+ZK proof systems have been introduced with the seminal work of Micali,
+Goldwasser and Rackoﬀback in 1989 [27]. Traditionally, ZK protocols were
+deployed to allow a prover to keep some elements of a computation secret (e.g.
+a private key). More recently, the blockchain ecosystem has witnessed a rise of a
+category of ZK protocols, namely Succinct Non-Interactive Arguments of Knowl-
+edge (ZK-SNARKs), that leverages their succinctness property to relieve the ver-
+iﬁer from the necessity to perform an expensive computation for which it may
+not have suﬃcient resources (in terms of space as well as computational power).
+The increased interest in such protocols today is largely driven by the latest
+advancements in digital currencies such as Bitcoin, Ethereum, Tezos, Topos, etc.
+In particular, ZK proofs make it possible to add privacy on a public blockchain
+(e.g. Zcash [7]) and to perform oﬀ-chain computation veriﬁable by network nodes
+with signiﬁcantly limited resources, improving scalability.
+The computation performed by P and veriﬁed by V in a ZK proof is often
+expressed as an arithmetic circuit composed of gates (algebraic operations e.g.
+multiplication or addition) connected by wires. The quantities that pass over the
+wires and are operated on by the gates are elements of a ﬁeld Fq, where q ≥2.
+Cryptographic hash functions are fundamental to practical ZK applications.
+They are often used for testing membership of some element(s) by means of
+Merkle trees. They can also be used as part of the ZK protocol itself e.g. by
+compressing multiple public inputs to a single hash. The modiﬁed protocol has
+
+New Design Techniques
+509
+a reduced input footprint, and the collision resistance of the hash function implies
+that security is not impacted. This is relevant in proof systems where the veriﬁer’s
+costs are proportional to the number of public inputs such as Groth16 [32].
+Modern cryptographic hash functions such as SHA2, SHA3 and BLAKE are
+designed over vector spaces of the binary ﬁeld F2 (i.e. they work over bits),
+while ZK protocols often operate over Fq for a large q – usually a prime num-
+ber. Therefore the eﬃcient execution of ZK protocols in applications such as
+Zcash or Filecoin, that aim to process millions of transactions per day, imposes
+the need for new hash functions designed to be natively eﬃcient in Fq – the so-
+called Arithmetization-Oriented (AO) designs. The need for new arithmetization-
+oriented hash functions has been acknowledged by both researchers and engi-
+neers. As a result, the past couple of years have seen a surge of new proposals of
+hash functions that operate natively in Fq for q prime, enabling eﬃcient veriﬁ-
+cation: MiMC-Hash [2], Poseidon [30], Rescue–Prime [3,41] and Griffin [28]
+to name a few. Another line of work, including Reinforced Concrete [29] and
+Tip5 [42], aims at exploiting lookup tables for more eﬃcient native computations,
+while remaining practical inside proving systems. This additional requirement for
+lookup tables however reduces the compatibility of these hash functions within
+the space of proving systems, and hence limiting the chances of global adoption.
+The Design Requirements of Arithmetization-Orientation. Building upon the
+works mentioned above as well as on the study of practical use cases, we have
+identiﬁed several properties and design requirements that are expected from
+arithmetization-oriented hash functions.
+Evaluation vs. Veriﬁcation. The operation for which the eﬃciency of an AO
+primitive is the most crucial is not its evaluation, but rather its veriﬁcation.
+Concretely, while the cost of evaluating y = F(x) given x remains important,
+the step with the harshest constraints is a veriﬁcation: given both x and y,
+checking if y is indeed equal to F(x) should be “eﬃcient”, where the exact
+meaning of “eﬃcient” depends on the proof system considered.
+b-to-1 compression. One of the main use cases for AO hash functions is in
+Merkle trees. In this context, rather than a hash function taking arbitrarily
+long inputs, protocol designers need a compression function mapping bm to
+m ﬁnite ﬁeld elements, meaning a compression factor of b (often, b = 2).
+Primitive Factories. Rather than a single primitive or a small family of prim-
+itives (such as for instance AES-128/192/256), AO hash functions are deﬁned
+for a vast number of ﬁeld sizes and security levels. In fact, we would argue
+that algorithms like Poseidon are primitive factories1, and that the task of
+the cryptanalysts is not only to assess whether speciﬁc instances are secure.
+Rather, it is to verify if such factories can return weak algorithms. Fur-
+thermore, since the protocols and arithmetization techniques vary, a factory
+should be able to output primitives optimized for each use case.
+1 “Factory” is here used in the sense of the programming design pattern, i.e. it is an
+object returning functions.
+
+510
+C. Bouvier et al.
+Performance constraints. The space and time complexities of proving sys-
+tems depend on the size (i.e. the number of gates) of the arithmetized pro-
+gram that is being veriﬁed. Therefore, it is crucial for practical applications
+to minimize the number of gates. Otherwise, the cost of a proof may be so
+high as to make it unusable, as the computational cost of the prover is often
+the bottleneck of an entire system. AIR-based systems additionally require
+keeping constraint degrees low for practical applications. Furthermore, good
+conventional CPU architecture performance is still required as real world
+applications tend to use the primitives both outside and inside the circuit.
+Outline of Our Contributions. In this paper, we study each of the speciﬁc design
+requirements of AO, and provide new tools to satisfy them. First, we present the
+necessary theoretical background in Sect. 2.
+We then present two building blocks. First, in Sect. 3 we introduce a new
+mode of operation, Jive, which turns a public permutation into a t-to-1 com-
+pression function. Its main advantage is that it compresses an input consisting
+of tu words using a permutation operating on a state consisting of tu words,
+unlike the sponge structure which needs a bigger state in order to accomodate a
+capacity. Then, in Sect. 4, we argue that the asymmetry between the evaluation
+and the veriﬁcation of a function is best framed in terms of CCZ-equivalence.
+Using this insight, we propose a new family of non-linear components (S-boxes)
+operating on F2
+q which we call Flystel: they allow both a high degree evaluation,
+and a low degree veriﬁcation.
+In a natural progression, we use the Flystel structure to construct a new
+permutation factory: Anemoi. It uses the familiar Substitution-Permutation Net-
+work (SPN) structure, which simpliﬁes our security analysis. Its speciﬁcation is
+given in Sect. 5, and our initial cryptanalysis is presented in Sect. 6. We combine
+all these results together in Sect. 7, where we show via detailed benchmarks that
+combining the Anemoi permutations with the Jive mode of operation allows us
+to compete with the best AO hash functions in the literature in terms of per-
+formance, and to substantially outclass them in some contexts. In particular, in
+the case of Plonk, we can compute more than twice as many hashes for a ﬁxed
+number of constraints as is possible with Poseidon, which to the best of our
+knowledge was the best until now. We conclude the paper in Sect. 8.
+2
+Theoretical Background
+In what follows, q is an integer corresponding to the size of the ﬁeld Fq, so
+that q = p for some prime number p or q = 2n. In particular, for binary ﬁelds
+F2n, we focus on the case where n is odd as it is harder to build low degree
+permutations otherwise. As usual, the symbols “+” and “×” denote respectively
+the addition and multiplication operations over Fq. We also let m ≥1 be an
+integer corresponding to the number of ﬁeld elements we are operating on. We
+denote by ⟨a, b⟩the usual scalar product of a ∈Fm
+q and b ∈Fm
+q which is such
+that ⟨a, b⟩= m−1
+i=0 aibi.
+
+New Design Techniques
+511
+Below, we consider a function F : Fm
+q →Fm
+q , and recall some of the concepts
+behind the use and analysis of functions to design symmetric cryptographic
+primitives. We ﬁrst recall the deﬁnitions of their diﬀerential and linear properties,
+and then that of CCZ-equivalence. While the latter has seldom been used in
+practice so far, it plays a crucial role in our work.
+Diﬀerential Properties. The Diﬀerence Distribution Table (DDT) of function F
+is the two dimensional array δF , where δF [a, b] = #{x ∈Fm
+q |F(x+a)−F(x) = b}.
+The maximum value of δF [a, b] for a ̸= 0 is the diﬀerential uniformity [39] of F.
+Linear Properties. While a general formula that works both when q is a power
+of two and a prime can be given, it is simpler to treat the two cases separately,
+especially given that the reader is probably familiar with the case of characteristic
+2. If q = 2n, then the Walsh transform of the component ⟨b, F⟩: Fq →F2 for
+any b ∈Fq\{0} is W⟨b,F ⟩(a) = 
+x∈Fm
+2n(−1)⟨a,x⟩+⟨b,F (x)⟩.
+Otherwise, when q = p the Fourier transform of a function f : Fm
+p →Fp is
+the function Wf : Fm
+p →C such that
+Wf(a) =
+
+x∈Fm
+p
+exp
+2πi (⟨a, x⟩−f(x))
+p
+
+.
+For a vectorial function F : Fm
+q →Fm
+q , we consider the Fourier transform of each
+of its components, i.e. of all the linear combinations ⟨b, F⟩.
+CCZ-Equivalence [19]. Let F : Fm
+q →Fm
+q and G : Fm
+q →Fm
+q be two functions.
+They are aﬃne-equivalent if there exist two aﬃne permutations μ : Fm
+q →Fm
+q
+and η : Fm
+q →Fm
+q such that F = η ◦G ◦μ. This can alternatively be written
+using the graphs of these functions:
+ΓF =
+
+(x, F(x)) | x ∈Fm
+q
+
+
+	
+
+graph of F
+= L(ΓG) =
+
+L (x, G(x)) | x ∈Fm
+q
+
+,
+where L is the aﬃne permutation deﬁned by L(x, y) =
+
+η(x), μ−1(y)
+
+. If we
+allow L to be any aﬃne permutation,2 we obtain CCZ-equivalence.
+Deﬁnition 1 (CCZ-Equivalence). Let F and G be functions of Fm
+q . We say
+that they are CCZ-equivalent if there exists an aﬃne permutation L : (Fm
+q )2 →
+(Fm
+q )2 such that ΓF = L(ΓG).
+An important property of CCZ-equivalence that is instrumental in our work
+is that it preserves the diﬀerential spectrum and the squared Walsh coeﬃcients.
+2 Starting from a given function F, applying any aﬃne permutation of F2
+q to its graph
+is unlikely to yield the graph of another function G. Indeed, this would require that
+the left hand side of L(x, F(x)) takes all the values in Fq as x goes through Fq, which
+is a priori not the case. A mapping L that does yield the graph of another function
+is called “admissible”, a concept that was extensively studied in [18].
+
+512
+C. Bouvier et al.
+In other words, all functions within the same CCZ-equivalence class share the
+same diﬀerential and linear properties and hence oﬀer the same resilience against
+diﬀerential and linear attacks. It also means that it is suﬃcient to investigate
+these properties for a single member of a CCZ-equivalence class.
+Another relevant property of CCZ-equivalence is that it does not preserve
+the degree of the function. In fact, there are known cases where a low-degree
+function is CCZ-equivalent to a higher-degree one. It is most notably the case of
+the so-called butterﬂy structure, originally introduced in [40], and then further
+generalized in two diﬀerent ways in [16] and [34].
+3
+Modes of Operation
+In advanced protocols, hash functions are used for two purposes. The ﬁrst is to
+emulate a random oracle, in particular to return the “ﬁngerprint” or digest of a
+message of arbitrary length. The idea is that this ﬁxed length digest is simpler
+to sign than the full message. The second use is as a compression function within
+a Merkle-tree: in this case, the hash function H is used to map two inputs of
+size n to an output of size n, and the security of the higher level scheme relies
+on its collision resistance. While a general purpose hash function like SHA-3 [10,
+22] or an arithmetization-friendly one can safely be used for both cases, for
+improved eﬃciency we chose a full hash function only for the random oracle case
+(Sect. 3.1). Indeed, the speciﬁc constraints of the Merkle-tree case can be satisﬁed
+more eﬃciently using a dedicated structure that remains permutation-based,
+and which we introduce in Sect. 3.2. SAGE implementations of both modes are
+provided in [14, App. C].
+3.1
+Random Oracle: The Sponge Structure
+A random oracle is essentially a theoretical function that picks each output uni-
+formly at random while keeping track of its previous outputs in order to remain a
+deterministic function. The sponge construction is a convenient approach to try
+to emulate this behaviour. First introduced by Bertoni et al. in [11], this method
+was most notably used to design SHA-3. It is also how most arithmetization-
+oriented hash functions have been designed, e.g. Rescue–Prime, gMiMC-Hash,
+Poseidon [30], and Reinforced Concrete. Such hash functions can easily be
+tweaked into eXtendable Output Functions (XOF) [22] should the need arise.
+The overall principle of the sponge construction is best explained by the
+diagram in Fig. 1. In this paper, we slightly modify the original approach to
+operate on elements of Fq instead of F2. The main component of the structure is
+a permutation P operating on Fr+c
+q
+, where both r and c are non-zero integers.
+The rate r is the size of the outer part of the state, while c is the capacity and
+corresponds to the size of the inner part of the state. The digest consists of h
+elements of Fq. Then, to process a message m consisting of elements of Fq, we
+apply the following operations.
+
+New Design Techniques
+513
+Padding. A basic padding works as follows: append 1 ∈Fq to the message
+followed by enough zeroes so that the total length is a multiple of r, and then
+divide the result into blocks m0,...,mℓ−1 of r elements.
+However, with this approach, we may end up using one more call to P in the
+case where the length of the message was already a multiple of r. A more
+eﬃcient approach is presented in [33]: if the length of the message is already
+a multiple of r, then we do not append further blocks to it. Instead, we add a
+constant to the capacity before squeezing. This is summarized as the addition
+of σ which is equal to 0 if the message length is not a multiple of r, and to
+1 otherwise (see Fig. 1). This variant also has the advantage of gracefully
+handling the case where r = 1.
+Absorption. For each message block mi, we add it into the outer part of the
+state, and then apply P on the full state.
+Squeezing. We extract min(h, r) elements from the outer part of the state to
+generate the ﬁrst elements of the digest. If h > r, we apply P and then extract
+additional elements again from the rate registers, repeating this process until
+the desired digest length is reached.
+⊞
+m0
+Fc
+q
+Fr
+q
+P
+⊞
+m1
+P
+⊞
+m2
+P
+. . .
+. . .
+⊞
+σ
+⊞
+mℓ−1
+P
+z0
+P
+. . .
+. . .
+z1
+P
+z⌈h/r⌉−1
+Fig. 1. Sponge construction with the modiﬁcation of [33].
+The security of a sponge rests on the properties of its permutation. Infor-
+mally, the only special property of the permutation should be the existence of an
+eﬃcient implementation. Its diﬀerential, linear, algebraic, etc. properties should
+be similar to those expected from a permutation picked uniformly at random
+from the set of all permutations.
+Following a ﬂat sponge claim [11], the designers of such an algorithm can
+essentially claim that any attack against it will have a complexity equivalent
+to at least qc/2 calls to the permutation (provided h ≥c, h log2 q ≥2s and
+c log2 q ≥2s). Thus, a ﬂat sponge claim states that a sponge-based hash function
+provides c⌊log2 q⌋/2 bits of security.
+3.2
+Merkle Compression Function: The Jive Mode
+One of the main use cases for an arithmetization-oriented hash function is as a
+compression function in a Merkle tree. This case could be easily handled using
+a regular hashing mode, such as the sponge structure discussed above. However,
+due to the speciﬁcs of this use case, it is possible to use a more eﬃcient mode.
+
+514
+C. Bouvier et al.
+Fig. 2. The Jive mode turning a permutation into a compression function.
+In a Merkle tree, the elements considered are in Fm
+q , where m is chosen so
+that m⌊log2 q⌋≥n, where n is the intended security level. We then need to
+hash two such elements to obtain a new one. As a consequence, unlike in the
+usual case, the input size is ﬁxed, and is equal to exactly twice the digest size.
+Given a permutation of (Fm
+q )2, we can thus construct a suitable hash function
+by plugging it into the following mode.
+Deﬁnition 2 (Jive). Consider a permutation P deﬁned as follows:
+P :
+
+(Fm
+q )b
+→(Fm
+q )b
+(x0, ..., xb−1)
+→(P0(x0, ..., xb−1), ..., Pb−1(x0, ..., xb−1)) ,
+so that it operates on bm elements of Fq, where Pi(x0, . . . , xb−1) : 0 ≤i < b
+refers to the i-th element in Fm
+q of the output P(x0, . . . , xb−1) from P. The Jive
+mode is built from P by deﬁning the following one way function Jiveb(P):
+Jiveb(P) :
+
+(Fm
+q )b
+→Fm
+q
+(x0, ..., xb−1)
+→b−1
+i=0 (xi + Pi(x0, ..., xb−1)) .
+This approach, also described in Fig. 2 can be seen as a permutation-based
+variant of the Davies-Meyer mode which, like the latter, crucially relies on a feed-
+forward to ensure one-wayness. Alternatively, it can be interpreted as a truncated
+instance of the mode used in the “Latin dance” ciphers ChaCha and Salsa [9],
+which is also based on a public permutation combined with a feedforward. Inci-
+dentally, we called it Jive after another Latin dance.
+If used inside a Merkle tree, this mode can save some computations. For
+example, in the case where the fan-in b is equal to 2, a sponge would use a
+permutation operating on (Fm
+q )3 in order to leave one vector of Fm
+q free for the
+capacity. Using Jive2 instead, we only need a permutation of (Fm
+q )2. The trade-
+oﬀof course is that, unlike a sponge-based approach, the relevance of Jive is
+restricted to some speciﬁc cases.
+
+New Design Techniques
+515
+4
+The Flystel Structure
+The performance metrics for AO algorithms diﬀer substantially from the usual
+ones in symmetric cryptography. Neither the number of CPU cycles, nor the
+RAM consumption or the code size are the dominant factors. Pin-pointing
+exactly what is needed for the various protocols relying on arithmetization is
+a diﬃcult task as each protocol has its own subtleties. For example, Plonk oﬀers
+custom gates, which add complexity and a small overall overhead but can drasti-
+cally decrease the cost of a particular operation, while other proof systems might
+not. On the other hand, additions are essentially free for R1CS or AIR, but not
+for Plonk. In addition, permutations of a sequence of elements are likely to incur
+cost in Plonk or AIR (via copy-constraints), but are free in R1CS.
+In this section, we present a family of non-linear components that provide
+both the cryptographic properties that we need to ensure the security of our
+primitives, and eﬃcient implementations across proof systems, which we call
+open Flystel. It uses—and highlights—the connection between arithmetization-
+orientation and CCZ-equivalence.
+4.1
+On CCZ-Equivalence and Arithmetization-Orientation
+In order for a function F to be arithmetization-oriented, it is necessary that
+verifying whether y = F(x) can be done using few multiplications in a speciﬁc
+ﬁeld (whose size is dictated by other parts of the protocol). A very straight-
+forward initial approach is to use a function F which, itself, can be evaluated
+using a small number of multiplications: both MiMC-Hash [2] and Poseidon [30]
+work in this way. The downside is that using a low degree round function may
+imply vulnerability to attacks based on polynomial solving, known as algebraic
+attacks. As a consequence, these algorithms have to use a high number of rounds.
+A ﬁrst breakthrough on this topic was made by the designers of Rescue–
+Prime [3]. They noticed that for a permutation F, checking if y = F(x) is
+equivalent to checking if x = F −1(y). It allows them to use both xα and x1/α
+(where x →xα is a permutation of the ﬁeld used) in their round function, with
+α chosen so as to minimize the number of multiplications. It means that both
+can be veriﬁed using a (cheap) evaluation of xα, and at the same time that the
+degree of the round function is very high as 1/α is a dense integer of Z/(q −1)Z.
+As a consequence, much fewer rounds are needed to prevent algebraic attacks.
+We go further and propose a generalization of this insight. So far, we have seen
+that AO implies that a function or its inverse must have a particular implemen-
+tation property (low number of multiplications). In fact, we claim the following:
+A subfunction is arithmetization-oriented if it is CCZ-equivalent to a
+function that can be veriﬁed eﬃciently.
+The above should come as no surprise since a permutation and its inverse are
+known to be CCZ-equivalent [15]. In that sense, this insight is a natural gener-
+alization of the one of the Rescue–Prime designers.
+
+516
+C. Bouvier et al.
+Fig. 3. The Flystel structure (both variants are CCZ-equivalent).
+Exploiting this idea is simple: suppose that F and G are such that ΓF =
+L(ΓG), where L : (x, y) →(LL(x, y), LR(x, y)) is an aﬃne permutation, and
+where G can be eﬃciently veriﬁed. Then we can use F to construct an AO algo-
+rithm: checking if y = F(x) is equivalent to checking if LR(x, y) = G (LL(x, y)),
+which only involves G and linear functions: it is eﬃcient.
+Below, we present a ﬁrst component based on this idea: the Flystel. Never-
+theless, we hope that further research in discrete mathematics will lead to new
+non-linear components that are even better suited to this use case: we need more
+permutations with good cryptographic properties (including a high degree) that
+are CCZ-equivalent to functions with a low number of multiplications.
+4.2
+High Level View of the Flystel Structure
+Let Qγ : Fq →Fq and Qδ : Fq →Fq be two quadratic functions, and let
+E : Fq →Fq be a permutation. Then, the Flystel is a pair of functions relying
+on Qγ, Qδ and E. The open Flystel is the permutation of (Fq)2 obtained using
+a 3-round Feistel network with Qγ, E−1, and Qδ as round functions, as depicted
+in Fig. 3a. It is denoted H, so that H(x, y) = (u, v) is evaluated as follows:
+1. x ←x −Qγ(y),
+2. y ←y −E−1(x),
+3. x ←x + Qδ(y),
+4. u ←x, v ←y .
+We deﬁne by V : (y, v) →(Rγ(y, v), Rδ(y, v)) the closed Flystel function
+over F2
+q, where Rγ : (y, v) →E(y−v)+Qγ(y) and Rδ : (y, v) →E(y−v)+Qδ(v).
+Our terminology of “open” for the permutation and “closed” for the function
+is based on the relation between the Flystel and the butterﬂy structure, as
+detailed later. In particular, the two Flystels are linked in the following way.
+Proposition 1. For a given tuple (Qγ, E, Qδ), the corresponding closed and
+open Flystel are CCZ-equivalent.
+Proof. Let (u, v) = H(x, y). Then it holds that v = y −E−1 (x −Qγ(y)), so that
+we can write x = E(y−v)+Qγ(y). Similarly, we have that u = Qδ(v)+E(y−v).
+
+New Design Techniques
+517
+Consider now the set ΓH =
+
+((x, y), H(x, y)) , (x, y) ∈F2
+q
+
+. By deﬁnition, we
+have
+ΓH =
+
+((x, y), (u, v)) , (x, y) ∈F2
+q
+
+= L
+ 
+((y, v), (x, u)) , (x, y) ∈F2
+q
+ 
+where
+L
+is
+the
+permutation
+of
+(F2
+q)2
+such
+that
+L−1 ((x, y), (u, v))
+=
+((y, v), (x, u)), which is linear. Using the equalities we established at the begin-
+ning of this proof, we can write:
+L−1(ΓH) =
+
+((y, v), (x, u)) , (x, y) ∈F2
+q
+
+=
+
+(y, v), (Qγ(y) + E(y −v), Qδ(v) + E(y −v))
+
+, (y, v) ∈F2
+q
+
+=ΓV .
+We deduce that ΓH = L(ΓV), so the two functions are CCZ-equivalent.
+⊓⊔
+This simple proposition has two crucial corollaries on which we will rely in the
+remainder of the paper. The ﬁrst is that it suﬃces to investigate the diﬀerential
+and linear properties of the closed butterﬂy to obtain results on the open one.
+Corollary 1. The open and closed Flystel structures have identical diﬀerential
+and linear properties. More precisely, the set of the values in the DDT of both
+functions is the same, and the set of the square of the Fourier coeﬃcients of the
+components is also the same.
+The second corollary is the key reason behind the relevance of the Flystel
+structure in the arithmetization-oriented setting and is stated below.
+Corollary 2. Verifying that (u, v) = H(x, y) is equivalent to verifying that
+(x, u) = V(y, v).
+Indeed, Corollary 2 means that it is possible to encode the veriﬁcation of the
+evaluation of the high degree open Flystel using the polynomial representation
+of the low degree closed Flystel.
+In characteristic 2, quadratic mappings correspond to diﬀerent exponents
+than in the general case. As a consequence, when giving concrete instantiations
+of the Flystel structure, we need to treat this case separately. To highlight the
+diﬀerence, we call Flystel2 the instances used in characteristic 2, and Flystelp
+the instances used in odd prime characteristic.
+4.3
+Characteristic 2
+Let q = 2n, with n odd. Furthermore, let α = 2i + 1 be such that gcd(i, n) = 1,
+so that x →xα is a permutation of Fq. In this case, the Flystel2 structure
+with Qγ(x) = Qδ(x) = βxα, with β ̸= 0, and with E(x) = xα is a degenerate
+generalized butterﬂy structure. It was studied in [34] as a generalization of the
+structure introduced in [40], which was also reﬁned in [16]. We recall the following
+particular case3 in Theorems 3, 4 and 5 of [34].
+3 The result of Li et al. covers all generalized butterﬂies, not just those corresponding
+to Flystel structures. In a Flystel, the ﬁrst parameter (which we will denote a)
+
+518
+C. Bouvier et al.
+Proposition 2 ([34]). Let q = 2n with n odd, E = x →xα, where α = 2i + 1
+is such that gcd(i, n) = 1, and Qγ = Qδ = x →βxα, where β ̸= 0 Then the
+Flystel2 structures deﬁned by the functions Qγ, E, and Qδ have diﬀerential
+uniformity equal to 4, linearity equal to 2n+1, and algebraic degree of n.
+In practice, to prevent some attacks (see [13, App. A.3]), we instead use Qγ(x) =
+βx3 + γ and Qδ(x) = βx3 + δ, where β, γ, δ are constants in Fq such that γ ̸= δ
+and β ̸= 0. The particular values of those constants are not essential to the
+properties of the construction as long as the noted requirements are satisﬁed.
+For simplicity we set β = g, γ = g−1 and δ = 0 with g being a generator of the
+multiplicative subgroup of the ﬁeld Fq. This results in Qγ : x →gx3 + g−1 and
+Qδ : x →gx3 as depicted in Fig. 4a.
+Fig. 4. The two variants of the open Flystel, mapping (x, y) to (u, v).
+4.4
+Odd Characteristic
+When q = p, the three functions of the Flystelp structure are resp.: Qγ : x →
+gx2 + g−1, E : x →xα, and Qδ : x →gx2, where α, g ∈Fq and g again is a
+generator of the multiplicative subgroup of the ﬁeld Fq.
+Diﬀerential Properties. Such structures have a low diﬀerential uniformity.
+Proposition 3. Let q = p be a prime number, E = x →xα, where α is such
+that gcd(α, p −1) = 1, and Qγ = x →gx2 + g−1, Qδ = x →gx2. Then the
+Flystelp structures deﬁned by the functions Qγ, E, and Qδ has a diﬀerential
+uniformity equal to α −1.
+is set to 1. Their results for the diﬀerential uniformity and the linearity hold only
+when β ̸= (1 + a)α, meaning that we simply need to make sure that β ̸= 0. For the
+algebraic degree, the condition they give in their Theorem 5 to have a degree equal
+to n + 1 degenerates into β2i+1 = β2i+1, which is never the case as i > 0.
+
+New Design Techniques
+519
+Proof. Let a, b, c, d be elements of Fp such that (a, b) ̸= (0, 0). To investigate the
+diﬀerential uniformity of V : (y, v) →(Rγ(y, v), Rδ(y, v)), we look at the number
+of solutions (y, v) of (1).
+
+Rγ(y + a, v + b) −Rγ(y, v) = c
+Rδ(y + a, v + b) −Rδ(y, v) = d .
+(1)
+We have:
+
+(y + a −(v + b))α + g−1 + g(y + a)2 −(y −v)α −g−1 −gy2
+= c
+(y + a −(v + b))α + g(v + b)2 −(y −v)α −gv2
+= d .
+We get:
+c −d = g(y + a)2 −gy2 + gv2 −g(v + b)2 ,
+which is equivalent to:
+v = (2b)−1 
+2ay + a2 −b2 −g−1(c −d)
+
+.
+As a consequence, we know that v can be expressed as an aﬃne polynomial in
+y. We then have that the ﬁrst equation is an equation in y of degree α −1 (since
+the terms yα cancel out), and thus has at most α −1 solutions for y. In the end,
+we have at most α −1 solutions (y, v) for the system (since for each value of y,
+there is one v).
+⊓⊔
+Linear Properties. We do not have a theoretical bound on the correlation for the
+Flystelp structure, but we provide informal arguments supporting its security
+against linear cryptanalysis attacks. Notice ﬁrst that Flystelp is deﬁned by
+the functions Qγ, E−1 and Qδ, where Qγ and Qδ are quadratic. Given that the
+function x2 is bent (i.e. its correlations are the lowest possible), we argue that a
+linear trail which would activate just one of these functions should be expected
+to have a very low correlation. In [13, App. A], we give a conjecture supported by
+experimental results, stating that the linearity of Flystelp is lower than p log p.
+Invariant Subset. Regardless of the characteristic, it holds that H (Qγ(x), x) =
+(Qδ(x), x). Thus, setting Qγ = Qδ would mean that Flystel is the identity over
+a subset of size q, which is why we use constant additions to ensure Qγ ̸= Qδ.
+Nevertheless, this only ensures that the open Flystel is a translation over the
+set {(Qγ(x), x) , x ∈Fq}, which remains cryptographically weak. While a priori
+undesirable, the impact of this property can be mitigated. First, the subset over
+which it has a simple expression is not an aﬃne space. Second, as we show in [13,
+App. A.3], the propagation of such patterns can be broken via the linear layer.
+Degree. Given the structure of the open Flystelp, its degree is lower bounded
+by the inverse of α modulo p −1, a quantity which in practice corresponds to a
+dense integer of Z/(p −1)Z. We deduce that one call to the open Flystelp is
+likely to be of maximum degree and is therefore suﬃcient to thwart attacks that
+exploit the low degree of a component, such as higher order diﬀerentials.
+
+520
+C. Bouvier et al.
+4.5
+Implementation Aspects
+For direct computation, or witness calculation, one can simply implement the
+open Flystel. For the veriﬁcation however, we also have the option to use the
+closed Flystel structure, since there is no requirement for the various veriﬁca-
+tion steps to be performed in a particular order as long as consistency is enforced.
+In this case, the cost is one multiplication for Qγ and Qδ, and as many as are
+needed to compute x →xα. This can be implemented using a technique slightly
+more subtle than basic fast exponentiation, instead relying on addition chains
+as discussed for example in [12]. Good addition chains can be found using the
+addChain tool [37]. They are also particularly useful for implementing x →x1/α.
+5
+Description of Anemoi
+In this section, we present new primitives, and the way to deterministically
+construct all of their variants. At their core are the Anemoi permutations, that
+operate on F2ℓ
+q
+for any ﬁeld size q that is either a prime number or a power
+of two, and for positive integer ℓ. The round function of these permutations is
+presented in Sect. 5.1: for each value of ℓ, and for each value of q, there is a
+unique round function.
+In order to build the primitives themselves, we need also to consider the secu-
+rity level required as it will inﬂuence the number of rounds of the permutation
+(note that the security level will also inﬂuence the size of the internal state). The
+procedures to follow to deﬁne higher level algorithms are described in Sect. 5.2.
+We then provide some speciﬁc instances in Sect. 5.3.
+5.1
+Round Function
+A round function is a permutation of F2ℓ
+q , where ℓ> 0 is an integer, and where
+q is either a prime number or a power of 2 with a bitlength of at least 10.4
+In order to deﬁne it, we organize its state into a rectangle of elements of Fq
+of dimension 2 × ℓ. The elements in the ﬁrst row are denoted (x0, ..., xℓ−1), and
+those in the second row are (y0, ..., yℓ−1) (see Fig. 5a). We refer to vectors of Fℓ
+q
+using the same upper-case letters, e.g. (x0, ..., xℓ−1) is denoted X. Subscripts
+correspond to indices within a vector of Fℓ
+q, and superscripts to round indices,
+so Xi is the top part of the state at the start of round i. We let g be a speciﬁc
+generator of the multiplicative subgroup of the ﬁeld Fq. If q is prime, then g is
+the smallest such generator using the usual integer ordering. Otherwise, we have
+that Fq = F2n = F2[x]/p(x), where p is an irreducible polynomial of degree n,
+in which case we let g be one of its roots.
+The function applied during round r is denoted Rr. It has the structure of
+a classical Substitution-Permutation Network, whose components are described
+4 The ﬁeld order must have a bitlength of at least 10 bits. The aim of this restriction
+is to ensure that e.g. MDS matrices can be found as those might not be deﬁned for
+small ﬁeld sizes.
+
+New Design Techniques
+521
+below: ﬁrst the linear layer, then the S-box layer, and ﬁnally the constant addi-
+tion. The overall action of each of these operations on the state is summarized
+in Fig. 5, and a complete round is represented in Fig. 6.
+Fig. 5. The internal state of Anemoi and its basic operations.
+Constant Additions A. We let xj ←xj + ci
+j and yj ←yj + di
+j, where ci
+j ∈Fq
+and di
+j ∈Fq are round constants that depend on both the position (index j)
+and the round (index i). The aim is to increase the complexity of the algebraic
+expression of multiple rounds of the primitive and to prevent the appearance of
+patterns that an attacker could leverage in their attack.
+They are derived using the digits of π using the following procedure. We let
+(π0, π1) =
+(1415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679,
+8214808651328230664709384460955058223172535940812848111745028410270193852110555964462294895493038196)
+be the ﬁrst and second blocks of 100 digits of π. We derive the round constants
+ci
+j and di
+j by applying an open Flystel with the same parameters as in the
+round function on the pair (πi
+0, πj
+1), where superscripts are exponents, so that
+⎧
+⎨
+⎩
+ci
+j
+= g(πi
+0)2 +
+
+πi
+0 + πj
+1
+α
+di
+j
+= g(πj
+1)2 +
+
+πi
+0 + πj
+1
+α
++ g−1 ,
+where the computations are done in Fq. When q = 2n, π0 and π1 are cast to
+ﬁeld elements using the usual mapping sending n−1
+k=0 xi2i to n−1
+k=0 xigi, where
+(x0, ..., xn−1) is the binary representation of x modulo 2n.
+Diﬀusion Layer M. If ℓ> 1, then the diﬀusion layer M operates on X and Y
+separately, so that
+M(X, Y ) =
+
+Mx(X), My(Y )
+
+,
+as summarized in Fig. 5b. The linear permutations Mx and My are closely
+related, but diﬀer in order to break the column structure imposed by the non-
+linear layer (see below). More precisely, we impose that Mx is a matrix of size
+
+522
+C. Bouvier et al.
+Fig. 6. Rr, the r-th round of Anemoi, applied on the state (X, Y ) ∈Fℓ
+q × Fℓ
+q, where
+X = (x0, ..., xℓ−1) and Y = (y0, ..., yℓ−1).
+ℓ× ℓof Fq with maximum diﬀusion, i.e. such that its branching number is equal
+to ℓ+ 1.5 We then construct My as My = Mx ◦ρ, where ρ is a simple word
+permutation: ρ(x0, ..., xℓ−1) = (x1, ..., xℓ−1, x0).
+The speciﬁcs of the linear permutation Mx then depend on the value of ℓ.
+Furthermore, in order for our permutation to best satisfy diﬀerent proof systems,
+we use diﬀerent techniques to construct them. At a high level, there are two
+diﬀerent situations:
+– if ℓis small, then the ﬁeld size is expected to be large in order for the per-
+mutation to operate on a state large enough to oﬀer security against generic
+attacks, meaning that this case is expected to happen when using pairing-
+based proof systems like Groth16 or standard Plonk which require large scalar
+ﬁelds for security.
+– if ℓis large, then the situation is the opposite, meaning that we would expect
+the ﬁeld size to be smaller and thus to correspond to e.g. ﬁelds used in FRI-
+based proving systems.
+In the Plonk case, additions have a non-negligible cost during veriﬁcation. As a
+consequence, when ℓis at most equal to 4, we use linear layers requiring a number
+of additions as small as possible. To this end, we adapt results from [21] where
+Duval and Leurent present generic matrix constructions with a minimal number
+5 Recall that the branching number of a linear permutation L is the minimum over
+x ̸= 0 of hw(x) + hw (L(x)), where hw(x) denotes the Hamming weight of x.
+
+New Design Techniques
+523
+of additions. Their goal was to limit the number of XORs needed to imple-
+ment a linear layer, which was especially welcome in the context of lightweight
+cryptography. In fact, one of their matrices has been used by the designers of
+Saturnin [17] precisely for this reason. More generally, we think this surprising
+connection between lightweight and arithmetization-oriented symmetric cryp-
+tography is interesting in itself: limiting the total number of additions can be
+important in both cases. As the approach of [21] is general enough that their
+matrices can work in most ﬁelds, we thus opt to use their matrices. In practice,
+when ℓ∈{2, 3, 4}, we use the matrix Mℓ
+x where
+M2
+x =
+ 1
+g
+g
+g2 + 1
+
+, M3
+x =
+ g + 1
+1
+g + 1
+1
+1
+g
+g
+1
+1
+
+, M4
+x =
+
+1
+g2
+g2
+1 + g
+1 + g
+g + g2
+g2
+1 + 2g
+g
+1 + g
+1
+g
+g
+1 + 2g
+1 + g
+1 + g
+
+.
+If ℓ= 1, then there is a unique column in the internal state, so M1
+x is the
+identity.
+Low-addition implementations are shown in [13, App. C], and the correspond-
+ing diagrams are given in Fig. 7. As [21] contains several diﬀerent matrices for
+each number of inputs, we based our matrices on their candidates that have the
+lowest number of additions, and the least symmetries.
+Fig. 7. Diagram representations of Mx.
+In the AIR (STARK) case, linear operations are essentially free. Thus, the
+dominating constraint on a linear layer is its native implementation cost, i.e.
+the time it takes for a C or Rust program to evaluate Mx(x). To minimize this
+cost, we need to minimize the value of the coeﬃcients appearing in the matrix.
+To this end, we use the circulant matrix where the ﬁrst row is the smallest
+in the lexicographic order, and such that the overall matrix is MDS. A script
+implementing this generation method is provided in [13, App. C].
+Pseudo-Hadamard Transform P. To destroy some undesirable involutive patterns
+at the S-box level, we use a linear layer, namely the Pseudo-Hadamard transform
+(PHT), to have diﬀusion on the rows. In particular, this means that we still have
+a linear layer when ℓ= 1. The PHT has good properties since it can be easily
+
+524
+C. Bouvier et al.
+implemented with: Y ←Y + X and X ←X + Y and is also relevant against
+algebraic attacks (see Sect. 6.2).
+S-box Layer S. Let H be an open Flystel operating over F2
+q. Then we let
+S(X, Y ) =
+
+H(x0, y0), ..., H(xℓ−1, yℓ−1)
+
+,
+as summarized in Fig. 5d. A Flystel instance is deﬁned by 4 parameters, regard-
+less of whether it is a Flystelp or Flystel2: the exponent α, the multiplier β,
+and the two added constants γ and δ. First, as mentioned in Sect. 4.3, we let
+β = g: setting β = 1 would lead to the invariant space (see [13, App. A.3])
+having equation (x2, x), which we deem too simple; g is then the most natu-
+ral non-trivial constant. Furthermore, in order to break the symmetry of the
+Flystel, we impose that γ ̸= δ. We thus let γ = 0 and δ = g−1 as this value is
+both diﬀerent from 1 and g while retaining a simple deﬁnition.
+All that remains is to choose the exponent α. If q = 2n, then we let α = 3:
+we have to use a Gold exponent (i.e. of the shape 2k + 1), and 3 always works
+since n is odd. Otherwise, when q is prime, the process is a bit more involved as
+a higher value allows using fewer rounds to thwart Gr¨obner-basis-based attacks,
+but is also more expensive. Users should use the value of α that yields the most
+eﬃcient algorithm according to their metrics.
+5.2
+Higher Level Algorithms
+Anemoi. The Anemoi permutation iterates nr rounds of the round function
+described in Fig. 6, followed by a call to the linear layer M:
+Anemoiq,α,ℓ= M ◦Rnr−1 ◦... ◦R0 .
+In symmetric cryptography, we usually remove outer linear layers, e.g. in the
+AES. That is because they don’t contribute to the cryptographic strength of a
+block cipher (e.g. can be removed “for free” by an adversary). In the case of
+a sponge construction however, the adversary only controls a part of the state,
+namely the outer part (the rate). Thus, starting/ﬁnishing with a diﬀusion layer
+ensures that this control is spread across the full state in a way which is not
+aligned with the non-linear layer. A similar goal could be achieved using indirect
+injection, as is done in Esch [5].
+The number of rounds nr is computed using the following rule that is derived
+from our security analysis in Sect. 6.
+More precisely, we focus on algebraic attacks since it appears to be the bottle-
+neck. Indeed, we only need to activate few S-boxes to prevent statistical attacks.
+In prime characteristic we have an upper bound that is (α −1)/p2 for the prob-
+ability of a diﬀerential transition for one S-box, and that is conjectured to be
+log p/p for a linear transition. In the case where q = 2n, similar arguments hold:
+the best diﬀerential probability is 4/22n, and the best linear probability is around
+
+New Design Techniques
+525
+2−n (see [13, App. A] for more details). Let s be the required security level, and
+(q, ℓ, α) be the parameters imposed by the use case. As we believe that a con-
+struction with more branches gives more freedom to the attacker, we choose a
+security margin that increases with the size of the internal state, but setting a
+maximum of 5 additional rounds. In Sect. 6.2, we study two models for algebraic
+attacks. We ﬁx the number of rounds by considering the ﬁrst model, which is
+easier to study, and add a security margin of 2 rounds to take into account the
+second model. Whilst it is not clear whether the second model actually outper-
+forms the ﬁrst, its complexity is more diﬃcult to estimate and we opt to increase
+the safety margin as a conservative measure. Then the number of rounds nr is
+the smallest value satisfying both of the following conditions:
+nr ≥max
+⎧
+⎪
+⎨
+⎪
+⎩
+8 , min(5, 1 + ℓ)
+
+	
+
+security margin
++
+2 + min
+
+r ∈N
+ Calg(r) ≥2s 
+
+	
+
+to prevent algebraic attacks, see Sect. 6.2
+⎫
+⎪
+⎬
+⎪
+⎭
+, (2)
+where Calg(r) =
+4ℓr+κα
+2ℓr
+2 when q = p and Calg(r) = ℓr · 92ℓr when q = 2n.
+We compute the number of rounds needed both for a security level of 128
+bits (Table 1a), and of 256 bits (Table 1b). Note that the values of the digest
+size h and of the state size 2ℓn = 2ℓlog2(q) must be coherent with the desired
+security level.
+Table 1. Number of Rounds of Anemoi.
+α
+3
+5
+7
+11
+ℓ= 1
+21
+21
+20
+19
+ℓ= 2
+14
+14
+13
+13
+ℓ= 3
+12
+12
+12
+11
+ℓ= 4
+12
+12
+11
+11
+ℓ= 6
+10
+10
+10
+10
+ℓ= 8
+10
+10
+9
+9
+(a) When s = 128.
+α
+3
+5
+7
+11
+ℓ= 1
+37
+37
+36
+35
+ℓ= 2
+22
+22
+21
+21
+ℓ= 3
+17
+17
+17
+17
+ℓ= 4
+16
+16
+15
+15
+ℓ= 6
+13
+13
+13
+13
+ℓ= 8
+12
+12
+11
+11
+(b) When s = 256.
+AnemoiSponge. This function is a “regular” hash function, in the sense that
+it should be able to process messages of arbitrary length. We therefore rely on
+the sponge construction detailed in Sect. 3, where r words are used as the rate,
+c are used as the capacity, and where the permutation is the Anemoi instance
+operating on Fr+c
+q
+. Note that the inner workings of Anemoi imply that r+c must
+be even.
+
+526
+C. Bouvier et al.
+AnemoiJive. We can construct a compression function mapping b-to-1 vectors
+of Fm
+q elements, using Jiveb and an Anemoi instance operating on bm elements
+of Fq. The only constraint is, again, that bm must be even.
+Security Claims. All the Anemoi permutations generated as deﬁned above can be
+used safely to construct cryptographic primitives with the given security level.
+In particular, we make a “hermetic sponge” claim about all the hash functions
+AnemoiSponge generated as above, and we claim that all the AnemoiJive func-
+tions are secure b-to-1 compression functions (provided of course that the state
+size is chosen correctly).
+5.3
+Speciﬁc Instances
+In this section, we present some examples of functions in the Anemoi family that
+are deﬁned over diﬀerent ﬁelds, aim for diﬀerent APIs (both AnemoiSponge and
+AnemoiJive), and for a security level of 127 bits.
+We consider the case of the BLS12-381 curve, in which case (⌈log2(q)⌉, α, g) =
+(255, 5, 7), and the case of the BN-254 curve, in which case (⌈log2(q)⌉, α, g) =
+(254, 5, 2). In both cases, we aim for 127 bits of security. We decided to consider
+these two curves because they have been historically used in SNARKs and have
+been deployed in production in projects that use Arithmetization-Oriented hash
+functions like ZCash or Ethereum.
+AnemoiJive.
+AnemoiJive-BLS12-381 and AnemoiJive-BN-254 are Merkle
+Compression functions mapping two elements of Fq to a unique one. In order to
+reach a security level of 127 bits, ℓ= 1 is suﬃcient in both cases. The underlying
+permutations of the compression functions then use the following components.
+S-box. H uses the parameters g and α corresponding to the elliptic curve.
+Linear layer. As ℓ= 1, we use the Pseudo-Hadamard transform:
+
+2 1
+1 1
+
+(3)
+Round Constants. These are generated as described in Section 5.1.
+Number of Rounds. Using Eq. (2), we obtain that 19 rounds are needed for
+a security level of 127 bits.
+Round r is then deﬁned as Rr : (x, y) →H◦M(x+cr, y +dr), and we deﬁne the
+compression functions as follows. Let (x, y) be the input, and P be the Anemoi
+instance deﬁned by P := M ◦R18 ◦... ◦R0. Then AnemoiJive(x, y) is evaluated
+as follows: ﬁrst, let (u, v) ←P(x, y), then, return x + y + u + v.
+Security Claims. The best way to ﬁnd collisions in AnemoiJive-BLS12-381
+(respectively AnemoiJive-BN-254) is to rely on a generic collision search. Since
+the output is an element of Fq with log2(q) ≥254, this is expected to require
+about 2127 function calls on average.
+
+New Design Techniques
+527
+AnemoiSponge. AnemoiSponge-BLS12-381 and AnemoiSponge-BN-254 are hash
+functions mapping a sequence {xi}0≤i<m of elements of Fq to an element of
+Fq, where m is a positive integer. It is constructed using a sponge which relies
+on Anemoi as the permutation. We aim to provide about 127 bits of security,
+meaning that a capacity of 1 word of Fq is enough in both cases. We then pick
+an identical rate, so that r = c = 1, and thus ℓ= 1. The permutations used are
+then the same as for AnemoiJive-BLS12-381 and AnemoiJive-BN-254.
+Security Claims. We claim that AnemoiSponge-BLS12-381 and AnemoiSponge-
+BN-254 provide 127 bits of security against all known attacks.
+6
+Security Analysis
+The security of AnemoiSponge and AnemoiJive is reduced to the security of
+their inner permutation, namely the Anemoi family. In this section, we argue
+that the latter has suﬃcient security level.
+6.1
+“Classical” Attacks
+We call “classical” attacks those that have been used to target algorithms
+designed over (F2)n. As we argue below, we do not expect those to be a sig-
+niﬁcant problem. More detailed arguments are provided in [13, App. A].
+Statistical attacks like diﬀerential and linear cryptanalysis exploit patterns
+that exist at the S-box level, and which are then propagated through the linear
+layers to form so-called “trails”. As the Flystel has excellent diﬀerential and
+linear properties, we do not expect those to pose a threat (especially given that
+our linear layers are MDS).
+For integral attacks and invariant subspaces, we rely on the fact that our
+round structure is not “aligned”, meaning that the non-linear and linear layers
+operate over diﬀerent alphabets (the columns and the rows). As a consequence,
+the propagation of the patterns exploited by these attacks is hindered. Similarly,
+thanks to the MDS matrix, truncated diﬀerentials, boomerang attacks and MitM
+attacks also do not pose a threat.
+We refer the reader to [13, App. A] for a more detailed security analysis of
+the proposed constructions with respect to classical attacks.
+6.2
+Algebraic Attacks
+Gr¨obner basis attacks may constitute the main threat as is usually the case for
+this type of primitives. Since we are mainly interested in a minimal condition
+on the number of rounds to reach a security of 2s bits, we allow ourselves to
+underestimate complexity in several places, out of caution. We focus on the
+following version of the CICO (Constrained Input Constrained Output) problem,
+stated for ℓ= 1:
+Deﬁnition 3. Let P : F2
+q →F2
+q be a permutation. The CICO problem consists
+in ﬁnding (yin, yout) ∈F2
+q such that P(0, yin) = (0, yout).
+
+528
+C. Bouvier et al.
+Intermediate Variables. There are plenty of ways to model CICO as an alge-
+braic system. We start from the one which consists in introducing equations and
+variables at each round. Such an approach was already proposed to study similar
+arithmetization-oriented primitives [8,20,31]. It applies to Anemoi for any ℓ≥1
+but for practical reasons a large part of our experiments has been restricted to
+ℓ= 1. We now present our analysis of this particular case but we will also indi-
+cate how to deal with several columns. For 0 ≤j ≤nr −1, let us deﬁne fj and
+gj by
+(xj+1, yj+1) = Rj(xj, yj) ⇔
+fj := f(xj, yj, xj+1, yj+1) = 0
+gj := g(xj, yj, xj+1, yj+1) = 0,
+where Rj is the round function and where f and g are closely related to the
+veriﬁcation equations.
+Modeling 1. We consider the system F ⊂Fq[x0, . . . , xnr, y0, . . . , ynr] contain-
+ing the round equations fj and gj for 0 ≤j ≤nr −1.
+The CICO system FCICO is simply Modeling 1 in which we ﬁx x0 = 0 and xnr = 0.
+This system can be seen as containing 2nr equations and variables when ℓ= 1
+and 2ℓnr in the general case. To solve it, we apply the standard zero-dimensional
+strategy:
+1. Compute a Gr¨obner basis Gdrl for a DRL ordering [36, Deﬁnition 1.4.3],
+2. Compute a new Gr¨obner basis Glex for the LEX ordering by using the FGLM
+algorithm [23] on Gdrl.
+For Step 1, the running time of Gr¨obner basis algorithms such as F4 [24] or F5
+[25] is usually estimated by evaluating the solving degree of the system denoted
+by dsolv. This degree can be informally deﬁned as the maximal degree of a poly-
+nomial which occurs during the Gr¨obner basis computation. Once dsolv is known,
+a generic estimate for the cost of F4/F5 is
+O
+dsolv + nv
+nv
+ω
+(4)
+ﬁeld operations, where nv is our number of variables and where 2 ≤ω ≤3 is a
+linear algebra constant. We stress that this estimation is heuristic and it is an
+upper bound that does not take into account the structure or the sparsity of the
+given Macaulay matrices. In particular, to use it as a guidance, we will adopt
+the conservative ω = 2 for the linear algebra constant. Regarding Step 2, the
+complexity of FGLM is in O (nv · deg (ICICO)ω), where ICICO := ⟨FCICO⟩is the
+ideal generated by the system and where deg (ICICO) is the degree of this ideal.
+Characteristic 2. In even characteristic, we derive the number of rounds from
+the following Estimate 1.
+
+New Design Techniques
+529
+Estimate 1. We estimate the cost of solving FCICO in even characteristic by
+one of the FGLM steps. This step has complexity
+O(ℓnr · 9ωℓnr),
+where ℓis the number of columns and ω is the linear algebra exponent from the
+FGLM algorithm.
+More details are provided in [13, App. B.1] the full version of this work, where
+we focus on the case ℓ= 1. In short, Estimate 1 comes from the fact that the
+cost of the Gr¨obner basis computation on FCICO is mostly independent from the
+number of rounds and that the cost of FGLM can be approximated by the one
+on a generic system containing 2ℓnr cubic equations.
+Odd Characteristic. The FCICO system behaves diﬀerently in odd character-
+istic since the dominant cost corresponds to the Gr¨obner basis computation. We
+derive the number of rounds from the following Estimate 2, where dexp is the
+experimental solving degree of FCICO given in Conjecture 1.
+Conjecture 1 (From experiments for ℓ= 1). We have
+dexp ≥2nr + κα,
+where κα is a constant depending only on α. We found κ3 = 1, κ5 = 2, κ7 =
+4, κ9 = 7 and κα = 9 for6 α ≥11.
+Estimate 2. In odd characteristic, we estimate the cost of solving FCICO for
+ℓ= 1 by one of the Gr¨obner basis steps. By using Equation (4), it has complexity
+O
+dexp + 2nr
+2nr
+ω
+,
+where dexp is given in Conjecture 1 and where ω is a linear algebra constant.
+[13, App. B.2] contains more details on Conjecture 1 and Estimate 2. There,
+we also compare FCICO to another system denoted by PCICO which seems to
+take advantage of the particularities of our design but which does not seem to
+bring an improvement, at least asymptotically. Still, we add 2 extra rounds on
+top of Estimate 2 to ensure that these equations will not jeopardize security if
+exploited in a more ingenious way. We ﬁnd it interesting that the complexities
+corresponding to the resolution of each system are extremely similar, despite
+their a priori signiﬁcantly diﬀerent structures.
+When ℓ> 1, the number of equations and variables in FCICO is naturally
+multiplied by ℓand thus experiments were extremely diﬃcult to conduct. We
+generalize Conjecture 1 to ℓ> 1 by replacing 2nr by 2ℓnr everywhere, which is
+natural when looking at the expressions of the Macaulay bound. Similarly, we
+note that the bounds given for Rescue in [8] exhibit this extra ℓfactor. We adjust
+the number of variables nv := 2ℓnr accordingly to obtain the ﬁnal estimate.
+6 We would expect the value of κα to keep increasing with α but the computations
+needed to estimate it become too costly as α increases.
+
+530
+C. Bouvier et al.
+7
+Benchmarks
+In this section, we compare various instances of Rescue–Prime, Poseidon, Grif-
+fin and Anemoi with respect to SNARK metrics: R1CS (Sect. 7.1) and Plonk
+(Sect. 7.2), and STARK: AIR (Sect. 7.3). For Plonk performance, we will also
+conduct a comparison with Reinforced Concrete.
+Due to the increasing number of projects revolving around zk-STARKs, which
+do not require an algebraic group with large underlying ﬁelds, we also illustrate
+native performance comparison of 2-to-1 compression functions based on Rescue–
+Prime, Poseidon and Anemoi on a 64-bit ﬁeld used in various projects [1,43].
+To do so, we need to set the parameters. Then, let Fq, where q = p, be a
+prime ﬁeld, and let t be the number of ﬁeld elements we operate on (t = 2ℓfor
+Anemoi). Besides, let s denote the security level in bits, nr the number of rounds,
+and Cα the cost of an exponentiation x →xα.
+Rescue–Prime requires 1.5 · max{5, ⌈(s + 2)/4t⌉} rounds when α = 3
+and 1.5 · max{5, ⌈(s + 3)/5.5t⌉} rounds when α = 5 (see [3,41]). Posei-
+don has nr
+= RF + RP rounds. While the bound is a complex expres-
+sion, in our setting and for the safety margin recommended by the authors,
+it holds that RF = 8, and that RP must be higher than (or equal to)
+1.075 · (⌈logα(2) · min{s, log2(p)}⌉+ ⌈loga t⌉−RF). Griffin requires at least
+⌈1.2 max{6, 1 + RGB}⌉rounds where RGB is the smallest integer such that
+min
+ RGB·(α+t)+1
+1+t·RGB
+
+,
+αRGB+1+RGB
+1+RGB
+!
+≥2s/2.
+In the following, we use the nr values from Sect. 5.2.
+7.1
+R1CS Systems
+We ﬁrst estimate the number of constraints for R1CS. Using the closed Flystel
+of Fig. 3b, we obtain the following veriﬁcation equations for the S-Box:
+
+(y −v)α + βy2 + γ −x = 0
+(y −v)α + βv2 + δ −u = 0 .
+(5)
+Then, evaluating one S-Box costs Cα constraints to obtain (y −v)α, and 1 con-
+straint for each of the two quadratics. For Rescue–Prime and Poseidon, each
+S-Box costs Cα constraints. For Griffin, each S-Box costs 2 · Cα constraints for
+the ﬁrst two words, and 1 constraint for each squaring of L and each word of the
+remaining state. As a consequence, when using Rescue–Prime, Poseidon, Grif-
+fin and Anemoi as hash functions in sponge mode, the number of constraints is
+respectively Cα · 2t · nr, Cα · (tRF + RP), (Cα + t −2) · 2nr and (Cα + 2) · ( t
+2 · nr).
+We compare the number of constraints for those four schemes in Table 2. As
+we can see, the Anemoi permutations are consistently much more eﬃcient than
+both Poseidon and Rescue–Prime by about a factor 2. Anemoi and Griffin
+are on par, and Anemoi takes the advantage for α = 3.
+
+New Design Techniques
+531
+Table 2. Total R1CS, Plonk and AIR cost for several hash functions (s = 128).
+t
+Rescue’
+Poseidon
+Griffin
+Anemoi
+R1CS
+2
+208
+198
+-
+76
+3
+216
+214
+96
+-
+4
+224
+232
+112
+96
+6
+216
+264
+-
+120
+8
+256
+296
+176
+160
+Plonk
+2
+312
+380
+-
+189
+3
+432
+594
+197
+-
+4
+560
+824
+260
+308
+6
+756
+1344
+-
+444
+8
+1152
+1920
+574
+624
+AIR
+2
+156
+300
+-
+126
+3
+162
+324
+144
+-
+4
+168
+348
+168
+168
+6
+162
+396
+-
+216
+8
+192
+480
+264
+288
+(a) when α = 3.
+t
+Rescue’
+Poseidon
+Griffin
+Anemoi
+R1CS
+2
+240
+216
+-
+95
+3
+252
+240
+96
+-
+4
+264
+264
+110
+120
+6
+288
+315
+-
+150
+8
+384
+363
+162
+200
+Plonk
+2
+320
+344
+-
+210
+3
+420
+512
+173
+-
+4
+528
+696
+222
+336
+6
+768
+1125
+-
+480
+8
+1280
+1609
+492
+672
+AIR
+2
+200
+360
+-
+210
+3
+210
+405
+180
+-
+4
+220
+440
+220
+280
+6
+240
+540
+-
+360
+8
+320
+640
+360
+480
+(b) when α = 5.
+7.2
+Plonk
+For ease of exposition, we will consider rounds to be shifted so that constant
+additions and linear operations come after the S-box. As for R1CS, we again
+investigate Eq. (5). In standard Plonk (i.e. 3 wires and no custom gates), eval-
+uating an S-Box costs 1 constraint to derive w = y −v and Cα constraints to
+obtain wα, 1 constraint for each of the two quadratics, and 1 each for the sums
+on x, u. The total cost for the S-box layer with 3 wires is (Cα + 5) t
+2.
+The constant additions can be folded into the nr + 1 linear layers and can thus
+be disregarded. For t = 2, the linear layer consists of the PHT, which requires 2 con-
+straints. For t > 2, the linear layer itself consists of 2 separate matrix-vector mul-
+tiplications, each producing t
+2 sums of t
+2 terms, requiring t · ( t
+2 −1) constraints, in
+addition to a cost of t constraints for the PHT. However, the number of constraints
+per matrix multiplication can be reduced by choosing MDS matrices lowering the
+number of additions. For the matrices given for t = 6 and t = 8 in Sect. 5.1, we
+have respectively a cost of 10 and 16 per linear layer.
+Poseidon uses simpler S-Boxes, each costing Cα constraints. Full rounds use
+t S-boxes whereas partial ones use only one. Using the optimisation described in
+the Supplementary Material of [30], the linear layer costs t · (t −1) constraints
+for the full rounds and 2t −2 constraints for the partial rounds. Rescue–Prime
+uses t standard and t inverted S-Boxes, each costing Cα. Each round also utilizes
+2 independent linear layers each costing t · (t −1) constraints for all rounds.
+For Griffin, the cost of the S-BOX is 2·Cα+3+4·(t−3). Regarding the linear
+layer, the matrix used for t = 3 can be computed in 5 constraints. For t = 4, the
+cost of one multiplication by the matrix they chose is 8. By observing intermediate
+variables from the S-BOX computation which can be reused in the linear layer
+computation, Griffin gives 222 constraints for t = 4 (resp. 492 for t = 8).
+We then compare the number of constraints for these four schemes in Table 2.
+Anemoi is consistently ahead of Rescue–Prime and Poseidon with a signiﬁcant
+
+532
+C. Bouvier et al.
+margin, but for larger t, our performances are slightly worse than Griffin,
+since our strategy to compute the security margin is diﬀerent: we try to take
+into account the greater freedom given by the larger number of branches, which
+impacts our number of rounds.
+Plonk Optimizations. One of the more fruitful, but also challenging aspects
+of Plonk is its ability to extend the expressive power of the constraints at a
+reasonable cost. In the analysis, the linear layer cost dominates that of the S-
+Boxes. This is particularly impactful for Poseidon, as the eﬃciency beneﬁt of
+its partial rounds is negated. The recent work of Ambrona et al. [4] presents a
+set of generic and tailored optimizations for Plonk applicable to Poseidon.
+While an exhaustive comparison of optimization options is beyond the scope
+of this work, real-world usage implies that a reasonable set of optimizations have
+been applied before deployment. For this reason, we perform a minimal com-
+parison between: Poseidon as optimized by Ambrona et al., and Reinforced
+Concrete [29] which was built with Plonk optimizations in mind, and Anemoi. As
+Poseidon and Reinforced Concrete are sponge based we use s = 128, α = 5
+and t = 3 to represent popular deployment choices, while we set t = 2 for
+Anemoi, using the Jive2 mode For comparison we also extrapolate a Jive2 version
+of Poseidon with the optimizations of [4], and Reinforced Concrete.
+We use one of the constraint systems used by Ambrona et al. [4]: a 3-wire
+constraint system with a x5, as well as selectors for the next constraint wires:
+qL.a + qR.b + qO.c + qM.a.b + q5.c5 + qL′.a′ + qR′.b′ + qO′.c′ .
+At a base level, the relations we need to express for one AnemoiJive2 round
+are
+1. y −v −w = 0
+2. w5 + βyy + γ −x = 0
+3. w5 + βvv + δ −u = 0
+4. ˜u −2u −v −ρ = 0
+5. ˜v −u −v −κ = 0
+where ˜u, ˜v are the values of u, v after the linear layer and ρ, κ are derived
+from round constants. We can save one constraint by calculating ˜u directly and
+eliminating u. We also need to make sure that the relations ﬁt into the available
+wires, and make sure that the last constraint leaves the “next constraint” wires
+free, so that each set of round constraints can be followed by any constraint
+without restriction. To accomplish this, we also need to perform some reordering.
+Setting ρ′ = ρ + 2δ and κ′ = κ −ρ, the end result is:
+1. w5 + βyy + γ −x = 0,
+for: (a, b, c) = (y, y, w) , (a′, b,′ c′) = (x, , ) ,
+2. y −v −w = 0,
+for: (a, b, c) = (x, y, w) , (a′, b,′ c′) = (v, , ) ,
+3. 2w5 + 2βvv + ρ′ + v −˜u = 0, for: (a, b, c) = (v, v, w) , (a′, b,′ c′) = (˜u, , ) ,
+4. ˜v −˜u + u −κ′ = 0,
+for: (a, b, c) = (˜u, ˜v, u) , (a′, b,′ c′) = ( , , ) .
+Thus, we are able to perform one AnemoiJive round in 4 constraints, and 2
+additional constraints to account for the initial linear layer. We can fold the ﬁnal
+
+New Design Techniques
+533
+Jive2 addition into the ﬁnal constraint (using the “next” wires), and ensuring the
+initial layer constraints are directly below it. With four wires, we can eliminate
+w, by having the 5th power gate operate on y −v. Rounds are reduced to 3
+constraints, and we need only 1 extra constraint for the ﬁrst linear layer as we
+handle x0 inline.
+Table 3. Constraints comparison of several hash functions for Plonk with an additional
+custom gate to compute x5. We ﬁx s = 128, and prime ﬁeld sizes of 256.
+t
+Constraints
+Poseidon
+3
+110
+2
+88
+Reinforced Concrete
+3
+378
+2
+236
+Griffin
+3
+125
+AnemoiJive
+2
+86
+(a) With 3 wires.
+t
+Constraints
+Poseidon
+3
+98
+2
+82
+Reinforced Concrete
+3
+267
+2
+174
+Griffin
+3
+111
+AnemoiJive
+2
+64
+(b) With 4 wires.
+We summarize our ﬁndings in Table 3. We extrapolate the t = 2 costs for
+Poseidon and Reinforced Concrete by assuming a Jive2 mode of operation
+is feasible at no additional overhead or increase in rounds. Against the next-
+best proposed system, Poseidon for t = 3 as optimized by [4] we achieve
+a 21% reduction when using 3 wires and 35% when using 4. We note that
+while the costs between Poseidon, Anemoi and Griffin are directly compa-
+rable as they use the same features (namely x5 and “next constraint” selectors),
+Reinforced Concrete leverages lookup tables [26,29] instead. We do note that
+by [4, Table 2], the additional overhead (compared to standard Plonk) for the
+custom gates we describe is between 10% and 40%.
+Plonk Optimisations with an Additional Quadratic Custom Gate. We
+can go further in the optimisation given above by extending Plonk with a custom
+gate to compute the square of a wire, which adds a negligeable overhead to the
+prover and the veriﬁer time. In the 3-wires setting, having the quadratic custom
+gate on the wire b frees a wire in the constraints given above and allow us to
+compute two rounds in 5 constraints as described below7, giving a total number
+of constraints of 56.
+1. w2
+0 + w0y0 + w0 −x0 −y0 + y1 + qc,
+where: (a, b, c) = (y0, w0, x0)
+and (a′, b,′ c′) = (y1, , ) ,
+2. w2
+1 + w1y1 −w0 + w1 + x2 + y0 −y1 + qc,
+where: (a, b, c) = (y1, w1, w0)
+and (a′, b,′ c′) = (y0, x2, ) ,
+7 For readability, the selectors values have been omitted.
+
+534
+C. Bouvier et al.
+3. w1 −x2 −y1 + y2 −qc,
+where: (a, b, c) = (y0, x2, y2)
+and (a′, b,′ c′) = (w1, y1, ) ,
+4. w5
+1 + y2
+1 −w0 + y0 −y1 + qc,
+where: (a, b, c) = (w1, y1, )
+and (a′, b,′ c′) = (w0, y0, ) .
+5. w5
+0 + y2
+0 −x0 + qc,
+where: (a, b, c) = (w0, y0, x0)
+and (a′, b,′ c′) = ( , , ) .
+7.3
+AIR
+Finally, we also study the performance of Anemoi in the Algebraic Intermediate
+Representation (AIR) arithmetization used in STARKs [6]. Here, the relevant
+quantities are: the width of the computation state w, the number of computation
+steps T, and the maximum degree of the constraints dmax. While there are several
+ways to estimate the cost of a given AIR program given the above quantities,
+we will consider the total cost to be expressed as w · T · dmax, following [3].
+For Rescue–Prime, Griffin and Anemoi, we have w = t, T = nr and dmax =
+α. For Poseidon, we have w = t, T = RF + ⌈RP/t⌉and dmax = α.
+We then compare the total cost for these four schemes in Table 2. Anemoi
+and Griffin are quite similar, and close to Rescue–Prime.
+7.4
+Native Performance
+Outside of proving systems, Anemoi performance can challenge other algebraic
+hash functions, especially in Merkle trees thanks to its Jive mode. In particu-
+lar in STARKs settings where one can use small cryptographic ﬁelds, Anemoi
+oﬀers the best balance in terms of native evaluation and number of constraints.
+In Table 4, we illustrate the running time of a 2-to-1 compression method with
+AnemoiJive, Rescue–Prime, Poseidon and Griffin over the 64 bits prime ﬁeld
+Fp with p = 264 −232 + 1. Each instantiation has a 4 ﬁeld elements (32 bytes)
+digest size to ensure 128 bits security8. Rescue–Prime, Poseidon and Griffin
+have been evaluated with two instantiations: a regular of width 12 with rate
+8, capable of compressing two digests with one permutation using the sponge
+construction, and an instantiation of width 8 with rate 4 using Jive as compres-
+sion mode. All experiments were performed on an Intel(R) Core(TM) i7-9750H
+CPU @ 2.60 GHz. We present average times in microseconds of each experiment
+running for 5 s. Standard deviations are negligible. All instantiations have been
+implemented in Rust.
+In Table 5, we compare the native performance with Rescue–Prime, Posei-
+don and Griffin with a state size useful for applications like Merkle tree over
+the scalar ﬁeld of BLS12-381. For small state size, the dominant computation for
+Anemoi (like Rescue–Prime and Griffin) is x1/d and can be implemented using
+an appropriate addition chain. All experiments were performed on an Intel(R)
+8 We refer here to original instantiations, in opposition to a common practice in the
+industry to tweak parameters (typically the MDS matrix layer). All instantiations
+here are original, paper versions for fair comparison.
+
+New Design Techniques
+535
+Table 4. Native performance comparison of 2-to-1 compression functions for Fp with
+p = 264 −232 + 1. We ﬁx s = 128. Times are given in μs. Rescue–Prime is denoted by
+RP.
+RP-12
+RP-8
+Poseidon-12
+Poseidon-8
+Griffin-12
+Griffin-8
+Anemoi-8
+15.67
+9.13
+5.87
+2.69
+2.87
+2.59
+4.21
+Core(TM) i7-8565U CPU @ 1.80 GHz. We present average times in microsec-
+onds of each experiment running for 2 s. Standard deviations are in the order
+of tens of nanoseconds. Our implementation uses C via FFI through an OCaml
+binding, but this introduces a negligible overhead.
+Table 5. Native performance comparison of a permutation for the scalar ﬁeld of
+BLS12 −381. We ﬁx s = 128. Griffin is instantiated with a state size of 3 and
+Anemoi, Rescue–Prime and Poseidon with a state size of 2. Times are in μs.
+Rescue–Prime Poseidon Griffin Anemoi
+206
+9.2
+74.18
+128.29
+8
+Conclusion
+We have made several contributions towards both the theoretical understanding
+and the practical use of arithmetization-oriented hash functions. Our main con-
+tribution is of course Anemoi, a family of permutations that are eﬃcient across
+various arithmetization methods, yielding gains from 10% up to more than 50%
+depending on the context, over existing designs. Furthermore, in order to be
+able to design its main component, the Flystel structure, we had to ﬁrst iden-
+tify the link between arithmetization-orientation and CCZ-equivalence. We hope
+that functions such as the Flystel construction as well as similar ones will be
+studied by mathematicians as we believe those to be of independent interest.
+Finally, we provided a new simple mode, Jiveb, which adds to the growing
+list of permutation-based modes of operation providing a b-to-1 compression
+function, of particular relevance in Merkle trees. It allows us to further improve
+upon the state-of-the-art, so that AnemoiJive requires only 56 Plonk constraints
+in total (when 3 wires and 2 custom gates are used), compared to the best
+sponge-based instance of Poseidon which requires 98 constraints with 4 wires
+(or 110 with 3) and 1 custom gate. With only one custom gate, AnemoiJive
+requires 64 constraints for 4 wires (or 86 with 3).
+
+536
+C. Bouvier et al.
+Recent work by Liu et al. [35] has demonstrated the potential for further
+optimizations leveraging our design: by using 4 custom gates they are able to
+reduce the cost of a 4-to-1 Jive instance to just over 1 constraint per round (16
+constraints for 14 rounds)9. This compares favorably to the highly optimized
+and customized version of Poseidon speciﬁed in Mina [38] which performs 2:1
+compression using 15 wires and 11 constraints (at 55 rounds, 5 rounds per con-
+straint).
+Acknowledgements. We thank the reviewers of CRYPTO 2023 for providing insight-
+ful comments which helped improve the clarity of this paper. In particular, we would
+like to thank the shepherd for their assistance in ﬁnalizing the paper. We are also
+grateful to Markulf Kohlweiss, Antoine Rondelet and Duncan Tebbs for proofreading
+an earlier draft of this paper, and for providing insightful comments and suggestions.
+Additionally, we extend our thanks to Duncan Tebbs for providing an independent esti-
+mation of the Flystel circuit cost in terms of R1CS constraints. The work of L´eo Perrin
+is supported by the European Research Council (ERC, grant agreement no. 101041545
+“ReSCALE”). We thank Tomer Ashur for pointing out a mistake in Fig. 1 in a previous
+version of the paper. We also thank Miguel Ambrona and Rapha¨el Toledo for the idea
+of the quadratic custom gate and their contribution to the Plonk implementation.
+References
+1. Polygon Miden. Repository, September 2022. https://github.com/maticnetwork/
+miden
+2. Albrecht, M., Grassi, L., Rechberger, C., Roy, A., Tiessen, T.: MiMC: eﬃcient
+encryption and cryptographic hashing with minimal multiplicative complexity. In:
+Cheon, J.H., Takagi, T. (eds.) ASIACRYPT 2016, Part I. LNCS, vol. 10031, pp.
+191–219. Springer, Heidelberg (2016). https://doi.org/10.1007/978-3-662-53887-
+6 7
+3. Aly, A., Ashur, T., Ben-Sasson, E., Dhooghe, S., Szepieniec, A.: Design of
+symmetric-key primitives for advanced cryptographic protocols. IACR Trans.
+Symm. Cryptol. 2020(3), 1–45 (2020). https://doi.org/10.13154/tosc.v2020.i3.1-
+45
+4. Ambrona, M., Schmitt, A.L., Toledo, R.R., Willems, D.: New optimization tech-
+niques for PlonK’s arithmetization. Cryptology ePrint Archive, Paper 2022/462
+(2022). https://eprint.iacr.org/2022/462
+5. Beierle, C., et al.: Lightweight AEAD and hashing using the Sparkle permutation
+family. IACR Trans. Symm. Cryptol. 2020(S1), 208–261 (2020). https://doi.org/
+10.13154/tosc.v2020.iS1.208-261
+6. Ben-Sasson, E., Bentov, I., Horesh, Y., Riabzev, M.: Scalable, transparent, and
+post-quantum secure computational integrity. Cryptology ePrint Archive, Report
+2018/046 (2018). https://eprint.iacr.org/2018/046
+7. Ben-Sasson, E., et al.: Zerocash: decentralized anonymous payments from bitcoin.
+In: 2014 IEEE Symposium on Security and Privacy, pp. 459–474. IEEE Computer
+Society Press, May 2014. https://doi.org/10.1109/SP.2014.36
+9 Liu et al. originally utilized an earlier version of this work specifying 12 rounds in
+this setting.
+
+New Design Techniques
+537
+8. Ben-Sasson, E., Goldberg, L., Levit, D.: Stark friendly hash - survey and rec-
+ommendation. Cryptology ePrint Archive, Report 2020/948 (2020). https://ia.cr/
+2020/948
+9. Bernstein, D.J.: The Salsa20 family of stream ciphers. In: Robshaw, M., Billet, O.
+(eds.) New Stream Cipher Designs. LNCS, vol. 4986, pp. 84–97. Springer, Heidel-
+berg (2008). https://doi.org/10.1007/978-3-540-68351-3 8
+10. Bertoni, G., Daemen, J., Peeters, M., Van Assche, G.: Keccak. In: Johansson, T.,
+Nguyen, P.Q. (eds.) EUROCRYPT 2013. LNCS, vol. 7881, pp. 313–314. Springer,
+Heidelberg (2013). https://doi.org/10.1007/978-3-642-38348-9 19
+11. Bertoni, G., Daemen, J., Peeters, M., Van Assche, G.: Sponge functions. In:
+ECRYPT Hash Workshop, vol. 9. Citeseer (2007)
+12. Bos, J., Coster, M.: Addition chain heuristics. In: Brassard, G. (ed.) CRYPTO
+1989. LNCS, vol. 435, pp. 400–407. Springer, New York (1990). https://doi.org/
+10.1007/0-387-34805-0 37
+13. Bouvier, C., Briaud, P., Chaidos, P., Perrin, L., Salen, R., Velichkov, V., Willems,
+D.: New design techniques for eﬃcient arithmetization-oriented hash functions:
+Anemoi permutations and Jive compression mode. Cryptology ePrint Archive,
+Paper 2022/840 (2022). https://eprint.iacr.org/2022/840
+14. Bouvier, C., Briaud, P., Chaidos, P., Perrin, L., Velichkov, V.: Anemoi: exploit-
+ing the link between arithmetization-orientation and CCZ-equivalence. Cryptology
+ePrint Archive, Report 2022/840 (2022). https://eprint.iacr.org/2022/840
+15. Budaghyan, L., Carlet, C., Pott, A.: New classes of almost bent and almost perfect
+nonlinear polynomials. IEEE Trans. Inf. Theor. 52(3), 1141–1152 (2006)
+16. Canteaut, A., Duval, S., Perrin, L.: A generalisation of Dillon’s APN permutation
+with the best known diﬀerential and nonlinear properties for all ﬁelds of size 24k+2.
+IEEE Trans. Inf. Theor. 63(11), 7575–7591 (2017). https://doi.org/10.1109/TIT.
+2017.2676807
+17. Canteaut, A., et al.: Saturnin: a suite of lightweight symmetric algorithms for
+post-quantum security. IACR Trans. Symm. Cryptol. 2020(S1), 160–207 (2020).
+10.13154/tosc.v2020.iS1.160-207
+18. Canteaut, A., Perrin, L.: On CCZ-equivalence, extended-aﬃne equivalence, and
+function twisting. Finite Fields Appl. 56, 209–246 (2019). https://doi.org/10.1016/
+j.ﬀa.2018.11.008
+19. Carlet, C., Charpin, P., Zinoviev, V.: Codes, bent functions and permutations
+suitable for DES-like cryptosystems. Des. Codes Crypt. 15(2), 125–156 (1998)
+20. Dobraunig, C., Grassi, L., Guinet, A., Kuijsters, D.: Ciminion: symmetric encryp-
+tion based on Toﬀoli-gates over large ﬁnite ﬁelds. In: Canteaut, A., Standaert, F.-X.
+(eds.) EUROCRYPT 2021. LNCS, vol. 12697, pp. 3–34. Springer, Cham (2021).
+https://doi.org/10.1007/978-3-030-77886-6 1
+21. Duval, S., Leurent, G.: MDS matrices with lightweight circuits. IACR Trans.
+Symm. Cryptol. 2018(2), 48–78 (2018). https://doi.org/10.13154/tosc.v2018.i2.
+48-78
+22. Dworkin, M.: SHA-3 standard: permutation-based hash and extendable-output
+functions (2015–08-04 2015). https://doi.org/10.6028/NIST.FIPS.202
+23. Faug`ere, J., Gianni, P., Lazard, D., Mora, T.: Eﬃcient computation of zero-
+dimensional gr¨obner bases by change of ordering. J. Symbolic Comput. 16(4), 329–
+344 (1993). https://doi.org/10.1006/jsco.1993.1051. https://www.sciencedirect.
+com/science/article/pii/S0747717183710515
+24. Faug´ere,
+J.C.:
+A
+new
+eﬃcient
+algorithm
+for
+computing
+gr¨obner
+bases
+(f4).
+J.
+Pure
+Appl.
+Algebra
+139(1),
+61–88
+(1999).
+https://doi.org/10.
+
+538
+C. Bouvier et al.
+1016/S0022-4049(99)00005-5. https://www.sciencedirect.com/science/article/pii/
+S0022404999000055
+25. Faug`ere, J.C.: A new eﬃcient algorithm for computing gr¨obner bases without
+reduction to zero (f5). In: Proceedings of the 2002 International Symposium on
+Symbolic and Algebraic Computation, ISSAC 2002, pp. 75–83. Association for
+Computing Machinery, New York (2002). https://doi.org/10.1145/780506.780516.
+https://doi.org/10.1145/780506.780516
+26. Gabizon, A., Williamson, Z.J.: plookup: a simpliﬁed polynomial protocol for lookup
+tables. Cryptology ePrint Archive, Report 2020/315 (2020). https://eprint.iacr.
+org/2020/315
+27. Goldwasser, S., Micali, S., Rackoﬀ, C.: The knowledge complexity of interactive
+proof systems. SIAM J. Comput. 18(1), 186–208 (1989). https://doi.org/10.1137/
+0218012
+28. Grassi, L., Hao, Y., Rechberger, C., Schofnegger, M., Walch, R., Wang, Q.: A new
+Feistel approach meets ﬂuid-SPN: Griﬃn for zero-knowledge applications. Cryp-
+tology ePrint Archive, Report 2022/403 (2022). https://eprint.iacr.org/2022/403
+29. Grassi, L., Khovratovich, D., L¨uftenegger, R., Rechberger, C., Schofnegger, M.,
+Walch, R.: Reinforced concrete: a fast hash function for veriﬁable computation. In:
+Proceedings of the 2022 ACM SIGSAC Conference on Computer and Communi-
+cations Security, CCS 2022, pp. 1323–1335. Association for Computing Machinery
+(2022). https://doi.org/10.1145/3548606.3560686
+30. Grassi, L., Khovratovich, D., Rechberger, C., Roy, A., Schofnegger, M.: Poseidon:
+a new hash function for zero-knowledge proof systems. In: Bailey, M., Greenstadt,
+R. (eds.) USENIX Security 2021, pp. 519–535. USENIX Association, August 2021
+31. Grassi, L., Øygarden, M., Schofnegger, M., Walch, R.: From farfalle to megafono
+via Ciminion: the PRF hydra for MPC applications. In: Hazay, C., Stam, M.
+(eds.) EUROCRYPT 2023, Part IV. LNCS, vol. 14007, pp. 255–286. Springer,
+Heidelberg, April 2023. https://doi.org/10.1007/978-3-031-30634-1 9
+32. Groth, J.: On the size of pairing-based non-interactive arguments. In: Fischlin, M.,
+Coron, J.S. (eds.) EUROCRYPT 2016, Part II. LNCS, May 2016, vol. 9666, pp.
+305–326. Springer, Heidelberg (2016). https://doi.org/10.1007/978-3-662-49896-
+5 11
+33. Hirose, S.: Sequential hashing with minimum padding. In: NIST Workshop on
+Lightweight Cryptography 2016. National Institute of Standards and Technology
+(NIST) (2016)
+34. Li, Y., Tian, S., Yu, Y., Wang, M.: On the generalization of butterﬂy structure.
+IACR Trans. Symm. Cryptol. 2018(1), 160–179 (2018). https://doi.org/10.13154/
+tosc.v2018.i1.160-179
+35. Liu, J., et al.: An eﬃcient veriﬁable state for zk-EVM and beyond from the Anemoi
+hash function. Cryptology ePrint Archive, Paper 2022/1487 (2022). https://eprint.
+iacr.org/2022/1487
+36. Loustaunau, W.: An Introduction to Grobner Bases. American Mathematical Soci-
+ety (1994). https://books.google.is/books?id=Caoxi78WaIAC
+37. McLoughlin, M.B.: addchain: cryptographic addition chain generation in go.
+Repository, October 2021. https://github.com/mmcloughlin/addchain. https://
+doi.org/10.5281/zenodo.5622943
+38. Meckler, I., Rao, V., Ryan, M., Querol, A., Spadavecchia, J., Wong, D.: Mina book,
+kimchi speciﬁcation. https://o1-labs.github.io/proof-systems/specs/kimchi.html#
+poseidon
+
+New Design Techniques
+539
+39. Nyberg, K.: Diﬀerentially uniform mappings for cryptography. In: Helleseth, T.
+(ed.) EUROCRYPT 1993. LNCS, vol. 765, pp. 55–64. Springer, Heidelberg (1994).
+https://doi.org/10.1007/3-540-48285-7 6
+40. Perrin, L., Udovenko, A., Biryukov, A.: Cryptanalysis of a theorem: decomposing
+the only known solution to the big APN problem. In: Robshaw, M., Katz, J. (eds.)
+CRYPTO 2016, Part II. LNCS, vol. 9815, pp. 93–122. Springer, Heidelberg (2016).
+https://doi.org/10.1007/978-3-662-53008-5 4
+41. Szepieniec, A., Ashur, T., Dhooghe, S.: Rescue-prime: a standard speciﬁcation
+(SoK). Cryptology ePrint Archive, Report 2020/1143 (2020). https://eprint.iacr.
+org/2020/1143
+42. Szepieniec, A., Lemmens, A., Sauer, J.F., Threadbare, B.: The tip5 hash function
+for recursive starks. Cryptology ePrint Archive, Paper 2023/107 (2023). https://
+eprint.iacr.org/2023/107
+43. Zero, P.: Plonky2. Repository, September 2022. https://github.com/mir-protocol/
+plonky2
+

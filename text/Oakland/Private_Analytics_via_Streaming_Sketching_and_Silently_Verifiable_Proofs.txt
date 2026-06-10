@@ -1,0 +1,2476 @@
+Private Analytics via Streaming, Sketching, and Silently Verifiable Proofs
+Mayank Rathee
+UC Berkeley
+Yuwen Zhang
+UC Berkeley
+Henry Corrigan-Gibbs
+MIT
+Raluca Ada Popa
+UC Berkeley
+Abstract—We present Whisper, a system for privacy-preserving
+collection of aggregate statistics. Like prior systems, a Whisper
+deployment consists of a small set of non-colluding servers;
+these servers compute aggregate statistics over data from
+a large number of users without learning the data of any
+individual user. Whisper’s main contribution is that its server-
+to-server communication cost and its server-side storage costs
+scale sublinearly with the total number of users. In particular,
+prior systems required the servers to exchange a few bits
+of information to verify the well-formedness of each client
+submission. In contrast, Whisper uses silently verifiable proofs,
+a new type of proof system on secret-shared data that allows
+the servers to verify an arbitrarily large batch of proofs by
+exchanging a single 128-bit string. This improvement comes
+with increased client-to-server communication, which, in cloud
+computing, is typically cheaper (or even free) than the cost of
+egress for server-to-server communication. To reduce server
+storage, Whisper approximates certain statistics using small-
+space sketching data structures. Applying randomized sketches
+in an environment with adversarial clients requires a careful
+and novel security analysis. In a deployment with two servers
+and 100,000 clients of which 1% are malicious, Whisper can
+improve server-to-server communication for vector sum by
+three orders of magnitude while each client’s communication
+increases by only 10%.
+1. Introduction
+Private-aggregation systems make it possible to compute
+aggregate statistics about a population of devices, while
+revealing no information—beyond the aggregate statistic
+itself—about any device’s data. These systems make it pos-
+sible to privately collect information on user behavior [5],
+public health trends [9], [62], and device telemetry [86] at
+million-user scale.
+In this paper, we focus on private-aggregation systems
+based on multi-party computation techniques [2], [11], [23],
+[40], [42], [45], [47], [54], [58], [60], [69], [78], [83], [85].
+These systems require a small set of infrastructure providers
+(“servers”); the systems protect client privacy as long as an
+adversary cannot compromise all servers. Deployments of
+private aggregation at Apple [5], Google [9], Mozilla [86],
+and others [47] use this approach.
+In a run of one such private-aggregation protocol, each
+user splits its data using a cryptographic secret-sharing
+scheme, and sends one share to each server. In addition,
+each user sends the servers a zero-knowledge proof attesting
+that its secret shares are well-formed. After receiving the
+data submissions and validity proofs from a large number
+of clients, the servers verify each proof, and then aggregate
+the valid submissions to compute the statistic of interest.
+An annoyance in prior systems [2], [11], [40], [45],
+[47], [69] is that the servers must exchange messages to
+check each client’s validity proof, so the server-to-server
+communication cost is linear in the number of clients. When
+the number of clients is in the millions, this server-to-server
+communication cost is significant.
+More recent systems [23], [71], [85] support computing
+the “heavy-hitter” statistic: each client holds a string and the
+statistic computes the set of most popular client-held strings.
+This statistic is useful when the universe of possible client
+submission is large—for example, when computing the set
+of URLs that most often cause a user’s browser to crash.
+When computing heavy hitters, existing multiparty-
+computation-based systems [23], [71], [85] require the
+servers to store an amount of secret state that grows linearly
+with the number of clients. When the client submissions
+arrive in a stream [1], the servers cannot begin processing
+the first client submission until the last submission arrives.
+As a result, as the number of client uploads increases, the
+servers’ memory and storage requirements balloon.
+We present Whisper, a system for privacy-preserving
+collection of aggregate statistics that has server-to-server
+communication and server storage costs sublinear in the
+number of users. Whisper provides these properties while
+supporting the computation both of simple arithmetic statis-
+tics and of heavy hitters. Whisper uses the same deployment
+model as existing systems [40], [45], [71] (Figure 1) and
+provides the same privacy property: if there is at least one
+honest server, no adversarial coalition of malicious clients
+and servers can learn any information about honest clients’
+data, beyond what the aggregate statistics themselves leak.
+Silently verifiable proofs. To reduce server-to-server com-
+munication in Whisper, we introduce silently verifiable
+proofs, a new type of zero-knowledge proof system on
+secret-shared data [22]. In a silently verifiable proof system,
+the verifiers can verify a batch of proofs by exchanging a
+single field element. This batch verification is possible even
+when the provers are mutually distrusting and when each
+prover is proving a different statement. Clients in Whisper
+use silently verifiable proofs to convince the servers that
+their data submissions are well formed; the servers can check
+arbitrarily large batches of proofs using only a few bits of
+server-to-server communication.
+3072
+2024 IEEE Symposium on Security and Privacy (SP)
+© 2024, Mayank Rathee. Under license to IEEE.
+DOI 10.1109/SP54263.2024.00182
+2024 IEEE Symposium on Security and Privacy (SP) | 979-8-3503-3130-1/24/$31.00 ©2024 IEEE | DOI: 10.1109/SP54263.2024.00245
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+Storage
+batchi
+…
+Upload 
+Service
+Processing 
+Service
+Server 1
+Server 2
+Client
+partial aggregate
+batchi+1
+…
+batch        
+testing
+result
+Figure 1: Whisper’s server architecture. Clients split their
+data using a secret-sharing scheme and send one share to
+each server. The servers process submissions in batches.
+We show how to construct silently verifiable proofs in
+the random-oracle model from a variety of existing proof
+systems on secret-shared data [22], [24], [25], [40]. Our con-
+struction begins with a recent theoretical proof system [68],
+which (implicitly) gives a relatively inefficient silently verifi-
+able proof using an MPC-in-the-head-like construction [72].
+We then improve the concrete efficiency of their construction
+by replacing the traditional multiparty computation they use
+with a prover-aided multiparty computation [22], [77].
+To sketch how our silently verifiable proofs work, con-
+sider a prover who wants to prove that its input 𝑥lies in some
+language L. Each verifier holds a secret share of the input
+𝑥. Furthermore, say that we have a zero-knowledge proof
+system ΠL on secret-shared data for the language L in which
+the verifiers communicate with each other over a broadcast
+channel (existing protocols satisfy this property [22], [45]).
+To generate the silent proof, the prover locally simulates
+the execution of all of the parties (prover and verifiers)
+running the protocol ΠL. The prover then sends to each
+verifier (1) a transcript of all messages that the simulated
+verifiers exchanged via the broadcast channel and (2) the
+view of each verifier in the simulated protocol. To check the
+proof, the silent verifiers only need to check that (a) their
+transcripts of the simulated broadcast channel are identical
+and (b) their simulated views are correct according to the
+protocol ΠL. The verifiers can locally generate secret shares
+of a test value that is zero if and only if both of these checks
+pass (with high probability). To check a batch of proofs at
+once, the verifiers can publish a random linear combination
+of each proof’s test value and accept if the resulting value
+sums to zero. We depict this construction in Figure 2.
+Privately streaming heavy hitters.
+To avoid needing to
+store per-client state in our private heavy-hitters computa-
+tion, we use a small-space sketching data structure [92]. In
+doing so, we give up on computing the exact heavy hitters,
+and instead settle for a good approximation—we expect this
+trade-off to be acceptable in many applications.
+Applying a sketch in the context of private aggregation
+requires some care. In particular, existing sketching data
+structures can provide a good approximation of the true
+heavy hitters when the client’s data values are chosen in-
+dependently of the random hash functions used in the data
+structure [31], [37], [38], [79], [91], [92]. However, when
+clients can contribute maliciously-crafted data submissions
+that depend on the data structure’s hash functions, the
+standard correctness analysis does not suffice [3], [16], [35],
+[66], [67], [84], [89]. We show how to use silently verifiable
+proofs, along with a refined analysis of the sketching data
+structures, to guarantee that we correctly approximate the
+heavy hitters, even in the face of malicious clients.
+We implement Whisper on top of ISRG’s libprio-rs
+library [48]. In our evaluation where two servers aggregate
+1024-sized vectors across 100,000 clients of which 1% are
+malicious, each server in Whisper only sends 0.2 MB com-
+pared to 415 MB for state-of-the-art Prio3 [48]. In achieving
+this, our per-client communication increases to 303 KB
+from 274 KB for Prio3. This trade-off is most appealing
+in cloud deployments, where ingress is free and egress is
+costly. We estimate up to 3× reduction in server operating
+costs for certain statistics. When the same servers compute
+heavy hitters over a stream of 1.75 million client uploads,
+our baseline Poplar [23] overruns the 64 GB memory at
+the servers and takes four days to finish, while Whisper
+takes about two hours and recovers all the heavy hitters
+with probability at least 0.999. Streaming the heavy hitter
+computation in Whisper comes at a 14-17× increase in client
+communication over Poplar, however, it stays under 500 KB.
+2. System Overview
+In this section, we outline Whisper’s system architecture,
+capabilities, and security properties.
+2.1. System Model
+A Whisper deployment consists of two or more logical
+servers, and a large number of clients. All the communica-
+tion happens over TLS-protected network channels.
+Servers. Each logical server in Whisper server runs in its
+own administrative domain, separate from all other servers
+in the system. A logical Whisper server can consist of a
+large number of physical servers or cloud instances. For
+conciseness, we use “server” to refer to a logical server.
+We assume that all participants in the system have the
+cryptographic public keys of each server in the system. The
+servers jointly compute the same set of aggregate statistics
+on the users’ data. There are 𝑣servers (𝑣erifiers).
+Clients. Each client holds a piece of private data; the servers
+compute aggregate statistics over all clients’ data. Clients in
+Whisper communicate with each of the Whisper servers and
+do not communicate with other clients. We assume that the
+clients have a means to authenticate to the servers [7].
+Threat model and real-world deployments. While Whis-
+per works with any number of servers, we evaluate our
+system, and present additional optimizations, in the two-
+server setting. Moreover, real-world deployments [9], [47],
+[49], [86] of prior work [23], [40] with similar threat models
+typically adopt the two-server setting. This setting requires
+3073
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+Init view
+Bcast view
+?
+Prover
+Verifier2 
+v3 
+v1 
+Figure 2: Overview: Constructing silently verifiable proofs from zero-knowledge proofs on secret-shared data. Given a zero-
+knowledge proof Π on secret-shared data, the prover, in its head, 1 initializes each verifier’s view, and 2 simulates their
+interaction as per Π to generate the broadcast view. 3 It sends to each real verifier their initial view and the simulated
+broadcast view. 4 Each verifier locally verifies a part of the simulation to generate a share of the final decision.
+two non-colluding servers for privacy (more details in §2.4).
+The non-collusion assumption is unavoidable here and has to
+appear either between clients [14], [21], [81] or servers [23],
+[40]. In recent times, Mozilla [49], [86], NIH (with Apple
+and Google) [9], and Horizontal [49] have partnered with
+ISRG to run the second non-colluding server in their deploy-
+ments. Through the Divvi Up project [47], any organization
+can request this service from ISRG. We make no synchrony
+requirement and the adversary can observe all network links.
+2.2. Architecture
+Whisper computes aggregate statistics in a sequence of
+time epochs: at the end of each epoch, the servers publish
+a set of aggregate statistics computed over the data of the
+clients participating during the just-completed epoch. The
+protocol flow in each epoch works in the following three
+steps, depicted in Figure 1.
+Step 1: Client data submission. Each client authenticates
+to the Upload Service at each server, which associates this
+client with an id. The client uploads an encoding of its
+private data with a silently verifiable proof of valid encoding
+by sending a single message to each server.
+The Upload Service associates each message with a
+specific batch of submissions, a batch corresponding to a
+time interval. We need to ensure that each client uploads to
+the same batch on each server. A malicious client can try
+to upload in 𝑣different batches at the 𝑣servers to cause
+𝑣times more work for the servers. At the same time, we
+do not want the “silent” servers to communicate per client
+to reach consensus. To prevent this issue, Whisper has each
+client first submit its upload to the first server. This server
+will verify that this client id has not uploaded already. It
+will assign this message to a batch and will return a signed
+acknowledgment 𝜎ack that covers the batch identifier and the
+client id. The client will then upload to the other servers to
+the same batch by presenting 𝜎ack.
+Step 2: Server data validation and aggregation.
+After
+receiving client submissions, the servers check that they
+are well formed using the silently verifiable proof in each
+submission. To keep the server state from growing, Whisper
+servers verify client submissions in batches as they arrive
+within the epoch. The Processing Service processes each
+batch. It first tests the validity of the submissions in the
+batch by running the batch-verification routine of the silently
+verifiable proofs. In the optimistic case—when all clients in
+a batch are honest—the entire validity check requires the
+servers to exchange a single short (128-bit) field element. If
+any proof in the batch is invalid, the servers will identify
+the failing proof via group-testing techniques [51]; they will
+discard the corresponding malformed submissions. These
+steps require interacting with the corresponding Processing
+Service on the other servers. It then aggregates the values
+in the batch into a running partial aggregate.
+Step 3: Publishing the aggregate statistic.
+After the
+servers process all input batches, the Processing Service
+combines the resulting aggregate with the aggregates on the
+other servers to obtain the aggregate statistic.
+2.3. Supported statistics
+The configuration of a Whisper deployment specifies
+which aggregate statistic 𝑓the system will compute in each
+epoch. Following prior private-aggregation systems [23],
+[40], [45], Whisper supports any aggregate statistic that can
+be computed via a verifiable additive encoding of the client’s
+data [40], [65]. We discuss additive encodings in more detail
+in §4. Using encodings from prior work [28], [38], [40],
+[54], [83], [93], Whisper supports the following statistics:
+• Basic statistics: sum, mean, variance, stddev, min/max
+(over small domains)
+• Counting: frequency count, approximate frequency
+• Boolean operations: and, or
+• Machine learning: linear regression, 𝑟2 coefficient
+As one of our technical contributions, we show that
+Whisper can also support computation of approximate heavy
+hitters (popular strings) via a new additive encoding (§5).
+In many cases, Whisper reveals to the servers slightly
+more information about the client inputs (𝑥1, . . . , 𝑥𝑛) than
+the aggregate statistic 𝑓(𝑥1, . . . , 𝑥𝑛) itself. For example,
+practical private-aggregation schemes for variance addi-
+tionally leak the mean [40]. As in prior work, we define the
+3074
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+Gen →"!,"","pub
+"!,"pub
+"","pub
+Eval →vtag1
+Eval →vtag2
++ = 0 ?
+Eval →
+∗*#
+← Eval
+*! ∗
+Eval →
+∗*"
+Eval →
+∗*!
+← Eval
+*" ∗
+← Eval
+*# ∗
++ =
+= +
++ 
+= 0 ?
+Figure 3: Silently verifiable proofs with batch verification.
+leakage ˆ𝑓(𝑥1, . . . , 𝑥𝑛) of the encoding to capture this extra
+information. In Whisper, the leakage function is always sym-
+metric in its inputs—so the leakage reveals no information
+about which client 𝑖held which private input 𝑥𝑖.
+2.4. Security properties
+Whisper’s security properties are similar to existing
+privacy-preserving systems for collecting aggregate statis-
+tics. We describe these properties in more detail in Sec-
+tions 4.2 and 5; we sketch them here. All of the security
+properties are relative to an aggregate statistic 𝑓and an
+associated leakage function ˆ𝑓.
+• Privacy. As long as one server is honest, no server or
+malicious client learns any information about the hon-
+est clients’ data 𝑥1, . . . , 𝑥𝑛, except what can be inferred
+from the aggregate statistic 𝑓(𝑥1, . . . , 𝑥𝑛) and the leakage
+function ˆ𝑓(𝑥1, . . . , 𝑥𝑛). All the statistics 𝑓that Whisper
+supports and their leakage functions ˆ𝑓are symmetric in
+their inputs, and therefore, the output reveals no informa-
+tion about which client submitted which input.
+• Correctness against malicious clients. If all the servers
+are honest, then a small set of malicious clients can
+only affect the aggregate statistic 𝑓by misreporting their
+private data. When 𝑓computes heavy hitters, we allow
+malicious clients to introduce some small additional error
+in the output with low probability (Theorem 5.2).
+For privacy, it is important that “enough” honest clients
+participate in each epoch. This ensures that 𝑓(𝑥1, . . . , 𝑥𝑛)
+and ˆ𝑓(𝑥1, . . . , 𝑥𝑛) don’t reveal any private information about
+honest clients’ inputs. For example, if there is a single honest
+client in an epoch, the output can trivially leak the client’s
+data. Noising the aggregate statistic to provide differential
+privacy [53], [83] (§7) gives some protection in this case. To
+limit the number of malicious clients, as in prior works [22],
+[23], [40], [83], we assume that the servers employ Sybil-
+protection mechanisms [7], [8], [47], [96].
+3. Silently Verifiable Proofs on Secret Shares
+A silently verifiable proof system is a new type of zero-
+knowledge proof system on secret-shared data that allows
+a set of verifiers to check an arbitrarily large batch of
+proofs, from independent provers, with verifier-to-verifier
+communication cost constant in the batch size.
+We first recall the definition of a zero-knowledge proof
+on secret-shared data [22]. Such a proof system is a protocol
+that takes place between:
+• a prover, holding an input 𝑥∈F𝑛, for a finite field F and
+input size 𝑛,
+• many verifiers, where each verifier holds an additive
+secret share of the input 𝑥.
+The protocol allows the prover to convince the verifiers that
+the input 𝑥satisfies a public predicate—i.e., that the input 𝑥
+is in some language L ⊆F𝑛—while revealing nothing about
+the input 𝑥apart from the fact that 𝑥∈L.
+We consider a flavor of zero-knowledge proofs on secret-
+shared data that has a very simple communication pattern:
+1) the prover sends each verifier a single message,
+2) the verifiers each broadcast a single message to the other
+verifiers, and
+3) each verifier runs some computation on the received
+messages to determine whether to accept or reject.
+Many existing proof systems have this structure [22], [40],
+[45]. In practice, a designated verifier receives the messages
+from all verifiers and decides to accept or reject the proof.
+A silently verifiable proof is a special zero-knowledge
+proof on secret-shared data where the verifiers’ decision to
+accept or reject the proof is a linear function of the broad-
+casted messages. As we discuss in §3.2, silently verifiable
+proofs allow verifiers to check a large batch of proofs at
+once, with minimal verifier-to-verifier communication.
+3.1. Definition
+We define silently verifiable proof systems in the
+information-theoretic setting, i.e., we require the proof sys-
+tems to be secure against computationally unbounded prover
+and verifiers. Later on, we will consider computationally-
+secure variants of these proof systems—in that setting, we
+consider infinite families of languages L = {L𝜆}∞
+𝜆=1, we
+require all algorithms to run in time poly(𝜆), and we prove
+security against adversaries that run in time poly(𝜆).
+Our definition of zero-knowledge proofs on secret-shared
+data closely follows those in prior work [22], [40], [45]. The
+key differences are:
+1) our proofs have a “public part” that the prover sends to
+all verifiers, in addition to a per-verifier “secret part,” and
+2) we only consider non-interactive proof systems—in
+which the prover sends a single message to each verifier.
+Notation. For 𝑛∈N, [𝑛] denotes the set {1, . . . , 𝑛}.
+Syntax: Zero-knowledge proof on secret-shared data.
+For a finite field F, input size 𝑛, tag size 𝑞, and language
+L ⊂F𝑛, a 𝑣-verifier zero-knowledge proof system on secret-
+shared data consists of the following algorithms:
+Gen(𝑥1, . . . 𝑥𝑣) →(𝜋1, . . . , 𝜋𝑣, 𝜋pub). Randomized proce-
+dure takes as input 𝑥𝑖∈F𝑛for each verifier 𝑖∈[𝑣] and
+outputs 𝑣private proofs 𝜋𝑖and one public proof 𝜋pub.
+Eval(𝑥𝑖, 𝜋𝑖, 𝜋pub; 𝑟) →vtag𝑖∈F𝑞. Takes as input the 𝑖-th
+verifier input 𝑥𝑖, private proof 𝜋𝑖, the public proof 𝜋pub,
+and a random tape 𝑟. Returns a proof tag vtag𝑖of size 𝑞.
+3075
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+Ver(vtag1, . . . , vtag𝑣) ∈F. Takes as input the 𝑣verification
+tags and checks whether to accept or reject the proof. By
+convention, output 0 ∈F indicates acceptance.
+Silent verification. We say that the proof system is silently
+verifiable if the verification predicate Ver computes a linear
+function (over field F) of the verification tags it takes as
+input. The tag size 𝑞is one and Ver checks that the (scaled)
+verification tags sum to zero, both follow from the linearity.
+A zero-knowledge proof system on secret-shared data—
+whether silently verifiable or not—must satisfy the following
+completeness, soundness, and zero-knowledge properties.
+Completeness.
+Completeness states that verification will
+always succeed if 𝑥∈L and all the parties are honest.
+Formally, we say that a 𝑣-verifier silently verifiable proof
+system for a language L has completeness if, for all input
+shares 𝑥1, . . . , 𝑥𝑣∈F𝑛such that Í𝑣
+𝑖=1 𝑥𝑖∈L and for all
+choices of the verifiers’ randomness 𝑟, if we compute
+(𝜋1, . . . , 𝜋𝑣, 𝜋pub) ←Gen(𝑥1, . . . , 𝑥𝑣)
+vtag𝑖←Eval(𝑥𝑖, 𝜋𝑖, 𝜋pub; 𝑟), for 𝑖∈[𝑣],
+we have Ver(vtag1, . . . , vtag𝑣) = 0.
+Soundness. Soundness states that a prover trying to prove
+that 𝑥is in the language L for 𝑥∉L will fail the veri-
+fication at the 𝑣honest verifiers. Formally, we say that a
+𝑣-verifier silently verifiable proof system for a language L
+has soundness error 𝜖if, for all adversaries A, it holds that:
+Pr
+𝑟
+
+Ver(vtag∗
+1, . . . , vtag∗
+𝑣) = 0 and Í𝑣
+𝑖=1 𝑥∗
+𝑖∉L:
+(𝑥∗
+1, . . . , 𝑥∗
+𝑣, 𝜋∗
+1, . . . , 𝜋∗
+𝑣, 𝜋pub∗) ←A()
+vtag∗
+𝑖←Eval(𝑥∗
+𝑖, 𝜋∗
+𝑖, 𝜋pub∗; 𝑟), for all 𝑖∈[𝑣]
+
+⩽𝜖.
+In the information-theoretic setting, the adversary A can
+run in unbounded time. When we use the random-oracle
+model [15], all algorithms have access to a common random
+oracle; soundness holds only against adversaries making a
+bounded number of random-oracle queries.
+Zero knowledge. Any strict subset of the verifiers does not
+learn any information about the prover’s private input 𝑥. In
+our private analytics use case, this property guarantees that
+the client leaks no information about its private data to an
+adversarial coalition of up to 𝑣−1 out of the 𝑣servers.
+Formally, we say that a 𝑣-verifier silently verifiable proof
+system has 𝛿-statistical zero knowledge if, for every strict
+subset 𝐴⊂[𝑣], there exists a simulator S such that for all
+𝑥1, . . . , 𝑥𝑣∈F𝑛, where Í
+𝑖𝑥𝑖∈L, the following distributions
+are 𝛿-close in statistical distance, where 𝜌is an upper bound
+on the number of bits of randomness that Eval uses:
+Dreal =
+
+
+{view𝑖}𝑖∈𝐴:
+(𝜋1, . . . , 𝜋𝑣, 𝜋pub) ←Gen(𝑥1, . . . , 𝑥𝑣)
+𝑟←
+R {0, 1}𝜌
+vtag𝑖←Eval(𝑥𝑖, 𝜋𝑖, 𝜋pub; 𝑟), for 𝑖∈𝐴
+view𝑖←
+𝑥𝑖, 𝜋𝑖, 𝜋pub, 𝑟
+vtag1, . . . , vtag𝑣
+
+, for 𝑖∈𝐴
+
+
+and Dideal = S({𝑥𝑖}𝑖∈𝐴).
+If a proof system has 𝛿-statistical zero knowledge with
+𝛿= 0, we say that it has perfect zero knowledge. In the
+computational setting, we require that the simulator runs in
+probabilistic polynomial time, in the security parameter. Fur-
+thermore, we can relax the definition to allow the simulation
+to be computational, rather than statistical.
+Efficiency metrics.
+The most important efficiency metric
+in a silently verifiable proof system is the proof size—the
+number of bits output by Gen. It dictates the number of bits
+the prover must send to the verifiers during an interaction.
+Generalizations. Following prior work [22], we can gen-
+eralize the definition of silently verifiable proof systems:
+• with arbitrarily distributed inputs, and other linear secret-
+sharing (e.g., Shamir),
+• we can require completeness and/or soundness to hold
+when only a subset of the verifiers is honest,
+• we can require zero knowledge to hold when the simu-
+lator is given no explicit input.
+Since our simpler definition suffices for our application, we
+defer these generalizations to future work.
+3.2. Features of silently verifiable proofs
+We now mention two useful properties of our proofs:
+Batch checking. A set of verifiers can check an arbitrarily
+large batch of silently verifiable proofs at the same com-
+munication cost as checking a single proof. Recall that, to
+verify a silently verifiable proof, the verifiers
+• each compute a verification tag from their input, and
+• check that their verification tags sum to zero.
+To verify a batch of 𝐵proofs, the verifiers compute the
+verification tags for each of the 𝐵proofs as before. Rather
+than broadcasting the verification tags for each proof sepa-
+rately, the verifiers can agree on a shared random test vector
+𝑡∈F𝐵. Each verifier 𝑖publishes the inner product of their 𝐵
+verification tags (as a vector in F𝐵) with the shared random
+vector 𝑡(Figure 3). If any set of verification tags in the batch
+sums to a non-zero value, then the combined verification tag
+will be non-zero with probability at least 1 −
+1
+|F| .
+Zero-knowledge against malicious verifiers. By definition,
+silently verifiable proof systems provide zero-knowledge
+even if a subset of the verifiers is malicious. This strong
+privacy guarantee comes for free because each verifier just
+sends a single message. Given an honest prover, the mes-
+sages sent by honest verifiers are independent of the error in-
+troduced by malicious verifiers in their messages. Therefore,
+malicious verifiers learn no additional information about the
+prover’s private input by deviating from the protocol.
+3.3. General construction: silently verifiable proofs
+We now show how to construct silently verifiable proof
+systems. Our strategy is to start with a conventional zero-
+knowledge proof system on secret-shared data that is not
+silent—that is, the verification predicate may compute a
+3076
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+non-linear function [22], [40], [45]. Then we show how to
+convert any non-silent proof into a silent one in the random-
+oracle model [15].
+Delegating verification via MPC-in-the-head. Figure 4
+shows our construction, which we now explain. It starts
+with a non-silent zero-knowledge proof system on secret-
+shared data. Our idea is to have the prover run the non-silent
+proof system, playing the role both of the prover and of all
+𝑣verifiers in that proof system.
+Our approach is inspired by the “MPC-in-the-head”
+paradigm [72] of constructing proof systems. To prove that
+some 𝑥∈L, the high-level idea is for the prover to run an
+MPC protocol that computes the predicate “𝑥∈L” in its
+head—meaning, playing the role of each party in the MPC.
+The transcript from this emulated execution is then used to
+prove the validity of the statement. The recent theoretical
+work of Hazay et al. [68] adapts this paradigm to build
+batch-verifiable zero-knowledge proofs on secret-shared (or
+distributed) data from an MPC protocol that computes the
+predicate in question. We add silent verification and reduce
+the proof size. In our construction, rather than delegating
+the MPC protocol to the prover, we delegate the verification
+protocol of non-silent zero-knowledge proofs on secret-
+shared data. This not only makes silent verification possible
+but also leads to shorter proofs.
+In our setting, the prover simulates the process of:
+• the non-silent prover sending a proof to each verifier,
+• the verifiers sampling random coins and using these to
+generate verification tags, and
+• each verifier broadcasting a verification tag.
+In the second step, the prover uses a Fiat-Shamir-like trans-
+formation [22], [59], [100] to derive the randomness that
+the (simulated) verifiers use to check the non-silent proofs.
+For 𝑖∈[𝑣], the prover writes down the view of the 𝑖-th
+verifier as the private proof 𝜋𝑖. The prover writes down all
+of the public messages (i.e., the non-silent public proof and
+broadcasted verification tags) as the public proof 𝜋pub.
+Upon receipt of the proof, each verifier first checks that
+the simulated view of the protocol, contained in their private
+proof 𝜋𝑖, is correct. Then, the verifiers must check that the
+simulated broadcast messages in the public proof 𝜋pub are
+consistent with their simulated local views. The verifiers do
+this by taking an appropriate random linear combination of
+the elements in their simulated views and public proofs.
+Putting all of this together, we have:
+Theorem 3.1 (Silently verifiable proofs). The construction
+of Figure 4, when instantiated with a zero-knowledge proof
+on secret-shared data for a language L with soundness
+error 𝜖, produces a silently verifiable proof for L in the
+random-oracle model with soundness error 𝜖′ = 𝑣𝑇2+1
+|F|
++ (𝜖+
+1
+|F| ) 𝑇
+Δ against adversaries making at most 𝑇random-oracle
+queries, where Δ = (1−𝑇
+|F| )𝑣. This transformation preserves
+the zero-knowledge property of the underlying proof system.
+We prove this theorem in §A.1. The soundness error
+𝜖′ simplifies to ≈
+𝑣𝑇2
+|F| + 𝜖𝑇when the adversary’s run-
+Proof
+Prover to
+Verifier to verifier
+system
+verifier
+All good
+𝑑bad
+Non-silent
+|𝜋|
+𝑝𝑞
+𝑝𝑞
+Silent
+|𝜋| + 𝑣+ 𝑞
+1
+𝑑log2
+𝑝
+𝑑
+TABLE 1: Communication in field elements for silently
+verifiable proofs (Figure 4) and the underlying non-silent
+proof system. There are 𝑝provers and a small set of 𝑣
+verifiers. The non-silent proof system has tag size 𝑞. Entries
+represent the comm. from each prover to each verifier, and
+verifier to verifier comm. to verify the batch of 𝑝proofs.
+The proofs are either all honestly generated or 𝑑out of 𝑝
+are malicious. 𝑂(·) notation is suppressed for readability.
+ning time 𝑇≪|F|. When 𝑇is poly(𝜆), |F| ≈2𝜆, and
+𝜖= negl(𝜆), the soundness error 𝜖′ of the silently verifiable
+proof stays negl(𝜆). Instantiating this template with standard
+zero-knowledge proofs on secret-shared data [22], we have:
+Corollary 3.2 (Arithmetic circuit satisfiability). For an
+arithmetic circuit 𝐶: F𝑛→F, let L𝐶be the language of
+vectors in F𝑛such that 𝐶(𝑥) = 0 ∈F. Let 𝑀⩾1 denote the
+number of multiplication gates in 𝐶. Then there exists a 𝑣-
+verifier silently verifiable proof for L𝐶in the random oracle
+model, with soundness error 𝜖⩽𝑣𝑇2+2𝑣𝑇+1
+|F|
++ 2𝑣+1𝑀𝑇
+|F|−𝑀against
+adversaries making at most 𝑇
+<
+|F|/2 random-oracle
+queries, perfect zero-knowledge, and proof size 2𝑀+ 5𝑣+ 3
+field elements to each verifier.
+Shorter public proof.
+In existing zero-knowledge proofs
+on secret-shared data [22], [40], [45], the Ver(·) algorithm
+uses the sum of its inputs to compute its output, i.e.,
+Ver(vtag1, . . . , vtag𝑣) = VerInner(vtag), where VerInner(·) is
+the main decision algorithm and vtag = vtag1+· · ·+vtag𝑣∈
+F𝑞. We use this structure to shrink the public proof size
+from Figure 4 as follows. The public proof 𝜋pub includes the
+sum vtagNS,1 + · · · + vtagNS,𝑣of non-silent verification tags
+rather than including all tags separately and all the verifier
+checks stay linear as before. This reduces the proof size
+from Corollary 3.2 to 2𝑀+ 𝑣+ 7 field elements. Table 1
+shows our proof size and verification communication.
+3.4. Extensions: Sublinear proof size
+Let L be the language of vectors that satisfy an arith-
+metic circuit with 𝑀multiplication gates. Our proofs so far
+(Corollary 3.2) for the language L, have proof size linear
+in 𝑀. We now show how, when the language L is more
+structured, we can make the proof size sublinear in 𝑀.
+Repeated instances of a subcircuit.
+If the circuit is
+made up of just affine combinations of 𝑀𝐺instances of
+a single subcircuit 𝐺: F𝐿→F of algebraic degree 𝑑, then
+instantiating Theorem 3.1 with prior zero-knowledge proofs
+on secret-shared data [22], we can achieve the proof size
+2𝐿+ 𝑑𝑀𝐺+ 𝑣+ 3 with soundness error ≈(𝑣𝑇+ 𝑑𝑀𝐺) 𝑇
+|F|
+(when 𝑀𝐺,𝑇≪|F|) and zero-knowledge parameter 𝛿= 0.
+3077
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+Silently verifiable proofs. Construction of silently verifi-
+able proofs over the finite field F with input size 𝑛for the
+language L ⊆F𝑛with 𝑣verifiers from a (non-silent) proof
+system (GenNS, EvalNS, VerNS). The construction uses a
+hash function 𝐻: {0, 1}∗→{0, 1}𝜌, which we model as
+a random oracle, where 𝜌random bits are used by EvalNS.
+Proof generation.
+Gen(𝑥1, . . . , 𝑥𝑣) →(𝜋1, . . . , 𝜋𝑣, 𝜋pub):
+• Generate the non-silent proof:
+(𝜋1, . . . , 𝜋𝑣, 𝜋pub
+NS ) ←GenNS(𝑥1, . . . , 𝑥𝑣)
+• Use multiparty Fiat-Shamir [22] to derive the random-
+ness 𝑟NS that the verifiers will use to verify the proof:
+𝑐𝑖←𝐻(𝑖, 𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ), for 𝑖∈[𝑣]
+𝑟NS ←𝐻(𝑐1, . . . , 𝑐𝑣).
+• Derive the verification tags that the verifiers would
+broadcast to verify the non-silent proof with random-
+ness 𝑟NS. That is, for 𝑖∈[𝑣], set
+vtagNS,𝑖←EvalNS(𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ; 𝑟NS) ∈F𝑞.
+Then compute:
+𝜋pub ←(𝜋pub
+NS , 𝑐1, . . . , 𝑐𝑣, vtagNS,1, . . . , vtagNS,𝑣).
+• Output (𝜋1, . . . , 𝜋𝑣, 𝜋pub).
+Proof evaluation.
+Eval(𝑥𝑖, 𝜋𝑖, 𝜋pub; 𝑟) →vtag𝑖:
+• Parse 𝜋pub →(𝜋pub
+NS , 𝑐∗
+1, . . . , 𝑐∗
+𝑣, vtag∗
+NS,1, . . . , vtag∗
+NS,𝑣).
+• Rederive the randomness 𝑟∗
+NS that the non-silent veri-
+fiers would have used to verify the proof:
+𝑟∗
+NS ←𝐻(𝑐∗
+1, . . . , 𝑐∗
+𝑣).
+• Derive the verification tags that the verifiers would
+broadcast to verify the non-silent proof with random-
+ness 𝑟∗
+NS. That is, set
+vtagNS,𝑖←EvalNS(𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ; 𝑟∗
+NS) ∈F𝑞
+• The verifiers must check that:
+– the prover computed the challenge value correctly:
+𝑐∗
+𝑖= 𝐻(𝑖, 𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ),
+– all verifiers’ 𝜋pub values are identical,
+– the prover provided correct verification tags, i.e.,
+verifier 𝑖checks that vtag∗
+NS,𝑖= vtagNS,𝑖, and
+– verification
+of
+the
+non-silent
+proof
+succeeds:
+VerNS(vtag∗
+NS,1, . . . , vtag∗
+NS,𝑣) = 0.
+Each verifier 𝑖uses the shared randomness 𝑟to form
+a value vtag𝑖∈F such that vtag1 + · · · + vtag𝑣= 0 ∈F
+if and only if these checks all succeed, with high
+probability over the choice of 𝑟.
+• Return vtag𝑖∈F.
+Figure 4: General construction of silently verifiable proofs.
+Constant-degree languages. Languages with a constant de-
+gree (typically 𝑑= 2) define the valid submissions for many
+statistics like (vector) sum, mean, variance and frequency
+count. For these languages, prior work [22] constructs and
+implements [48] zero-knowledge proofs on secret-shared
+data with proof size 𝑂(
+√
+𝑀). Using these non-silent proof
+systems, we can directly generate silently verifiable proofs
+with proof size 𝑂(
+√
+𝑀) via Theorem 3.1.
+Language of vectors of Hamming-weight one.
+When
+computing the frequency count and approximate fre-
+quency statistics [40], and sketching for heavy hitters (§5),
+each client must prove to the servers that it has secret-shared
+a vector of Hamming-weight one. Prior work on arithmetic-
+sketching schemes [23]–[25] gives protocols for this with
+constant server-to-server communication. We can compile
+them into a silently verifiable proof following Figure 4.
+4. Collecting Aggregate Statistics
+4.1. Preliminaries: Additive encodings
+We recall additive encodings, as used in Prio [40] and
+other private-aggregation systems [23], [26], [45], [54], [71],
+[76], [78], [83], [93]. For an input space X, an output
+space Y, and number of inputs 𝑛, let 𝑓: X 𝑛→Y be an
+aggregation function. For a finite field F, encoding length ℓ,
+and a function ˆ𝑓: X 𝑛→{0, 1}∗, a private additive encoding
+for 𝑓with leakage ˆ𝑓consists of three efficient algorithms:
+• Encoder 𝐸(𝑥) →𝑒. Outputs an encoding 𝑒∈Fℓof input
+𝑥∈X.
+• Verifier 𝑉(𝑒) →{0, 1}. Verifies an encoding 𝑒∈Fℓ.
+• Decoder 𝐷(𝑒) →𝑦. Outputs the decoding 𝑦∈Y of its
+input 𝑒∈Fℓ.
+These algorithms must satisfy the following properties:
+• Completeness: For all 𝑥1, . . . , 𝑥𝑛∈X and for all 𝑖∈[𝑛],
+then it holds that 𝑉(𝐸(𝑥𝑖)) = 1 and 𝐷(𝐸(𝑥1) + · · · +
+𝐸(𝑥𝑛)) = 𝑓(𝑥1, . . . , 𝑥𝑛).
+• Soundness: If 𝑉(𝑒) = 1, then there exists 𝑥∈X such that
+𝐸(𝑥) = 𝑒. Moreover, there is an efficient algorithm that
+computes such an 𝑥.
+• Privacy: There exists an efficient simulator S such that
+for all 𝑥1, . . . , 𝑥𝑛∈X, S   𝑓(𝑥1, . . . , 𝑥𝑛), ˆ𝑓(𝑥1, . . . , 𝑥𝑛)
+outputs an identical distribution as 𝐸(𝑥1) + · · · + 𝐸(𝑥𝑛).
+For example, there is a folklore additive encoding for
+variance. Let F = {0, 1, 2, 3, . . . } be a finite field and let 𝑛
+3078
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+be the number of inputs. The input space of the encoding is
+X ∈{0, . . . , 𝐵} ⊆F, for some bound 𝐵where
+√
+𝐵< 𝑛|F|.
+The output space of the encoding is Y = Q. The encoding
+routine outputs 𝐸(𝑥) = (𝑥, 𝑥2) ∈F2, so the encoding length
+is ℓ= 2. The verification routine 𝑉(𝑎, 𝑏) accepts if 0 ⩽
+𝑎, 𝑏⩽𝐵and 𝑎2 = 𝑏∈F. The decoding routine outputs
+𝐷(𝑎, 𝑏) = ( 𝑏
+𝑛−( 𝑎
+𝑛)2) ∈Q.
+Recent work proposes powerful theoretical generaliza-
+tions of additive encodings [65]. These encodings do not na-
+tively provide verifiability—taking advantage of these more
+recent encodings is an exciting direction for future work.
+4.2. Private-aggregation scheme
+We now use silently verifiable proofs to construct a
+private-aggregation scheme where servers communicate and
+store sublinear in the number of clients (in optimistic case).
+The protocol is essentially that of prior work [2], [40],
+[42], [45], [47], [71], [78], [83], except with silently ver-
+ifiable proofs. Prior work formalizes its security proper-
+ties [40], [45], [47], [71], so we only sketch them here. In the
+following, we say that a client’s submission is “valid” if there
+exists an input 𝑥∈X such that an honest client produces the
+same submission on input 𝑥. The protocol is defined relative
+to a public aggregation function 𝑓: X ∗→Y.
+• Correctness against malicious clients: If all servers are
+honest, then the servers output 𝑓applied to the inputs of
+clients whose submissions were valid.
+• Privacy: As long as one server is honest, the protocol
+only reveals the value of the aggregation function 𝑓and
+leakage function ˆ𝑓applied to the inputs of clients whose
+submissions were valid.
+Building blocks. The private-aggregation protocol with 𝑛
+clients and 𝑣servers for the function 𝑓works over a finite
+field F and requires two building blocks:
+• A private additive encoding (𝐸,𝑉, 𝐷) over F with input
+space X, output space Y and encoding length ℓfor the
+aggregation function 𝑓with leakage ˆ𝑓.
+• A silently verifiable proof system (Gen, Eval, Ver) over
+F for the language L = {𝑒| 𝑉(𝑒) = 1 and 𝑒∈Fℓ} with
+𝑣verifiers, where ℓis the encoding length and 𝑉is the
+additive-encoding verifier.
+Protocol. At a high level, the protocol proceeds as follows:
+Each client 𝑖∈[𝑛] performs the following steps:
+• On input 𝑥𝑖, generate an additive encoding 𝑒←𝐸(𝑥𝑖) ∈
+Fℓof the input. Split the encoding into 𝑣additive shares:
+𝑒= 𝑒1 + · · · + 𝑒𝑣∈Fℓ.
+• Generate a silently verifiable proof that the encoding is
+well formed: (𝜋1, . . . , 𝜋𝑣, 𝜋pub) ←Gen(𝑒1, . . . , 𝑒𝑣).
+• For 𝑗∈[𝑣], send (𝑒𝑗, 𝜋𝑗) to server 𝑗and 𝜋pub to all.
+Next, each server 𝑗∈[𝑣] performs the following steps:
+• For each client 𝑖∈[𝑛], generate a verification tag vtag𝑖∈
+F to verify that client 𝑖’s submission is valid.
+• Take a random linear combination (using randomness
+shared across all servers) of the 𝑛verification tags
+(one per client) to construct a batched verification tag
+vtag★
+𝑗∈F. Send this tag to the first server.
+Finally, the servers perform the following steps:
+• The first server checks that Í
+𝑗∈[𝑣] vtag★
+𝑗= 0 ∈F and
+broadcasts the result to all the other servers.
+• If the check fails, the servers jointly employ group testing
+(§4.3) to identify the failing proofs and weed out the
+malformed inputs.
+• Each server 𝑗∈[𝑣] adds its shares of each (valid)
+encoding to generate a share 𝑒★
+𝑗∈Fℓof the sum of
+encodings. Server 𝑗sends 𝑒★
+𝑗to the first server.
+• The first server computes the sum 𝑒★←Í
+𝑗∈[𝑣] 𝑒★
+𝑗∈Fℓ
+and computes the final output out ←𝐷(𝑒★) ∈Y, i.e.,
+the aggregate statistic over the clients’ secret inputs.
+We argue in Appendix B that this protocol provides cor-
+rectness against malicious clients. The argument for privacy
+follows exactly as in prior work [40]. As mentioned in §2.2,
+the servers in this protocol can verify the submissions in
+batches of size 𝑛𝑏each and locally aggregate their shares
+of passing submissions as they go. In the end, each server
+𝑗∈[𝑣] sends its 𝑒★
+𝑗to the first server.
+Efficiency. The server storage while running the protocol is
+essentially just a vector in Fℓ. The server-to-server commu-
+nication depends on the number of malicious clients (§4.3).
+Supported
+statistics.
+Using existing additive encod-
+ings [28], [38], [40], [54], [83], [93], Whisper can compute
+the following aggregation functions:
+• Basic statistics: sum, mean, variance, stddev, min/max
+(over small domains)
+• Counting: frequency count, approximate frequency
+• Boolean operations: and, or
+• Machine learning: linear regression, 𝑟2 coefficient
+4.3. Finding failing proofs
+In our private-aggregation protocol, when malicious
+clients submit invalid proofs, the servers’ batch-verification
+check fails. To identify the failing proofs with little server-
+to-server communication, the servers can use standard algo-
+rithms for group testing [50], [51]. Whisper uses the binary-
+splitting algorithm [51], [70]: with a rough estimate on the
+upper bound of the number of “defective” uploads 𝑑in each
+batch of 𝑛𝑏clients, the servers first split the batch into 𝑑non-
+overlapping batches of 𝑛𝑏/𝑑clients each and compute vtag★
+𝑖
+for 𝑖∈[𝑣] for each such batch. They exchange these verifica-
+tion tags to find which batches contain defective uploads. For
+each defective batch, they recursively search for defective
+clients within each batch in parallel. They continue recursing
+until they are left with defective singleton batches—these
+are the malicious clients. This requires 1 + log 𝑛𝑏
+𝑑rounds of
+server interaction and 𝑂(𝑣𝑑log 𝑛𝑏
+𝑑) field elements in total
+communication per batch of 𝑛𝑏clients.
+This strategy only works if the servers split each batch
+into consistent sub-batches even though some uploads could
+be in some servers’ batches but not in others. We do not want
+3079
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+extra server communication to reach a consensus on these
+sub-batches. Instead, during setup, the servers share a key
+for a pseudorandom function and use it to map each client’s
+id (from §2.2) to a random and deterministic sub-batch.
+In our approach, the additional server overhead to iden-
+tify failing proofs allows malicious clients to degrade the
+system’s performance. However, we show in our evaluation
+(§6) that the servers remain efficient and available (unlike a
+DDoS attack) even in the presence of a large number of
+malicious clients. Moreover, we discuss a strategy in §7
+to permanently ban malicious clients and get rid of the
+overhead of repeatedly identifying the same offenders.
+5. Sketching for heavy hitters
+The heavy-hitters aggregate statistic takes as input a set
+of 𝑛strings, each 𝐿bits long. It returns the set of strings
+that appear more than a certain number of times in the input.
+Prior work [23], [85] has proposed custom protocols for
+efficient computation of exact heavy hitters. A limitation of
+these protocols is that they require 𝑂(𝐿) rounds and they
+do not support streaming computation (i.e., the servers must
+store and repeatedly compute over all client submissions).
+In this section, we consider the relaxed problem of
+computing approximate heavy hitters—we tolerate a small
+probability of failure in outputting the heavy hitters. The
+benefit is that we get a streaming-friendly protocol with
+round complexity constant in the string length 𝐿.
+Our approach, following prior work on private aggre-
+gation [83], is to use linear sketches [31], [37], [38], [79],
+[92]. For our purposes, a linear sketch is just an additive
+encoding (in the sense of §4.1) for the approximate heavy-
+hitters function. Prior private-aggregation schemes using
+sketching for heavy hitters [83] require the servers to run
+in time 2𝐿on string length 𝐿. Instead, we identify as fitting
+a more advanced sketching construction due to Pagh et
+al. [92], that reduces the servers’ work to polynomial in
+the string length 𝐿. (We could also have used the count-
+min sketch with the “dyadic trick” [38]. The sketch of Pagh
+et al. is better for our application, since the clients can
+compress their secret-shared submissions to servers using
+distributed point functions [25], [46].) We compare with
+the approach of computing approximate heavy hitters using
+Local Differential Privacy in §8.
+Notation.
+In this section, all arithmetic happens over a
+finite field F with size |F|, which we assume to be Z𝑝for a
+prime modulus 𝑝. Positive elements are {1, . . . , ⌊𝑝
+2 ⌋}. The
+value −𝑥represents the field element 𝑝−𝑥. We use the total
+ordering −⌊𝑝
+2 ⌋< · · · < −1 < 0 < 1 < · · · < ⌊𝑝
+2 ⌋.
+5.1. Building block: Bucketed string counting
+Our private-heavy-hitters construction uses the private-
+aggregation scheme of §4 as a subroutine. In particular, we
+instantiate that private-aggregation protocol with an aggre-
+gation function that we call “bucketed-string-counting.”
+The aggregation function is parameterized by a num-
+ber of buckets 𝐵, number of client inputs 𝑛, and a string
+length 𝐿. Each client holds a pair of a bucket ID in
+{1, . . . , 𝐵} and an 𝐿-bit string 𝜎. For each bucket 𝑏∈[𝐵],
+the aggregation function puts the “average” of the strings
+in bucket 𝑏. That is, if we view each string as a vector
+ˆ𝜎∈{−1, 1}𝐿⊆F, then for each bucket 𝑏∈[𝐵], the
+aggregation function sums up the values in each bucket.
+Private-aggregation for bucketed string counting.
+Fig-
+ure 14 of Appendix C gives a simple additive encoding
+(𝐸,𝑉, 𝐷) for bucketed string counting with encoding length
+ℓ= (𝐿+ 1) · 𝐵and no leakage. For each bucket and for
+each bit of each string, we use one instance of the additive
+encoding for the sum function. The validity predicate just
+ensures that the client only inserted a string into a single
+bucket (i.e., that there is only one bucket-aligned run of
+non-zero values) and that the string is encoded in {−1, 1}𝐿.
+We use arithmetic sketching [24], [25] to construct
+silently verifiable proofs for the language of valid encodings
+(see §3.4). The encoding and the proof system then, via the
+private-aggregation protocol of Section 4.2, yield a private-
+aggregation scheme for bucketed string counting.
+Optimization in the two-server case. When there are only
+two servers, we can use verifiable distributed point functions
+(VDPFs) [25], [46] to compress the secret-shared additive
+encodings sent by each client. A VDPF gives a succinct way
+to secret share a weight-one vector. The verifiability property
+means that two servers, each holding a purported succinct
+share of a weight-one vector, can tell that their shares are
+well formed by performing an equality check on a short
+string. As with our silently verifiable proofs, it is possible
+for the servers to batch-verify a large number of VDPFs by
+exchanging a short string. VDPFs thus can replace silently
+verifiable proofs in the two-server setting for heavy hitters.
+5.2. Our heavy-hitters protocol
+In our protocol (Figure 5), each client first hashes its
+input string 𝑥∈{0, 1}𝐿into one of 𝐵buckets, where 𝐵is
+a protocol parameter. The client and servers then run the
+private-aggregation protocol for bucketed string counting to
+compute the “average” of the strings in each bucket.
+If there were no collisions—i.e., distinct strings hash to
+distinct buckets—the output of the bucketed string counting
+function would exactly give the set of all heavy hitters. How-
+ever, since multiple distinct strings may fall into the same
+bucket, we need to recover heavy hitters despite collisions.
+The delicate part of the analysis is showing that, for the
+purposes of finding heavy hitters, these collisions do not
+matter too much. If a string is a heavy hitter, it is unlikely
+that it will fall into a bucket containing so many non-heavy-
+hitters that we cannot recover the original heavy hitter. To
+recover a heavy hitter from a bucket, we just round each
+bit of the bucket’s counter either up or down to determine
+whether the corresponding bit of the string is either 0 or 1.
+5.3. Security analysis
+Since our heavy-hitters protocol only uses our private-
+aggregation scheme (§4) as a subroutine, the security of
+3080
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+Heavy hitters protocol. Parameters: a number of
+clients 𝑛, a string length 𝐿, a number of buckets 𝐵, hash
+functions 𝐻bucket : {0, 1}𝐿→[𝐵] and 𝐻sign : {0, 1}𝐿→
+{0, 1}, and a heavy-hitter threshold 𝑇.
+Client input preparation. Given a string 𝑥∈{0, 1}𝐿
+as input:
+• The client hashes the string to get a bucket ID 𝑏and
+sign bit 𝛽:
+𝑏←𝐻bucket(𝑥) ∈[𝐵]
+and
+𝛽←𝐻sign(𝑥) ∈{0, 1}.
+• If 𝛽= 0, the client complements its bitstring 𝑥←¯𝑥.
+• The client participates in the secure-aggregation
+protocol for bucketed string counting using input
+(𝑏, 𝛽∥𝑥) ∈[𝐵] × {0, 1}𝐿+1.
+Output decoding. The output of the secure-aggregation
+protocol is, for each bucket, (1) the number of strings
+in that bucket and (2) the sum over F𝐿+1 of all strings
+in that bucket. This output-decoding procedure recovers
+the set of approximate heavy hitters from this output.
+Initialize a set 𝐻= ∅of heavy hitters. Then, for each
+bucket 𝑏∈[𝐵] containing at least 𝑇strings:
+• Let 𝑠∈F𝐿+1 be the sum of the strings in bucket 𝑏.
+• “Round” 𝑠to a bitstring ˆ𝜎∈{0, 1}𝐿+1 by mapping
+each value in {−𝑛, . . . , 0} ⊆F to 0 and all other
+values to 1.
+• Parse (𝛽, 𝜎) ←ˆ𝜎∈{0, 1} × {0, 1}𝐿.
+• If 𝛽= 0, complement the bits of 𝜎: 𝜎←¯𝜎.
+• Add 𝜎to the set of heavy hitters 𝐻.
+Finally, output 𝐻as the set of heavy hitters.
+Figure 5: Our protocol for approximate heavy hitters.
+that scheme does not imply the security of our heavy-
+hitters protocol. For example, the client in our heavy-hitters
+protocol (Figure 5) is supposed to hash its string into a
+bucket—a malicious client may hash its string using some
+adversarial strategy with the goal of corrupting the system’s
+output. In addition, our security definitions in Figure 5 did
+not handle approximate statistics or randomized encodings.
+We now prove a notion of correctness against malicious
+clients, and later show privacy against malicious servers.
+Correctness against malicious clients. We formally define
+our notion of correctness against malicious clients in Fig-
+ure 6. Intuitively, we would like to guarantee that the servers
+recover all of the heavy hitters, even in the presence of an ad-
+versary that controls some number of malicious clients and
+may choose the strings that all honest parties will submit.
+The only guarantees we have are that (a) malicious clients’
+must submit valid additive encodings to the bucketed-string-
+counting protocol and (b) the adversary must choose the
+honest parties’ strings independently of the random hash
+Heavy-hitters correctness game. Parameters: a num-
+ber of buckets 𝐵, string length 𝐿, encoding length ℓ,
+number of honest clients 𝑛, number of malicious clients
+𝑚, heavy-hitter threshold 𝑇, and an adversary A.
+1) The adversary outputs a list of strings, each in
+{0, 1}𝐿, along with a state st:
+(st, 𝑥1, . . . , 𝑥𝑛) ←A()
+corresponding to the honest parties’ inputs.
+2) The challenger chooses random hash functions
+𝐻sign : {0, 1}𝐿→{0, 1} and 𝐻bucket : {0, 1}𝐿→[𝐵].
+3) The adversary outputs 𝑚encodings, each in Fℓ:
+(𝑦1, . . . , 𝑦𝑚) ←A𝐻sign,𝐻bucket(st).
+If, for any 𝑖∈[𝑚], the encoding 𝑦𝑖is invalid—i.e.,
+𝑉(𝑦𝑖) = 0, the experiment output is “0”.
+4) For each 𝑖∈[𝑛], the challenger runs the client-
+input-preparation step of our heavy-hitters protocol
+(Figure 5) with inputs 𝑥1, . . . , 𝑥𝑛to get encodings
+𝑧1, . . . , 𝑧𝑛∈Fℓ.
+5) The challenger computes the sum 𝑆∈Fℓof all
+encodings:
+𝑆←(𝑦1 + · · · + 𝑦𝑚) + (𝑧1 + · · · + 𝑧𝑛) ∈Fℓ.
+6) The challenger runs the output-decoding step of our
+heavy-hitters protocol (Figure 5) using the sum 𝑆as
+input. The output-decoding procedure produces a set
+𝐻of heavy hitters.
+7) If there is a string 𝜎∈{0, 1}𝐿that:
+• appears more than 𝑇times in the list (𝑥1, . . . , 𝑥𝑛)
+of the honest clients’ inputs, and
+• does not appear in the set of heavy hitters 𝐻,
+then the challenger outputs “1”.
+Figure 6: Security game for our heavy-hitters protocol.
+functions used in our sketching data structures. In a real
+run of our protocol, our private-aggregation scheme’s input-
+validity checks enforce restriction (a), and the fact that
+honest clients will choose their strings independently of the
+sketch’s randomness enforce restriction (b).
+At a high level, we say that adversary wins the game if
+the system’s output fails to find any heavy hitter among
+the honest clients’ inputs. As long as we can show that
+the probability of winning for the adversary is small, the
+protocol will be useful in the face of malicious clients.
+We now analyze the winning probability.
+Definition 5.1 (Heavy hitters: correctness against mali-
+cious clients). For a finite field F, string length 𝐿, bucket
+count 𝐵, number of honest clients 𝑛, number of malicious
+clients 𝑚, heavy-hitter threshold 𝑇and adversary A, let
+3081
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+104
+106
+108
+Server Comm. (B)
+ (log scale)
+SumVec 
+128, 0.1M
+SumVec 
+1024, 0.1M
+Hist 
+1024, 0.1M
+Hist 
+8192, 0.1M
+Avg 
+64-bit, 1M
+Statistic, size, no. of clients
+0
+25
+50
+75
+Server Time (sec)
+Whisper (0% mal)
+Whisper (0.1% mal)
+Whisper (1% mal)
+Whisper (10% mal)
+Prio3-c
+Prio3-s
+Figure 7: Server-to-server communication and time of each
+server for verification and aggregation of common statistics.
+HHAdv𝐿,𝐵,𝑛,𝑚,𝑇[A] denote the probability that the experi-
+ment of Figure 6 outputs “1” when instantiated with these
+parameters. We say that the heavy-hitters protocol is 𝜖-
+correct against malicious clients if, for all adversaries A,
+HHAdv𝐿,𝐵,𝑛,𝑚,𝑇[A] ⩽𝜖.
+We prove the following theorem in Appendix C:
+Theorem 5.2 (Heavy hitters: correctness against malicious
+clients). For a finite field F, string length 𝐿, bucket count 𝐵,
+heavy-hitter threshold 𝑇, number of honest clients 𝑛, number
+of malicious clients 𝑚< 𝑇, if:
+• the field characteristic of F satisfies char(F) > 2(𝑛+ 𝑚),
+• there are 𝑘distinct heavy-hitting strings among the hon-
+est parties’ inputs, and
+• ¯ℎis the total number of non-heavy-hitter occurrences
+among the honest parties’ inputs,
+then for all adversaries A, it holds that
+HHAdv𝐿,𝐵,𝑛,𝑚,𝑇[A] ⩽𝑘2
+𝐵+
+𝑘· ¯ℎ
+𝐵· (𝑇−𝑚) .
+Privacy against malicious servers.
+The only interaction
+that happens in our heavy-hitters scheme is one execution of
+the private-aggregation scheme for bucketed string counting.
+Therefore, all that our protocol execution leaks (provided
+that at least one server is honest) is the output of bucketed-
+string-counting function computed over all clients’ inputs.
+The leakage function here is symmetric in its inputs—so
+the association of clients to strings is completely hidden.
+At the same time, the output of the string-counting function
+does leak something beyond the heavy hitters, as in prior
+work [23], [83]. The leakage is small in absolute terms,
+since the number of buckets will be far smaller than the
+number of clients. Even so, it would be possible to further
+obscure the leakage using differential-privacy (§7).
+6. Evaluation
+We implement Whisper in Rust on top of the libprio-rs
+library [48]. Implementations of both Whisper and the com-
+SumVec
+128
+SumVec
+1024
+Hist
+1024
+Hist
+8192
+Avg
+64-bit
+0
+100
+200
+300
+400
+Client Comm. (KB)
+Whisper
+Prio3-c
+Prio3-s
+SumVec
+128
+SumVec
+1024
+Hist
+1024
+Hist
+8192
+Avg
+64-bit
+28
+210
+212
+214
+216
+Client Time (microsec)
+(log scale)
+Figure 8: Communication and proof generation time per
+client for common statistics.
+0.2M
+0.4M
+0.6M
+0.8M
+1M
+Number of clients
+103
+106
+109
+Verification Comm. (B)
+(log scale)
+Whisper
+Whisper (1000 mal)
+Whisper (1% mal)
+Whisper (10% mal)
+Prio3-c
+Prio3-s
+Figure 9: Verification communication per server with an
+increasing number of clients for Hist 1024.
+parison systems are multithreaded. For heavy hitters, we im-
+plement our two-server optimization (§5) that uses VDPFs
+and given their compatibility with rings Z2𝑘for 𝑘∈N, our
+heavy hitters code runs over Z216 and Z232 (depending on the
+number of clients) for faster arithmetic. We use SHA-256 to
+batch multiple verification tags for VDPFs. Our VDPF code
+borrows from Poplar’s codebase [39]. To be sound against
+adversaries that run in time at most ≈2128, for general statis-
+tics, we perform two parallel runs with 128-bit field each,
+and for heavy hitters, we set 𝜆= 128 for VDPFs. Our code is
+available online at https://github.com/ucbsky/whisper.
+Evaluation setup. We use two servers to mirror existing de-
+ployments [5], [9], [62], [86]: one in Iowa (us-central1-a)
+and the other in Virginia (us-east4-c). Both have 32 vCPUs
+and 64 GB memory. We use a MacBook Pro as a client.
+6.1. General statistics
+Baseline. We first compare with the state-of-the-art system
+Prio3 [48], [71]. For some statistics, Prio3 has a “chunk-
+size” parameter that trades client-to-server communication
+for server-to-server communication. We call the client-
+optimized configuration Prio3-c and the server-optimized
+configuration Prio3-s. We compare with both.
+Statistics. We consider three main statistics supported by
+Prio3: vector sum (“sumvec”), frequency count (“hist”),
+and mean (“avg”). For vector sums, we consider vector sizes
+128 and 1024, and 16-bit entries. For frequency count, we
+consider 1024 and 8192 bins. Means are over 64-bit values.
+3082
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+Server performance. Figure 7 shows the server-to-server
+communication and server time (after submissions are re-
+ceived) for Whisper and Prio3. Increasing the number of
+malicious clients barely affects Whisper’s server time. How-
+ever, as we discuss in §4.3, finding 𝑑malicious clients
+requires communication 𝑂(𝑑log 𝑛
+𝑑), and therefore, server
+communication increases as the number of malicious clients
+increases. The server-to-server communication remains up
+to two orders of magnitude lower than the Prio3-c baseline.
+The communication-cost improvement comes at an average
+cost of roughly a 1.4× increase in server time. For mean
+with 10 million clients (10% malicious), server time and
+verification communication are 116 sec and about 108 bytes
+(linear scaling, as expected), respectively.
+Client performance. Figure 8 compares Whisper with Prio3
+on client communication (encoding + proof size) and client
+time (proof generation). Whisper has roughly 1.4× more
+client communication than Prio3-c. As the size of the statis-
+tics increases, the increase in our client communication
+relative to Prio3 goes down. Our client time is at most a
+few milliseconds and about 2-3× higher than baseline.
+Server-optimized Prio3. Whisper improves server-to-server
+communication by up to 30× over Prio3-s. Whisper outper-
+forms Prio3-s in both client and server communication, and
+the server time is comparable.
+Dollar cost. Using Google Cloud’s pricing model [61], [63],
+we estimate up to 3× reduction in the cost of running the
+servers (about 2× reduction on average) over our baseline.
+Silently verifiable proofs. Figure 9 shows batch verifiabil-
+ity of our silently verifiable proofs. When the number of
+malicious clients is fixed, verification communication stays
+constant as clients increase. Prio3’s proof verification com-
+munication scales linearly with clients. Our batch verifica-
+tion comes at some increase in proof size, proof generation
+time, and proof verification time (Figures 7 and 8).
+6.2. Heavy hitters
+Baseline. We compare with Poplar [23], the state-of-the-art
+system for private heavy hitters in the two-server setting.
+Parameters. We sample 256-bit client inputs from a Zipf
+distribution with parameter 1.03 and support 10,000, as in
+Poplar’s evaluation [23]. We configure Poplar as in their
+evaluation. For Whisper, we set the parameters such that
+the probability of finding all the heavy hitters is at least
+0.999. We consider three heavy hitter thresholds 10%, 1%,
+and 0.1% of the total number of clients. When using the
+10% threshold, we use (via Theorem 5.2) a sketch with
+32 buckets and 10 sketching instances. When using the 1%
+threshold, we use 256 buckets and 14 sketching instances.
+When using the 0.1% threshold, we use 1024 buckets and
+17 sketching instances. We set the number of malicious
+clients as half the heavy hitter threshold, and to maintain
+our success probability, we double the number of buckets
+in our experiment with malicious clients. For our streaming
+experiment, we form batches of 3,000 clients.
+104
+105
+106
+Server time (s)
+(log scale)
+Whisper
+Whisper (after final batch)
+Poplar
+1M
+1.25M
+1.5M
+1.75M
+Number of clients in the stream
+10
+15
+Figure 10: Server time to compute heavy hitters over a
+stream of client submissions for 0.1% threshold and 0.05%
+malicious clients. Poplar runs out of the main memory at
+the vertical line.
+50k
+t=0.1%
+50k
+t=1%
+100k
+t=1%
+100k
+t=10%
+2
+1
+21
+23
+25
+27
+29
+Server Comm. (MB)
+ (log scale)
+50k
+t=0.1%
+50k
+t=1%
+100k
+t=1%
+100k
+t=10%
+0
+100
+200
+300
+Server Time (s)
+No. of clients, heavy hitter threshold
+Whisper (0% mal)
+Whisper (t/2% mal)
+Poplar
+Figure 11: Server-to-server communication and time of each
+server to compute heavy hitters.
+Streaming. Figure 10 shows server runtime to process large
+streams with millions of clients. The computation in Poplar
+cannot be streamed and all submissions stay in memory.
+At around 1.5M clients, it exceeds the server’s memory,
+and swapping to disk degrades its performance. Mitigating
+this slowdown would require using larger, more expensive
+servers. Whisper uses streaming to avoid this slowdown.
+Moreover, with the fixed batch size, Whisper’s server time
+after the last submission is independent of the stream size.
+We scale Whisper to 10 million clients and observe server
+time of 44063 sec (linear scaling, as expected).
+Other metrics (server). Whisper’s server time is typically
+lower than Poplar (Figure 11) and server-to-server commu-
+nication is up to two orders of magnitude lower (Figure 11).
+This translates to up to 3.8× reduction in the dollar cost to
+run the servers based on Google Cloud’s pricing [61], [63].
+Other metrics (client). Whisper’s client communication is
+10-17× larger than Poplar, and the client is up to 2× slower.
+Concretely, our client communication is less than 500 KB for
+all the three heavy-hitter thresholds. Moreover, historically,
+cloud providers don’t charge for ingress communication.
+7. Extensions
+Eliminating bad clients. When the servers repeatedly com-
+pute aggregate statistics over the same user population [1],
+[62], [73], the servers may want to permanently exclude
+3083
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+malicious clients from participating in this system. Before
+removing a client permanently from the system, the honest
+servers may want to ensure that the client indeed acted
+maliciously—i.e., it was not being framed by a malicious
+server. We can accomplish this additional security goal if we
+assume that all the servers have cryptographic public keys
+of each client. Each client signs the messages that it sends
+to the servers. For all the clients with valid signatures, the
+servers proceed as before. For the clients whose submissions
+are identified as invalid in the current and past sessions, each
+server can use zero-knowledge proofs [64], [99] to prove that
+they did the correct computation on their shares and that
+they have the client’s signature on those shares. This step is
+relatively expensive, but the servers only need to do it rarely.
+For such a defense to be useful, the servers must employ
+some Sybil defense [4] to make it harder for malicious users
+to reenter the system by creating new accounts.
+Differential privacy in Whisper.
+Like prior work [23],
+[40], [85], Whisper provides MPC-style privacy: the only
+information leaked about clients’ inputs (𝑥1, . . . , 𝑥𝑛) is via
+the aggregate statistic 𝑓(𝑥1, . . . , 𝑥𝑛) that the system outputs.
+In some cases, this statistic itself could implicitly reveal
+sensitive data, e.g., via intersection attacks [17], [23], [40],
+[43]. To mitigate this leakage, Whisper can achieve differ-
+ential privacy [53] where the servers publish noisy shares
+of the statistic, as in prior work [23], [40], [83]. For our
+heavy hitters protocol, if the ℓ∞norm of the total noise is
+bounded by Δ with high probability, then we can still recover
+heavy hitters that occur more than 𝑇+ Δ times with similar
+success probability as before. When the number of clients
+in the system is large, the accuracy remains high [23].
+8. Related Work
+Single-server model.
+There is a rich literature on sys-
+tems for private collection of aggregate statistics via local
+differential privacy [6], [12], [13], [30], [83], often using
+sketching algorithms as Whisper does. These systems pro-
+vide an incomparable privacy property to Whisper: we aim
+for an MPC-style privacy property—nothing leaks beyond
+the aggregate statistic—while these systems provide user-
+level differential privacy (and they do leak information about
+each user’s data beyond the aggregate statistic itself). A
+secondary distinction is that these systems do not necessarily
+protect correctness against malicious clients [6], [12], [13],
+[21], [30], [36], [52], [75], [83], [103]; adding such defenses
+can be expensive [14], [21], [54], [78], [81]–[83], [88].
+Private analytics. Another common approach in private an-
+alytics systems is to split trust across multiple non-colluding
+servers [2], [11], [40], [42], [54], [58], [60], [69], [71], [78],
+[83], [95], [98]. These protocols [11], [40], [60], [69], [71],
+[95], [98] offer MPC-style privacy protection. As we have
+discussed, to defend against malicious clients, these systems
+tend to require server-to-server communication linear in the
+number of clients. Systems relying on hardware trust [101]
+are vulnerable to side-channel attacks on enclaves [33], [87].
+Private heavy hitters. Mix-net [32], [90] and other anony-
+mous communication systems [41], [56], [57] can be used
+to compute heavy hitters from the multiset of clients’ strings
+while providing anonymity, however, the entire multiset of
+the client inputs leaks in the process. In the distributed-trust
+setting, existing protocols incur high server-to-server com-
+munication [10], [20], [74], cannot compute heavy hitters
+over a stream leading to large server-side storage [85] or
+both [23]. Star [44] considers a different setting with an
+aggregation server with a separate randomness server and
+doesn’t hide the identity of clients with the same input.
+Except for Plasma [85], the server egress in all these works
+scales linearly with the number of clients. Plasma works in
+a different threat model than Whisper assuming an honest
+majority among three servers which can be challenging to
+find in the real-world [80]. Moreover, Plasma and the two-
+server state-of-the-art Poplar [23] cannot stream heavy hitter
+computation leading to large server storage and require the
+servers to interact over multiple rounds.
+Differentially private aggregate statistics. There is a long
+line of work [6], [12], [13], [27], [29], [30], [55], [94], [102]
+on computing aggregate statistics over randomized responses
+collected from the clients. The noise added by the clients
+provides differential privacy, however, it leads to a loss in
+the accuracy of the output and makes it challenging to filter
+malformed submissions [18]. Moreover, noisy submissions
+per client leak some information about the client’s private in-
+put. Whisper and related systems [2], [23], [40], [85] provide
+a different privacy guarantee where only the output and a
+modest leakage function are seen by the servers without any
+information on an individual client’s contribution, and the
+accuracy of the output is preserved. However, as mentioned
+in §7, when the leakage from the output is a concern,
+Whisper uses differential privacy where similar to [23],
+[34], [40], [83], the noise is added directly to the aggre-
+gate [97]. This maintains higher accuracy compared to local
+differential privacy. Zhu et al. [36], [103] develop a trie-
+based heavy hitters protocol where subsampling the clients
+provides meaningful differential privacy without requiring
+additional noise. Prochlo [19] requires a trusted shuffler.
+Batch verifiable proofs on secret-shared data.
+Zero-
+knowledge proofs on secret-shared data supporting batch
+verification are implicit in recent work by Hazay et al. [68]
+where the proof sizes are at least linear in the size of the
+predicate. Our silently verifiable proofs provide batch veri-
+fication with sublinear-sized proofs for structured languages
+common in private analytics. For the language of one-hot
+vectors, verifiable distributed point functions [46] offer batch
+verification and succinct key sizes.
+Acknowledgements
+We thank the anonymous reviewers, the shepherd, and
+Yuval Ishai for their helpful feedback. We thank Matei
+Zaharia for references on discretized streams, and Jelani
+Nelson for references on sketching schemes. We also thank
+students in the Sky security group for feedback that im-
+3084
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+proved the presentation of this paper. This work is sup-
+ported by NSF CAREER 1943347, and gifts from Ac-
+centure, AMD, Anyscale, Capital One, Facebook, Google,
+IBM, Intel, Mohamed bin Zayed University of Artificial
+Intelligence, Mozilla, Samsung, SAP, and VMware. This
+work was funded in part by the FinTech@CSAIL Initiative
+and NSF grant CNS-2054869.
+References
+[1]
+“Mozilla Telemetry Data Documentation: Raw Ping Data, Ping
+Types,” https://docs.telemetry.mozilla.org/datasets/pings.html.
+[2]
+S. Addanki, K. Garbe, E. Jaffe, R. Ostrovsky, and A. Polychroniadou,
+“Prio+: Privacy preserving aggregate statistics via boolean shares,”
+in SCN, 2022.
+[3]
+M. Ajtai, V. Braverman, T. S. Jayram, S. Silwal, A. Sun, D. P.
+Woodruff, and S. Zhou, “The white-box adversarial data stream
+model,” in PODS, 2022.
+[4]
+Apple, “Assessing fraud risk request and analyze risk data using
+server-to-server calls,” "https://developer.apple.com/documentation/
+devicecheck/assessing_fraud_risk".
+[5]
+——, “Learning iconic scenes with differential privacy,” https://ma
+chinelearning.apple.com/research/scenes-differential-privacy.
+[6]
+——, “Learning with privacy at scale,” "https://docs-assets.develope
+r.apple.com/ml-research/papers/learning-with-privacy-at-scale.pdf".
+[7]
+——, “Managed device attestation for apple devices,” https://supp
+ort.apple.com/guide/deployment/managed-device-attestation-dep28
+afbde6a/web.
+[8]
+——, “Mitigate fraud with AppAttest and DeviceCheck,” WWDC21,
+2021.
+[9]
+Apple and Google, “Exposure notification privacy-preserving ana-
+lytics (enpa) white paper,” https://covid19-static.cdn-apple.com/app
+lications/covid19/current/static/contact-tracing/pdf/ENPA_White_
+Paper.pdf.
+[10]
+G. Asharov, K. Hamada, D. Ikarashi, R. Kikuchi, A. Nof, B. Pinkas,
+K. Takahashi, and J. Tomida, “Efficient secure three-party sorting
+with applications to data analysis and heavy hitters,” in CCS, 2022.
+[11]
+L. Bangalore, M. H. F. Sereshgi, C. Hazay, and M. Venkitasubra-
+maniam, “Flag: A framework for lightweight robust secure aggrega-
+tion,” in AsiaCCS, 2023.
+[12]
+R. Bassily, K. Nissim, U. Stemmer, and A. G. Thakurta, “Practical
+locally private heavy hitters,” in NIPS, 2017.
+[13]
+R. Bassily and A. D. Smith, “Local, private, efficient protocols for
+succinct histograms,” in STOC, 2015.
+[14]
+J. Bell, A. Gascón, T. Lepoint, B. Li, S. Meiklejohn, M. Raykova,
+and C. Yun, “ACORN: Input validation for secure aggregation,” in
+USENIX Security, 2023.
+[15]
+M. Bellare and P. Rogaway, “Random oracles are practical: A
+paradigm for designing efficient protocols,” in CCS, 1993.
+[16]
+O. Ben-Eliezer, R. Jayaram, D. P. Woodruff, and E. Yogev, “A
+framework for adversarially robust streaming algorithms,” J. ACM,
+vol. 69, 2022.
+[17]
+O. Berthold and H. Langos, “Dummy traffic against long term
+intersection attacks,” in PETS, 2002.
+[18]
+A. Biswas and G. Cormode, “Interactive proofs for differentially
+private counting,” in CCS.
+ACM, 2023.
+[19]
+A. Bittau, Ú. Erlingsson, P. Maniatis, I. Mironov, A. Raghunathan,
+D. Lie, M. Rudominer, U. Kode, J. Tinnés, and B. Seefeld, “Prochlo:
+Strong privacy for analytics in the crowd,” in SOSP, 2017.
+[20]
+J. Böhler and F. Kerschbaum, “Secure multi-party computation of
+differentially private heavy hitters,” in CCS, 2021.
+[21]
+K. A. Bonawitz, V. Ivanov, B. Kreuter, A. Marcedone, H. B. McMa-
+han, S. Patel, D. Ramage, A. Segal, and K. Seth, “Practical secure
+aggregation for privacy-preserving machine learning,” in CCS, 2017.
+[22]
+D. Boneh, E. Boyle, H. Corrigan-Gibbs, N. Gilboa, and Y. Ishai,
+“Zero-knowledge proofs on secret-shared data via fully linear PCPs,”
+in CRYPTO (3), 2019.
+[23]
+——, “Lightweight techniques for private heavy hitters,” in IEEE
+S&P, 2021.
+[24]
+——, “Arithmetic sketching,” in CRYPTO (1), 2023.
+[25]
+E. Boyle, N. Gilboa, and Y. Ishai, “Function secret sharing: Im-
+provements and extensions,” in CCS, 2016.
+[26]
+A. Broadbent and A. Tapp, “Information-theoretic security without
+an honest majority,” in ASIACRYPT, 2007.
+[27]
+M. Bun, J. Nelson, and U. Stemmer, “Heavy hitters and the structure
+of local privacy,” ACM Trans. Algorithms, vol. 15, 2019.
+[28]
+M. Burkhart, M. Strasser, D. Many, and X. Dimitropoulos, “SEPIA:
+Privacy-preserving aggregation of multi-domain network events and
+statistics,” in USENIX Security, 2010.
+[29]
+K. N. Chadha, J. Chen, J. C. Duchi, V. Feldman, H. Hashemi,
+O. Javidbakht, A. McMillan, and K. Talwar, “Differentially pri-
+vate heavy hitter detection using federated analytics,” CoRR, vol.
+abs/2307.11749, 2023.
+[30]
+T. H. Chan, M. Li, E. Shi, and W. Xu, “Differentially private
+continual monitoring of heavy hitters from distributed streams,” in
+PETS, 2012.
+[31]
+M. Charikar, K. C. Chen, and M. Farach-Colton, “Finding frequent
+items in data streams,” Theor. Comput. Sci., vol. 312, 2004.
+[32]
+D. Chaum, “Untraceable electronic mail, return addresses, and dig-
+ital pseudonyms,” Commun. ACM, vol. 24, 1981.
+[33]
+G. Chen, S. Chen, Y. Xiao, Y. Zhang, Z. Lin, and T. H. Lai, “SGX-
+PECTRE: Stealing intel secrets from SGX enclaves via speculative
+execution,” in EuroS&P, 2019.
+[34]
+S. G. Choi, D. Dachman-Soled, M. Kulkarni, and A. Yerukhimovich,
+“Differentially-private multi-party sketching for large-scale statis-
+tics,” PETS, 2020.
+[35]
+D. Clayton, C. Patton, and T. Shrimpton, “Probabilistic data struc-
+tures in adversarial environments,” in CCS, 2019.
+[36]
+G. Cormode and A. Bharadwaj, “Sample-and-threshold differential
+privacy: Histograms and applications,” in AISTATS, 2022.
+[37]
+G. Cormode and M. Hadjieleftheriou, “Finding frequent items in
+data streams,” Proc. VLDB Endow., 2008.
+[38]
+G. Cormode and S. Muthukrishnan, “An improved data stream
+summary: the count-min sketch and its applications,” J. Algorithms,
+vol. 55, 2005.
+[39]
+H. Corrigan-Gibbs, “heavyhitters,” https://github.com/henrycg/hea
+vyhitters.
+[40]
+H. Corrigan-Gibbs and D. Boneh, “Prio: Private, robust, and scalable
+computation of aggregate statistics,” in NSDI, 2017.
+[41]
+H. Corrigan-Gibbs, D. Boneh, and D. Mazières, “Riposte: An anony-
+mous messaging system handling millions of users,” in IEEE S&P,
+2015.
+[42]
+G. Danezis, C. Fournet, M. Kohlweiss, and S. Z. Béguelin, “Smart
+meter aggregation via secret-sharing,” in SEGS@CCS, 2013.
+[43]
+G. Danezis and A. Serjantov, “Statistical disclosure or intersection
+attacks on anonymity systems,” in Information Hiding, 2004.
+[44]
+A. Davidson, P. Snyder, E. B. Quirk, J. Genereux, B. Livshits, and
+H. Haddadi, “STAR: Secret sharing for private threshold aggregation
+reporting,” in CCS, 2022.
+3085
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+[45]
+H. Davis, C. Patton, M. Rosulek, and P. Schoppmann, “Verifiable
+distributed aggregation functions,” PETS, 2023.
+[46]
+L. de Castro and A. Polychroniadou, “Lightweight, maliciously
+secure verifiable function secret sharing,” in EUROCRYPT (1), 2022.
+[47]
+Divvi Up, https://divviup.org/.
+[48]
+——, https://github.com/divviup/libprio-rs.
+[49]
+——, “A year-end letter from our vice president,” https://divviup.or
+g/blog/eoy-letter-2023/.
+[50]
+R. Dorfman, “The Detection of Defective Members of Large Popu-
+lations,” The Annals of Mathematical Statistics, vol. 14, no. 4, 1943.
+[51]
+D. Du, F. K. Hwang, and F. Hwang, Combinatorial group testing
+and its applications.
+World Scientific, 2000, vol. 12.
+[52]
+Y. Duan, N. Youdao, J. F. Canny, and J. Z. Zhan, “P4P: Practical
+large-scale privacy-preserving distributed computation robust against
+malicious users,” in USENIX Security, 2010.
+[53]
+C. Dwork, “Differential privacy: A survey of results,” in TAMC,
+2008.
+[54]
+T. Elahi, G. Danezis, and I. Goldberg, “Privex: Private collection of
+traffic statistics for anonymous communication networks,” in CCS,
+2014.
+[55]
+Ú. Erlingsson, V. Pihur, and A. Korolova, “RAPPOR: Randomized
+aggregatable privacy-preserving ordinal response,” in CCS, 2014.
+[56]
+S. Eskandarian and D. Boneh, “Clarion: Anonymous communication
+from multiparty shuffling protocols,” in NDSS, 2022.
+[57]
+S. Eskandarian, H. Corrigan-Gibbs, M. Zaharia, and D. Boneh,
+“Express: Lowering the cost of metadata-hiding communication with
+cryptographic privacy,” in USENIX Security, 2021.
+[58]
+M. Faisal, J. Zhang, J. Liagouris, V. Kalavri, and M. Varia, “TVA:
+A multi-party computation system for secure and expressive time
+series analytics,” in USENIX Security, 2023.
+[59]
+A. Fiat and A. Shamir, “How to prove yourself: Practical solutions
+to identification and signature problems,” in CRYPTO, 1986.
+[60]
+D. Froelicher, J. R. Troncoso-Pastoriza, J. S. Sousa, and J. Hubaux,
+“Drynx: Decentralized, secure, verifiable system for statistical
+queries and machine learning on distributed datasets,” IEEE Trans.
+Inf. Forensics Secur., vol. 15, 2020.
+[61]
+Google, “All networking pricing,” https://cloud.google.com/vpc/net
+work-pricing.
+[62]
+——, “Exposure notifications: Help slow the spread of covid-19,
+with one step on your phone,” "https://www.google.com/covid19/e
+xposurenotifications".
+[63]
+——, “VM instance pricing,” https://cloud.google.com/compute/v
+m-instance-pricing.
+[64]
+J. Groth, “On the size of pairing-based non-interactive arguments,”
+in EUROCRYPT (2), 2016.
+[65]
+S. Halevi, Y. Ishai, E. Kushilevitz, and T. Rabin, “Additive random-
+ized encodings and their applications,” in CRYPTO (1), 2023.
+[66]
+M. Hardt and D. P. Woodruff, “How robust are linear sketches to
+adaptive inputs?” in STOC, 2013.
+[67]
+A. Hassidim, H. Kaplan, Y. Mansour, Y. Matias, and U. Stemmer,
+“Adversarially robust streaming algorithms via differential privacy,”
+J. ACM, vol. 69, 2022.
+[68]
+C. Hazay, M. Venkitasubramaniam, and M. Weiss, “Your rep-
+utation’s safe with me: Framing-free distributed zero-knowledge
+proofs,” IACR Cryptol. ePrint Arch., p. 1523, 2022.
+[69]
+T. Humphries, R. A. Mahdavi, S. Veitch, and F. Kerschbaum,
+“Selective MPC: distributed computation of differentially private
+key-value statistics,” in CCS, 2022.
+[70]
+F. K. Hwang, “A method for detecting all defective members in a
+population by group testing,” Journal of the American Statistical
+Association, 1972.
+[71]
+IETF, “Verifiable distributed aggregation functions draft-irtf-cfrg-
+vdaf-07,” https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/.
+[72]
+Y. Ishai, E. Kushilevitz, R. Ostrovsky, and A. Sahai, “Zero-
+knowledge from secure multiparty computation,” in STOC, 2007.
+[73]
+ISRG, “Introducing ISRG Prio services for privacy respecting met-
+rics,” "https://www.abetterinternet.org/post/introducing-prio-service
+s".
+[74]
+P. Jangir, N. Koti, V. B. Kukkala, A. Patra, B. R. Gopal, and
+S. Sangal, “Poster: Vogue: Faster computation of private heavy
+hitters,” in CCS, 2022.
+[75]
+M. Jawurek and F. Kerschbaum, “Fault-tolerant privacy-preserving
+statistics,” in PETS, 2012.
+[76]
+A. F. Karr, X. Lin, A. P. Sanil, and J. P. Reiter, “Regression on
+distributed databases via secure multi-party computation,” in DG.O,
+2004.
+[77]
+J. Katz, V. Kolesnikov, and X. Wang, “Improved non-interactive zero
+knowledge with applications to post-quantum signatures,” in CCS,
+2018.
+[78]
+K. Kursawe, G. Danezis, and M. Kohlweiss, “Privacy-friendly ag-
+gregation for the smart-grid,” in PETS, 2011.
+[79]
+K. G. Larsen, J. Nelson, H. L. Nguyen, and M. Thorup, “Heavy
+hitters via cluster-preserving clustering,” in FOCS, 2016.
+[80]
+Y. Lindell, D. Cook, T. Geoghegan, S. Gran, R. Schmidt, E. Kret,
+D. Kaviani, and R. A. Popa, “The deployment dilemma: Merits &
+challenges of deploying MPC,” https://mpc.cs.berkeley.edu/blog/d
+eployment-dilemma.
+[81]
+H. Lycklama, L. Burkhalter, A. Viand, N. Küchler, and A. Hithnawi,
+“Rofl: Robustness of secure federated learning,” in IEEE S&P, 2023.
+[82]
+E. Margolin, K. Newatia, T. Luo, E. Roth, and A. Haeberlen,
+“Arboretum: A planner for large-scale federated analytics with dif-
+ferential privacy,” in SOSP, 2023.
+[83]
+L. Melis, G. Danezis, and E. D. Cristofaro, “Efficient private statis-
+tics with succinct sketches,” in NDSS, 2016.
+[84]
+I. Mironov, M. Naor, and G. Segev, “Sketching in adversarial envi-
+ronments,” SIAM J. Comput., vol. 40, 2011.
+[85]
+D. Mouris, P. Sarkar, and N. G. Tsoutsos, “Plasma: Private,
+lightweight aggregated statistics against malicious adversaries with
+full security,” Cryptology ePrint Archive, Paper 2023/080.
+[86]
+Mozilla, “Next steps in privacy-preserving telemetry with Prio,” ht
+tps://blog.mozilla.org/security/2019/06/06/next-steps-in-privacy-pre
+serving-telemetry-with-prio/.
+[87]
+K. Murdock, D. Oswald, F. D. Garcia, J. Van Bulck, D. Gruss,
+and F. Piessens, “Plundervolt: Software-based fault injection attacks
+against Intel SGX,” in IEEE S&P, 2020.
+[88]
+M. Naor, B. Pinkas, and E. Ronen, “How to (not) share a password:
+Privacy preserving protocols for finding heavy hitters with adversar-
+ial behavior,” in CCS, 2019.
+[89]
+M. Naor and E. Yogev, “Bloom filters in adversarial environments,”
+in CRYPTO (2), 2015.
+[90]
+C. A. Neff, “A verifiable secret shuffle and its application to e-
+voting,” in CCS, 2001.
+[91]
+J. Nelson, H. L. Nguyen, and D. P. Woodruff, “On deterministic
+sketching and streaming for sparse recovery and norm estimation,”
+Linear Algebra and its Applications, vol. 441, 2014.
+[92]
+R. Pagh, “Compressed matrix multiplication,” ACM Trans. Comput.
+Theory, vol. 5, 2013.
+[93]
+R. A. Popa, A. J. Blumberg, H. Balakrishnan, and F. H. Li, “Privacy
+and accountability for location-based aggregate statistics,” in CCS,
+2011.
+[94]
+Z. Qin, Y. Yang, T. Yu, I. Khalil, X. Xiao, and K. Ren, “Heavy
+hitter estimation over set-valued data with local differential privacy,”
+in CCS, 2016.
+3086
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+[95]
+M. Rathee, C. Shen, S. Wagh, and R. A. Popa, “ELSA: Secure
+aggregation for federated learning with malicious actors,” in IEEE
+S&P, 2023.
+[96]
+M. Rosenberg, J. White, C. Garman, and I. Miers, “zk-creds: Flexible
+anonymous credentials from zksnarks and existing identity infras-
+tructure,” Cryptology ePrint Archive, Paper 2022/878.
+[97]
+T.
+Steinke,
+“Multi-central
+differential
+privacy,”
+CoRR,
+vol.
+abs/2009.05401, 2020.
+[98]
+K. Talwar, “Differential secrecy for distributed data and applica-
+tions to robust differentially secure vector summation,” CoRR, vol.
+abs/2202.10618, 2022.
+[99]
+K. Yang, P. Sarkar, C. Weng, and X. Wang, “Quicksilver: Efficient
+and affordable zero-knowledge proofs for circuits and polynomials
+over any field,” in CCS, 2021.
+[100] K. Yang and X. Wang, “Non-interactive zero-knowledge proofs to
+multiple verifiers,” in ASIACRYPT (3), 2022.
+[101] W. Zheng, A. Dave, J. G. Beekman, R. A. Popa, J. E. Gonzalez, and
+I. Stoica, “Opaque: An oblivious and encrypted distributed analytics
+platform,” in NSDI, 2017.
+[102] M. Zhou, T. Wang, T. H. Chan, G. Fanti, and E. Shi, “Locally
+differentially private sparse vector aggregation,” in IEEE S&P, 2022.
+[103] W. Zhu, P. Kairouz, B. McMahan, H. Sun, and W. Li, “Federated
+heavy hitters discovery with differential privacy,” in AISTATS, 2020.
+Appendix A.
+Supplemental material for Section 3
+A.1. Proof of Theorem 3.1
+Denote the non-silent proof system by ΠNS and the silent
+proof system by Π. Completeness of Π follows from the
+completeness of ΠNS.
+Zero-knowledge. Denote the simulator for ΠNS by SNS.
+Construct a simulator S for Π as follows:
+• On input {𝑥𝑖}𝑖∈𝐴, invoke SNS({𝑥𝑖}𝑖∈𝐴) and receive
+{view∗
+𝑖}𝑖∈𝐴.
+• For
+𝑖
+∈
+𝐴,
+parse
+view∗
+𝑖
+→
+(𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS , 𝑟NS,
+vtag∗
+NS,1, . . . , vtag∗
+NS,𝑣).
+• Randomly sample {𝑐𝑖}𝑖∈[𝑣]\𝐴∈{0, 1}𝜌and for 𝑖∈𝐴,
+set 𝑐𝑖←𝐻(𝑖, 𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS )
+• Set 𝜋pub ←(𝜋pub
+NS , 𝑐1, . . . , 𝑐𝑣, vtag∗
+NS,1, . . . , vtag∗
+NS,𝑣).
+• Program the random oracle as: 𝑟NS ←𝐻(𝑐1, . . . , 𝑐𝑣).
+• Sample a random 𝑟.
+• For 𝑖∈[𝑣], use the randomness 𝑟to form vtag𝑖∈F
+such that vtag1 + · · · + vtag𝑣= 0 if and only if 𝜋pub in
+each view view𝑖is identical with high probability over
+the choice of 𝑟.
+• For 𝑖∈𝐴, set view𝑖←(𝑥𝑖, 𝜋𝑖, 𝜋pub, 𝑟, vtag1, . . . , vtag𝑣).
+• Output {view𝑖}𝑖∈𝐴.
+For statistical distance, observe that S perfectly simulates 1)
+the view of {𝑐𝑖}𝑖∈[𝑣]\𝐴by randomly sampling them because
+𝐻is a random oracle, and 2) the view of vtag1, . . . , vtag𝑣
+because the local checks done by the verifiers in Eval(·)
+pass (from completeness), and therefore contribute zero to
+vtag1, . . . , vtag𝑣which are just a function of 𝜋pub and 𝑟.
+Interactive proof system Πinteractive. Πinteractive from
+non-silent proof system ΠNS = (GenNS, EvalNS, VerNS).
+• Prover does (𝜋1, . . . , 𝜋𝑣, 𝜋pub
+NS ) ←GenNS(𝑥1, . . . , 𝑥𝑣)
+and sends (𝜋𝑖, 𝜋pub
+NS ) to 𝑖-th verifier.
+• All parties invoke Fcoin and receive 𝑟NS.
+• Prover does vtag∗
+NS,𝑖←EvalNS(𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ; 𝑟NS), ∀𝑖.
+• Prover sends vtag∗
+NS,1, . . . , vtag∗
+NS,𝑣to all verifiers.
+• The verifiers invoke Fcoin and receive 𝑟, and then for
+𝑖∈[𝑣], 𝑖-th verifier does:
+– Derives tag vtagNS,𝑖←EvalNS(𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ; 𝑟NS).
+– Outputs vtag𝑖s.t. vtag1 + · · · + vtag𝑣= 0 iff these
+checks pass with prob. ⩾1 −
+1
+|F| over 𝑟’s choice:
+∗All verifiers received the same {vtag∗
+NS,𝑖}𝑖∈[𝑣].
+∗vtag∗
+NS,𝑖= vtagNS,𝑖.
+∗VerNS(vtag∗
+NS,1, . . . , vtag∗
+NS,𝑣) = 0.
+Figure 12: Interactive proof system ΠInteractive
+Soundness. We split the proof of soundness into two parts:
+• Claim 1: Assuming that multiparty Fiat-Shamir is sound,
+the rest of the protocol is sound. We consider an in-
+termediate proof system ΠInteractive in the Fcoin-hybrid
+model. Fcoin returns common fresh randomness to the set
+of parties that invoked it. We claim that the soundness
+error of ΠInteractive is at most
+1
+|F| worse than ΠNS.
+• Claim 2: Loss in soundness error from multiparty Fiat-
+Shamir [22], [59] over ΠInteractive is polynomial in 𝜆.
+Claim 1. The construction of ΠInteractive is presented in Fig-
+ure 12. If any of the following happens, by construction we
+have that vtag1 + · · · + vtag𝑣≠0 except with probability
+1
+|F| : 1) the prover equivocates about {vtag∗
+NS,𝑖}𝑖∈[𝑣], or
+2) any vtag∗
+NS,𝑖is incorrectly computed by prover, or 3)
+VerNS(vtag∗
+NS,1, . . . , vtag∗
+NS,𝑣) ≠0. Therefore, the sound-
+ness error of ΠInteractive is 𝜖Int ⩽𝜖+
+1
+|F| .
+Claim 2. Consider the adversarial strategies defined in Def-
+inition A.1 for generating proofs for silent proof system Π.
+We now analyze the loss in advantage for the adversary A if
+restricted to AFS1 and AFS2. If the adversary equivocates or
+𝑐𝑖≠𝐻𝑖(𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ), then verifiers accept with probability
+at most
+1
+|F| . If the adversary correctly guesses 𝑐𝑖without
+making the call 𝐻𝑖(𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ), then it can simply make
+this call at the very end to satisfy the restriction without
+affecting its advantage. Therefore, the adversary’s advantage
+is reduced at most by
+1
+|F| . Now, for AFS2, no additional
+advantage is lost because A can always make the outer call
+𝐻(𝑐1, . . . , 𝑐𝑣) at the end if not made before and it can always
+pad to 𝑇queries with dummies.
+We now have two mutually exclusive adversarial strate-
+gies AFSRev and AFSFwd whose union represents all of AFS2.
+3087
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+Multiparty Fiat-Shamir reduction. Prover 𝑃∗
+Int for
+ΠInteractive from black-box access to a prover A for the
+silent proof system Π. A makes 𝑇queries each to the 𝑣
+inner random oracles 𝐻1, . . . , 𝐻𝑣and the outer random
+oracle 𝐻. 𝐻𝑖denotes queries of form 𝐻(𝑖, ·, ·, ·).
+• Pick a random integer 𝑖∗∈[𝑇].
+• For 𝑖∈[𝑣], initialize an empty list 𝐿𝑖.
+• Run A and respond to it as follows except the 𝑖∗-th
+outer query made by A:
+– For inner query 𝐻𝑖(𝑦, 𝑦𝜋, 𝑦pub): pick a random 𝑧,
+add “(𝑦, 𝑦𝜋, 𝑦pub) : 𝑧” to 𝐿𝑖and return 𝑧.
+– For outer query 𝐻(𝑧1, . . . , 𝑧𝑣): return a random
+value.
+• For the 𝑖∗-th outer query 𝐻(𝑧∗
+1, . . . , 𝑧∗
+𝑣):
+– For each 𝑧∗
+𝑖, scan the list 𝐿𝑖and from all the
+entries which map to 𝑧∗
+𝑖, randomly pick an entry
+(𝑦∗
+𝑖, 𝑦𝜋
+𝑖
+∗, 𝑦pub∗) such that 𝑦pub∗is common in all
+the 𝑣entries picked. If no entry exists, abort.
+– For 𝑖∈[𝑣], send (𝑦∗
+𝑖, 𝑦𝜋
+𝑖
+∗, 𝑦pub∗) to 𝑖-th verifier.
+– Receive 𝑟from the verifiers and return 𝑟to A.
+• Receive (𝑥1, . . . , 𝑥𝑣, 𝜋1, . . . , 𝜋𝑣, 𝜋pub) from A, where
+𝜋pub →(𝜋pub
+NS , 𝑐1, . . . , 𝑐𝑣, vtagNS,1, . . . , vtagNS,𝑣).
+• Check the following and abort if any fails: 𝜋pub
+NS =
+𝑦pub∗, 𝑥𝑖= 𝑦∗
+𝑖, 𝜋𝑖= 𝑦𝜋
+𝑖
+∗and 𝑐𝑖= 𝑧∗
+𝑖for 𝑖∈[𝑣].
+• Send (vtagNS,1, . . . , vtagNS,𝑣) to all the verifiers.
+Figure 13: Malicious prover for ΠInteractive
+AFSRev produces an output with probability at most
+𝑣𝑇2
+|F|
+because the expected number of collisions between the 𝑖-
+th input of any of the 𝑇outer 𝐻calls and the output of any
+of the 𝑇inner 𝐻𝑖calls which are made afterward is at most
+𝑇2
+|F| , and the probability of this happening for any 𝑖∈[𝑣] is
+at most 𝑣𝑇2
+|F| . We analyze AFSFwd in Lemma A.2.
+Definition A.1. Consider an adversarial prover A for the
+silently verifiable proof system from Figure 4. The adversary
+is allowed random oracle queries of two types. Denoted by
+𝐻𝑖(𝑎, 𝑏, 𝑐), the “inner” queries are of the form 𝐻(𝑖, 𝑎, 𝑏, 𝑐)
+for 𝑖∈[𝑣], and the rest of the queries to 𝐻are the “outer”
+queries. We define four adversarial strategies:
+• AFS1: If the adversary doesn’t equivocate and out-
+puts
+(𝑥1, . . . , 𝑥𝑣),
+(𝜋1, . . . , 𝜋𝑣, 𝜋pub)
+where
+𝜋pub
+=
+(𝜋pub
+NS , 𝑐1, . . . , 𝑐𝑣, vtagNS,1, . . . , vtagNS,𝑣), then for all 𝑖∈
+[𝑣], it receives 𝑐𝑖as the output of 𝐻𝑖(𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ).
+• AFS2: Same as AFS1 but also makes the outer call
+𝐻(𝑐1, . . . , 𝑐𝑣). Moreover, all calls to random oracles are
+distinct, and exactly 𝑇calls are made to each 𝐻𝑖and 𝐻.
+• AFSRev: AFS2 when there exists 𝑖∈[𝑣] such that the invo-
+cation 𝑐𝑖←𝐻𝑖(𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ) is made after 𝐻(𝑐1, . . . , 𝑐𝑣).
+• AFSFwd: AFS2 where for all 𝑖∈[𝑣], invocations 𝑐𝑖←
+𝐻𝑖(𝑥𝑖, 𝜋𝑖, 𝜋pub
+NS ) are made before 𝐻(𝑐1, . . . , 𝑐𝑣).
+Lemma A.2. In a silently verifiable proof system Π, all
+adversaries with strategy AFSFwd (Definition A.1) who gen-
+erate the output (𝑥1, . . . , 𝑥𝑣, 𝜋1, . . . , 𝜋𝑣, 𝜋pub) with 𝑇random
+oracle calls, where 𝑥= Í
+𝑖∈[𝑣] 𝑥𝑖∉L, the 𝑣honest verifiers
+accept with probability at most
+𝜖Int𝑇
+(1−𝑇
+|F| )𝑣, where 𝜖Int is the
+probability that the honest verifiers in ΠInteractive (Figure 12)
+accept any interaction for 𝑥∉L.
+Proof. We construct a malicious prover 𝑃∗
+Int in Figure 13
+such that for any adversary A with strategy AFSFwd making
+the verifiers accept an incorrect statement in Π with proba-
+bility 𝑝, 𝑃∗
+Int makes the verifiers in ΠInteractive accept on the
+same statement with probability 𝑝
+𝑇·  1 −𝑇
+|F|
+𝑣.
+An accepting proof generated via AFSFwd leads to an
+accepting interaction for 𝑃∗
+Int as long as the guess 𝑖∗is
+correct and the correct entry (𝑦∗
+𝑖, 𝑦𝜋
+𝑖
+∗, 𝑦pub∗) is picked from
+the list 𝐿𝑖for all 𝑖∈[𝑣].
+We first look at the guess 𝑖∗. By definition, AFSFwd
+makes 𝑇calls to the outer random oracle 𝐻and one of these
+calls corresponds to the output it generates. The probability
+that the guess 𝑖∗is correct is 1
+𝑇. Now, we look at the entry
+picked by 𝑃∗
+Int from the list 𝐿𝑖when responding to the 𝑖∗-th
+outer query. From the restriction on AFSFwd, we know that
+the correct entry exists in the list 𝐿𝑖if guess 𝑖∗is correct,
+but there can be other entries that map to the same 𝑧∗
+𝑖. The
+probability of collisions from other 𝑇−1 inner 𝐻𝑖queries
+is ⩽
+𝑇
+|F| . The probability that all the guesses are correct is
+⩾1
+𝑇·  1 −𝑇
+|F|
+𝑣.
+Wrapping it up, 𝑃∗
+Int generates an accepting interaction
+with probability ⩾𝑝· 1
+𝑇·  1−𝑇
+|F|
+𝑣. Since 𝜖Int ⩾𝑝
+𝑇·  1−𝑇
+|F|
+𝑣,
+we have that 𝑝⩽
+𝜖Int·𝑇
+(1−𝑇
+|F| )𝑣.
+□
+Appendix B.
+Supplemental material for Section 4
+Correctness
+against
+malicious
+clients.
+We
+prove
+that
+our private-aggregation scheme (§4.2) satisfies correctness
+against malicious clients. As long as the servers remove all
+invalid submissions before aggregation, from the correctness
+of the additive encoding, the output will be 𝑓(𝑥1, . . . , 𝑥𝑛),
+where 𝑥1, . . . , 𝑥𝑛are valid submissions. Consider a submis-
+sion (𝑒1, . . . , 𝑒𝑣), (𝜋1, . . . , 𝜋𝑣, 𝜋pub). Let 𝑒= Í
+𝑖∈[𝑣] 𝑒𝑖and
+for 𝑖∈[𝑣], vtag𝑖is the verification tag generated by 𝑖-
+th server from 𝑒𝑖, 𝜋𝑖, 𝜋pub. For an invalid encoding, i.e.,
+𝑉(𝑒) ≠1, the probability that Í
+𝑖∈[𝑣] vtag𝑖= 0 is ⩽𝜖
+where 𝜖is the soundness error of our silently verifiable
+proof system. When Í
+𝑖∈[𝑣] vtag𝑖≠0, the probability that
+batch verification passes (vtag1, . . . , vtag𝑣) is ⩽
+1
+|F| (from
+random linear combination). Since servers test at most log 𝑛
+𝑑
+batches per client where 𝑑is an upper bound on the number
+of invalid submissions, the probability that the invalid sub-
+mission isn’t caught in any batch is ⩽
+1
+|F| · log 𝑛
+𝑑. Therefore,
+the probability that all 𝑑invalid submissions are caught by
+the servers is ⩾1 −𝑑· 𝜖−
+𝑑
+|F| · log 𝑛
+𝑑.
+3088
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+Additive encoding for bucketed string counting.
+Additive
+encoding
+for
+the
+aggregation
+function
+𝑓: X 𝑛→Y, where:
+• the input space is X = ([𝐵] × {0, 1}𝐿), pairs of a
+bucket ID and an 𝐿-bit string, and
+• the output space is Y = F𝐵×(F𝐿)𝐵, for each bucket,
+the number of strings in the bucket and the sum (over
+F𝐿) of the strings in that bucket.
+The scheme takes as parameters: a finite field F, a
+number of buckets 𝐵, the bitlength 𝐿of the input
+strings. The encoding length is ℓ= (𝐿+ 1) · 𝐵.
+Encoding 𝐸(𝑏∈[𝐵], 𝜎∈{0, 1}𝐿):
+• Represent 𝜎as a vector ˆ𝜎∈{−1, 1}𝐿over F.
+• For 𝑖= 1, . . . , 𝐵:
+– If 𝑖= 𝑏, set 𝑠𝑖←(1∥ˆ𝜎) ∈F𝐿+1.
+– Otherwise, set 𝑠𝑖←0 ∈F𝐿+1.
+• Output (𝑠1, . . . , 𝑠𝐵) ∈(F𝐿+1)𝐵.
+Verification 𝑉(𝑦∈Fℓ):
+• Parse ((𝑐1∥𝑠1), . . . , (𝑐𝐵∥𝑠𝐵)) ←𝑦∈(F𝐿+1)𝐵.
+• Check that there is a unique 𝑖∈[𝐵] such that (𝑐𝑖||𝑠𝑖)
+is a non-zero vector.
+• Check that 𝑐𝑖= 1 ∈F and 𝑠𝑖∈{−1, 1}𝐿⊆F𝐿.
+Decoding 𝐷(𝑦∈Fℓ):
+• Parse ((𝑐1∥𝑠1), . . . , (𝑐𝐵∥𝑠𝐵)) ←𝑦∈(F𝐿+1)𝐵.
+• Output (𝑐1, . . . , 𝑐𝐵), (𝑠1, . . . , 𝑠𝐵) ∈F𝐵× (F𝐿)𝐵.
+Figure 14: Additive encoding for bucketed string counting.
+Appendix C.
+Supplemental material for Section 5
+Proof of Theorem 5.2. For the challenger to output "1",
+all the encodings 𝑦1, . . . , 𝑦𝑚should be valid. In a valid
+encoding, the magnitude at each coordinate is at most
+1, therefore, ∥𝑦1 + · · · + 𝑦𝑚∥∞⩽𝑚. Consider a heavy-
+hitting string 𝑥which appears 𝑇𝑥⩾𝑇times in 𝑥1, . . . , 𝑥𝑛
+and let 𝑏= 𝐻bucket(𝑥). Parse the sum of all encodings
+𝑆→((𝑐1||𝑠1), . . . , (𝑐𝐵||𝑠𝐵)). We focus on the 𝑏-th bucket:
+𝑐𝑏||𝑠𝑏∈F × F𝐿+1. Since all the encodings are valid, the
+counter field 𝑐𝑏is a sum of values in {0, 1} with at least 𝑇𝑥
+of them being 1 (from all the occurrences of 𝑥). Therefore,
+𝑐𝑏⩾𝑇. This satisfies the condition that rounding will
+be performed on the 𝑏-th bucket during output decoding
+(Figure 5). What’s left to argue is when rounding and
+subsequent complementing recovers 𝑥.
+The output of the rounding operation is invariant to the
+magnitude of each coordinate in a bucket; it only reads the
+sign. As long as the sign of each coordinate in 𝑠𝑏matches
+that of an encoding of 𝑥, the output will be correct. Let 𝑧𝑥be
+the encoding of 𝑥generated by the client input preparation
+step (Figure 5). We split 𝑆as follows:
+𝑆= (𝑦1 + · · · + 𝑦𝑚) +  (𝑧𝑥+ · · · + 𝑧𝑥) +
+∑︁
+𝑖∈𝑍Heavy
+𝑧𝑖+
+∑︁
+𝑖∈𝑍Tail
+𝑧𝑖
+
+= 𝑆𝑦+ (𝑆𝑥+ 𝑆Heavy + 𝑆Tail)
+where 𝑍Heavy, 𝑍Tail denote subsets of [𝑛] such that 𝑍Heavy
+contains indices 𝑖where 𝑧𝑖is an encoding of a heavy-hitting
+string other than 𝑥, while 𝑍Tail contains all the remaining
+(non-heavy) indices. In a similar way, the 𝑏-th bucket of 𝑆
+can be written as:
+𝑠𝑏= 𝑊𝑦+ (𝑊𝑥+ 𝑊Heavy + 𝑊Tail)
+We now look at the event ∥𝑊𝑦+ 𝑊Heavy + 𝑊Tail∥∞< 𝑇.
+This event leads to the correct recovery of 𝑥because each
+coordinate of |𝑊𝑥| is ⩾𝑇, and therefore, their signs are
+preserved in 𝑠𝑏.
+Recall that we proved above that ∥𝑊𝑦∥∞⩽𝑚. When
+∥𝑊Heavy∥∞+ ∥𝑊Tail∥∞< 𝑇−𝑚holds, it implies ∥𝑊𝑦+
+𝑊Heavy + 𝑊Tail∥∞< 𝑇.
+Bounding ∥𝑊Heavy∥∞. Consider a heavy-hitting string 𝑥′ ≠𝑥.
+Since 𝑥1, . . . , 𝑥𝑛(and therefore, 𝑥, 𝑥′) are picked before the
+hash functions are sampled, we have that Pr[𝐻bucket(𝑥′) =
+𝑏] ⩽
+1
+𝐵. In the flip case, when 𝐻bucket(𝑥′) ≠𝑏, the 𝑏-
+th bucket in the encoding of 𝑥′ will be 0. Using triangle
+inequality and union bound over all 𝑘−1 heavy-hitting
+strings other than 𝑥, we get:
+Pr
+
+∥𝑊Heavy∥∞> 0
+
+⩽𝑘
+𝐵
+Bounding ∥𝑊Tail∥∞. Recall that 𝑊Tail represents the contents
+of the 𝑏-th bucket in Í
+𝑖∈𝑍Tail 𝑧𝑖. For 𝑖∈𝑍Tail, denote the
+contents of the 𝑏-th bucket of encoding 𝑧𝑖by 𝑠Tail
+𝑖,𝑏∈F𝐿+1.
+Using Markov’s inequality,
+Pr
+
+∥𝑊Tail∥∞⩾𝑇−𝑚
+
+⩽Pr
+" ∑︁
+𝑖∈𝑍Tail
+∥𝑠Tail
+𝑖,𝑏∥∞⩾𝑇−𝑚
+#
+⩽
+E
+hÍ
+𝑖∈𝑍Tail ∥𝑠Tail
+𝑖,𝑏∥∞
+i
+𝑇−𝑚
+We know that 𝑠Tail
+𝑖,𝑏is either 0 or 𝑠Tail
+𝑖,𝑏∈{−1, 1}𝐿+1. The latter
+happens with 1
+𝐵probability because hash functions are ran-
+domly sampled after 𝑥1, . . . , 𝑥𝑛are committed. Therefore,
+E
+" ∑︁
+𝑖∈𝑍Tail
+∥𝑠Tail
+𝑖,𝑏∥∞
+#
+=
+∑︁
+𝑖∈𝑍Tail
+E
+h
+∥𝑠Tail
+𝑖,𝑏∥∞
+i
+=
+∑︁
+𝑖∈𝑍Tail
+1
+𝐵=
+¯ℎ
+𝐵
+Winding it up.
+Pr
+
+𝑥∉𝐻
+
+⩽Pr
+
+∥𝑊Heavy∥∞+ ∥𝑊Tail∥∞⩾𝑇−𝑚
+
+⩽Pr
+
+∥𝑊Heavy∥∞> 0
+
++ Pr
+
+∥𝑊Tail∥∞⩾𝑇−𝑚
+
+⩽𝑘
+𝐵+
+¯ℎ
+𝐵· (𝑇−𝑚)
+Taking a union bound over all 𝑘heavy-hitting strings, we
+get HHAdv𝐿,𝐵,𝑛,𝑚,𝑇[A] ⩽𝑘2
+𝐵+
+𝑘· ¯ℎ
+𝐵·(𝑇−𝑚)
+□
+3089
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+
+Appendix D.
+Meta-Review
+The following meta-review was prepared by the program
+committee for the 2024 IEEE Symposium on Security and
+Privacy (S&P) as part of the review process as detailed in
+the call for papers.
+D.1. Summary
+The paper presents Whisper, a design for privacy-
+preserving collection aggregate statistics. As part of the
+design, they propose "silently verifiable proofs" based on
+MPC-in-the-head, that allows a set of anytrust servers to ver-
+ify large batch of proofs on secret shared data by exchanging
+a single 128-bit string. Their system significantly reduces
+the server-to-server communication overhead by reasonably
+increasing the communication overhead for the client.
+D.2. Scientific Contributions
+• Creates a New Tool to Enable Future Science
+• Provides a Valuable Step Forward in an Established Field
+D.3. Reasons for Acceptance
+1) Addresses an important problem of calculating statistics
+over private client data securely with different applica-
+tions.
+2) Uses a new construct called silently verifiable proofs that
+builds upon a new ZK proof system that allows batch
+checking and zero-knowledge against malicious verifiers.
+3) The authors implement Whisper and provide extensive
+benchmarks and open source their code.
+D.4. Noteworthy Concerns
+The prover time of the Whisper system is slower than
+previous systems which might put more computation over-
+head on the clients.
+Appendix E.
+Response to the Meta-Review
+In our experiments, the Whisper prover time is indeed
+2–3× that of the baseline, as we discuss in §6. At the same
+time, the absolute cost is at most 64 milliseconds for the
+applications we discuss, which may not be a concern in
+practice. Reducing the prover time is a worthwhile direction
+for future work.
+3090
+Authorized licensed use limited to: IEEE Xplore. Downloaded on January 13,2026 at 01:40:34 UTC from IEEE Xplore.  Restrictions apply. 
+

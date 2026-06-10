@@ -1,0 +1,2152 @@
+MEGA: Malleable Encryption Goes Awry
+Matilda Backendal
+ETH Zurich
+Zurich, Switzerland
+mbackendal@inf.ethz.ch
+Miro Haller
+ETH Zurich
+Zurich, Switzerland
+miro.haller@alumni.ethz.ch
+Kenneth G. Paterson
+ETH Zurich
+Zurich, Switzerland
+kenny.paterson@inf.ethz.ch
+Abstract—MEGA is a leading cloud storage platform with
+more than 250 million users and 1000 Petabytes of stored data.
+MEGA claims to offer user-controlled, end-to-end security. This is
+achieved by having all data encryption and decryption operations
+done on MEGA clients, under the control of keys that are only
+available to those clients. This is intended to protect MEGA users
+from attacks by MEGA itself, or by adversaries who have taken
+control of MEGA’s infrastructure.
+We provide a detailed analysis of MEGA’s use of cryptography
+in such a malicious server setting. We present ﬁve distinct attacks
+against MEGA, which together allow for a full compromise of the
+conﬁdentiality of user ﬁles. Additionally, the integrity of user data
+is damaged to the extent that an attacker can insert malicious
+ﬁles of their choice which pass all authenticity checks of the
+client. We built proof-of-concept versions of all the attacks. Four
+of the ﬁve attacks are eminently practical. They have all been
+responsibly disclosed to MEGA and remediation is underway.
+Taken together, our attacks highlight signiﬁcant shortcomings
+in MEGA’s cryptographic architecture. We present immediately
+deployable countermeasures, as well as longer-term recommen-
+dations. We also provide a broader discussion of the challenges of
+cryptographic deployment at massive scale under strong threat
+models.
+I. INTRODUCTION
+The cloud – for outsourcing of both computation and data
+storage – has become a very popular approach to address
+scaling and management problems in IT. This applies to both
+enterprise and consumer domains. In the latter case, the market
+offers a myriad of different cloud services, with products
+having different combinations of storage, computation and
+collaboration features, and making a range of security and
+privacy claims. The consumer storage market alone was valued
+at USD 13.6 billion in 2021.1
+As a prominent example, MEGA2 is a cloud storage and
+collaboration platform founded in 2013 offering “secure stor-
+age and communication” services. With over 250 million reg-
+istered users, 10 million daily active users [1] and 1000 PB of
+stored data [2], MEGA is a signiﬁcant player in the consumer
+domain. What sets them apart from their competitors such as
+DropBox, Google Drive, iCloud and Microsoft OneDrive is
+the claimed security guarantees: MEGA advertise themselves
+as “the privacy company” and promise user-controlled end-to-
+end encryption (UCE).
+UCE refers to the fact that data uploaded to the MEGA
+cloud is encrypted, and that only the user who owns the
+1https://dataintelo.com/report/consumer-cloud-storage-services-market/.
+2https://mega.io/
+data has access to the key (derived from the user’s password)
+needed to decrypt. Thus, MEGA’s main selling point is
+conﬁdentiality of user data even against MEGA themselves,
+as showcased in the following quote from their website [3]:
+“MEGA does not have access to your password or
+your data. Using a strong and unique password will
+ensure that your data is protected from being hacked
+and gives you total conﬁdence that your information
+will remain just that – yours.”
+This implies a threat model in which the service provider
+itself should be considered potentially adversarial, and yet the
+service should remain secure. All the service is then trusted for
+is availability. This adversarial model provides an interesting
+setting for cryptanalysis: not only does the adversary have
+access to encrypted user keys and data, it can also interact
+with users through legitimate channels during steps like user
+authentication and ﬁle access.
+This may seem a very strong adversarial model. However,
+we stress that it is consistent with the security claims made
+by MEGA themselves. Moreover, we must consider the pos-
+sibility that even if MEGA is not adversarial, their systems
+may have been compromised by malicious third parties, for
+example nation state security agencies or hacking groups, who
+wish to gain access to users’ data and ﬁles. Indeed, the sheer
+size of MEGA – and the likelihood of it attracting users who
+wish to protect highly sensitive data precisely because of the
+security the service claims to offer – surely make MEGA
+an attractive target. Additionally, UCE should ensure that
+MEGA cannot be coerced into revealing user data, e.g. through
+subpoenas, since they are technically unable to do so.
+In this work, we review the security of MEGA in this threat
+model and ﬁnd signiﬁcant issues in how it uses cryptography.
+These lead to devastating attacks on the conﬁdentiality and
+integrity of user data in the MEGA cloud.
+A. The MEGA Key Hierarchy
+MEGA’s approach to UCE begins with the user password,
+PW, which acts as the root of the key hierarchy depicted
+in Figure 1. The MEGA client derives an authentication key
+and an encryption key from the password. The authentication
+key is used to identify users to MEGA. The encryption key
+encrypts a randomly generated master key, which in turn
+encrypts other key material of the user. Every account has
+a set of asymmetric keys: an RSA key pair for sharing data, a
+Curve25519 key pair for exchanging chat keys for MEGA’s
+146
+2023 IEEE Symposium on Security and Privacy (SP)
+© 2023, Matilda Backendal. Under license to IEEE.
+DOI 10.1109/SP46215.2023.00026
+2023 IEEE Symposium on Security and Privacy (SP) | 978-1-6654-9336-9/23/$31.00 ©2023 IEEE | DOI: 10.1109/SP46215.2023.10179290
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+RSA Share Key
+Curve25519
+Chat Key
+Ed25519
+Sign Key
+Sym. Chat Keys
+legacy
+Node Keys
+Master Key
+PW
+Auth. Key
+Enc. Key
+Sign
+Encrypt
+HKDF
+Legend:
+sharing
+Fig. 1. MEGA’s key hierarchy. The master key encrypts the share, chat, sign
+and node keys using AES-ECB.
+chat functionality, and an Ed25519 key pair for signing the
+other keys. Furthermore, the client generates a new key for
+every ﬁle or folder (collectively referred to as nodes) uploaded
+by the user. All keys are encrypted by the client with the
+master key using AES-ECB and then stored on MEGA’s
+servers to support access from multiple devices. A user on a
+new device can enter their password, authenticate to MEGA,
+fetch the encrypted key material, and decrypt it with the
+encryption key derived from the password.
+B. Trivial Attacks
+The above description of MEGA’s key hierarchy immedi-
+ately leads to a trivial attack. MEGA could mount dictionary
+attacks on user passwords using data revealed in the authen-
+tication protocol (in which the authentication key is sent to
+the MEGA server). This attack is mitigated by users choosing
+strong passwords and by MEGA imposing a suitable password
+policy.
+Moreover, another trivial attack is that MEGA could in-
+troduce malicious code to their web clients. This could be
+used to exﬁltrate the user password or keys to the MEGA
+servers. MEGA provides a browser extension – including
+signed updates – which avoids loading code dynamically and
+instead runs it locally. This, to some extent, addresses this
+code integrity issue.
+We do not consider these attacks any further in this paper,
+since they are both mitigated in the MEGA service.
+C. Contributions
+We present a series of ﬁve attacks on the key hierarchy
+of MEGA. The ﬁrst two attacks exploit the lack of integrity
+protection of ciphertexts containing keys (henceforth referred
+to as key ciphertexts), and allow full compromise of all user
+keys encrypted with the master key, leading to a complete
+break of data conﬁdentiality in the MEGA system. The next
+two attacks breach the integrity of ﬁle ciphertexts and allow
+a malicious service provider to insert chosen ﬁles into users’
+cloud storage. The last attack is a Bleichenbacher-style attack
+against MEGA’s RSA encryption mechanism. It is applicable
+in a slightly weaker attack model than our ﬁrst four attacks.
+We have developed proof-of-concept (PoC) implementations
+for all ﬁve attacks. We brieﬂy present each attack next.
+1) RSA Key Recovery Attack. Using the session ID ex-
+change at the start of a client connection to MEGA, a
+malicious service provider can recover a user’s private
+RSA share key (used to share ﬁle and folder keys) over
+512 login attempts. When the RSA key has been com-
+promised by the attacker, the conﬁdentiality and integrity
+of all node keys shared with the victim is lost. Our attack
+exploits the lack of integrity protection of the encrypted
+RSA key and properties of the RSA-CRT implementation
+used by MEGA clients to build an oracle that leaks one
+bit of information per login attempt about a factor of the
+RSA modulus. It combines this novel attack vector with
+known lattice techniques to accelerate the attack.
+2) Plaintext Recovery Attack. Building on the previous
+vulnerability, the malicious service provider can recover
+any plaintext encrypted with AES-ECB under a user’s
+master key. This includes all node keys used for encrypt-
+ing ﬁles and folders (including unshared ones not affected
+by the previous attack), as well as the private Ed25519
+signature and Curve25519 chat key. As a consequence,
+the conﬁdentiality of all user data protected by these
+keys, such as ﬁles and chat messages, is lost. This
+attack exploits MEGA’s reuse of the master key and the
+use of RSA-CRT, in combination with the abilities of
+the adversary to manipulate key ciphertexts and choose
+plaintexts used in the authentication protocol. We believe
+it to be an entirely novel kind of attack.
+3) Two Integrity Attacks. We present two attacks with
+which a malicious service provider can break the integrity
+of the ﬁle encryption scheme and insert arbitrary ﬁles into
+the user’s ﬁle storage which pass the authenticity checks
+during decryption. This enables framing of the user by
+inserting controversial, illegal, or compromising material
+into their ﬁle storage. The attacks are non-trivial because
+the adversary cannot properly encrypt node keys without
+access to the user’s master key.
+The ﬁrst attack uses the previous plaintext recovery attack
+to obtain a suitable node key and then constructs an
+encrypted ﬁle. The user cannot demonstrate that they did
+not upload the forged data because the ﬁles and keys are
+indistinguishable from genuinely uploaded ones.
+The second integrity attack does not require that the
+attacker has access to a decryption oracle for AES-ECB
+under the master key. Instead, it exploits a fundamental
+problem with the method used by MEGA to “obfuscate”
+ﬁle and folder keys before encryption. It needs only
+knowledge of a single AES block and its AES-ECB
+encryption under the user’s master key to create a forgery
+that is difﬁcult to detect.
+4) RSA Decryption Attack. The RSA encryption used
+to exchange chat keys as a legacy fallback is vulner-
+able to a novel variant of Bleichenbacher’s attack on
+PKCS#1 v1.5 padding [4]. This attack allows for the
+decryption of RSA ciphertexts containing chat and node
+keys. This is already implied by the key recovery attack
+in point 1, but this attack requires a weaker adversary
+147
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+model (which we describe in detail in the sequel). This
+attack is challenging to perform in practice as it would
+require almost 217 client interactions. Nevertheless, it ex-
+poses an entirely independent attack vector and uncovers
+additional issues in MEGA’s cryptographic design.
+In addition to these technical contributions, we propose
+countermeasures to protect against the attacks, as well as a
+discussion of more general learnings about the challenges of
+deploying and maintaining cryptography at scale.
+D. Ethical Considerations
+We contacted MEGA to inform them of the vulnerabilities
+in their system and to suggest three different levels of mit-
+igation (immediate, minimal, and recommended) on March
+24, 2022. We suggested a 90-day disclosure period. MEGA
+acknowledged the attacks on March 24, 2022, conﬁrming that
+the system is vulnerable. They decided to introduce additional
+client-side checks on the format of RSA private keys to protect
+against our ﬁrst attack. While these checks directly prevent
+the RSA key recovery attack, and hence by extension the
+attacks that depend on it, this ﬁx signiﬁcantly differs from
+our proposed countermeasures. MEGA released their patches
+on June 21, 2022, and awarded us a bug bounty.
+We only worked with our own test account when exploring
+MEGA’s services and building our PoCs. We avoided over-
+loading MEGA with login requests when running our attacks.
+We did not attempt to reverse engineer any MEGA server-side
+code, but instead relied on MEGA’s whitepaper [5], inspection
+of client-side code, and the public server API.
+E. Related Work
+1) Previous Attacks on Cloud Storage Systems:
+Dal-
+skov and Orlandi [6] performed an in-depth analysis of
+SpiderOak One, another provider with user-controlled encryp-
+tion, in a threat model similar to ours. They uncovered several
+vulnerabilities in the cryptographic design of SpiderOak One
+which led to a breach of data conﬁdentiality. Niehage [7]
+discovered four attacks on Nextcloud. The ﬁrst vulnerability
+exploited that the server could maliciously replace public keys
+due to the lack of integrity protection. The other three attacks
+break ﬁle integrity by modifying ﬁles partially, replacing them,
+or performing a downgrade attack on the encryption.
+2) Related Cryptographic Attacks: Previous results on key
+recovery through over-writing of key material targeted RSA
+in the context of OpenPGP [8]. The focus was on signatures
+instead of encryption with only partial output. A more sys-
+tematic analysis of the impact of key over-writing attacks on
+OpenPGP was recently given in [9]. Power fault attacks on
+RSA signatures [10], [11] inspired our attack on RSA-CRT,
+however, we tamper with the private key instead of inducing
+errors in single computations. Prior work on authenticated
+encryption without key commitment constructs ciphertexts that
+can be decrypted to two valid ﬁles using different keys [12],
+[13], [14]. While they share the setting of AES primitives with
+known keys, we only consider a single key for our integrity
+attacks and target CBC-MAC instead of encryption.
+We contribute an RSA decryption attack that is a novel
+variant of Bleichenbacher’s attack on PKCS#1 v1.5 from
+1998 [4]. Other instances of this attack [15], [16], [17], [18],
+[19] exploit different side-channel leakage to build padding
+oracles. Unlike them, we do not target PKCS#1 v1.5 padding
+but the custom padding scheme of MEGA that includes an
+unknown preﬁx circumventing the straightforward adaption of
+Bleichenbacher’s attack.
+3) Proposals for Cloud Storage Systems: A high-level sur-
+vey of the functionality and security of multiple cloud storage
+providers is given in [20]. Messmer et al. [21] provide a
+generic security model for a simpliﬁed cloud ﬁle system. Boyd
+et al. [22] give models for secure cloud storage, including
+consideration of a compromised service provider. Kamara and
+Lauter [23] survey architectures for secure cloud storage with
+a trusted client and an untrusted service provider. Metal [24]
+and Titanium [25] are recent proposals for hiding metadata (as
+well as data) in encrypted ﬁle-sharing systems. These papers
+are part of a rich academic literature on secure cloud storage
+and collaboration systems.
+4) Full Version: Further explanations of our attacks, PoC
+demonstrations and the full version of this paper are available
+from [26].
+F. Paper Organization
+The next section gives a self-contained description of
+MEGA and its use of cryptography. The ensuing sections
+present our ﬁve attacks. Section VII describes our PoCs.
+Section VIII describes countermeasures to our attacks. Sec-
+tion IX discusses the wider implications of our work and future
+directions.
+II. THE MEGA CLOUD
+A. Notation
+By [m]k we denote the encryption of a message m with
+the key k. The encryption algorithm can be derived from the
+context. We let l[a:b] denote the slice (ea, ea+1, . . . , eb) from
+the tuple l ←(e1, e2, . . . , en), where 1 ≤a ≤b ≤n. We
+treat byte strings as tuples of bytes. We use [a, b] to denote
+the integer set {a, a+1, . . . , b}. B is shorthand for byte. By ∥
+and ⊕we denote string concatenation and XOR, respectively.
+B. Key Hierarchy
+At the root of a MEGA client’s key hierarchy, illustrated
+in Figure 1, is the password chosen by the user. From this
+and a client-chosen salt, two 128-bit keys are derived using
+PBKDF2-HMAC-SHA512: an encryption key ke and an authen-
+tication key ka. Additionally, the client generates a 128-bit
+master key kM, which is encrypted with ke using AES-ECB
+and uploaded to the server. Below the master key in the
+hierarchy reside the node keys:3 a set of symmetric AES keys
+used to encrypt user ﬁles and folders (nodes). A fresh node
+key is generated for each node object created by the user.
+Moreover, each user has three asymmetric key pairs:
+3Sometimes referred to as data encryption keys in other settings.
+148
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+EncNode(kM, F, attr):
+Given: master key kM, node F, attributes attr
+Returns: encrypted ﬁle chunks [Fi]kF, attributes [attr]kF ,
+obfuscated key [kobf
+F ]kM
+1 kF ←$ {0, 1}128  node key
+2 NF ←$ {0, 1}64  node nonce
+3 lF ←2j for j ∈[10, 13]  #AES blocks per chunk
+4 F1∥F2∥. . . ∥Fn ←F  ∀i ∈[1, n] . |Fi| = 128 · lF bits
+5 For all i ∈[1, n]:
+6
+[Fi]kF, Ti ←AES-CCM∗.Enc(kF, NF∥(i · lF), Fi)
+7 CF ←[F1]kF∥[F2]kF ∥. . . ∥[Fn]kF
+8 Tcond ←CBC-MAC.Tag(kF, T1∥T2∥. . . ∥Tn)
+9 kobf
+F
+←ObfKey(kF, NF, Tcond)
+10 [kobf
+F ]kM ←AES-ECB.Enc(kM, kobf
+F )
+11 [attr]kF ←AES-CBC.Enc(kF, iv := 0128, attr)
+12 return CF, [attr]kF, [kobf
+F ]kM
+Fig. 2. MEGA’s chunkwise ﬁle encryption procedure.
+AES-CCM∗.Enc(kF, IV, Fi):
+Given: node key kF, ﬁle chunk Fi, initialization vector IV
+Returns: encrypted ﬁle chunk ci, authentication tag Ti
+1 NF ←IV[1:8]  extract ﬁle nonce from leftmost 8B of IV
+2 Ti ←CBC-MAC.Tag(kF, iv := NF∥NF, Fi)
+3 ci ←AES-CTR.Enc(kF, IV, Fi)
+4 return ci, Ti
+Fig. 3. MEGA’s custom AES-CCM implementation.
+• “Share key”: an RSA key pair for sharing node keys (and
+as a fallback solution for chat key transfer)
+• “Chat key”: a Curve25519 key pair for exchanging keys
+for the MEGAchat
+• “Sign key”: an Ed25519 key pair for signing the other
+public keys
+The private keys and the node keys are encrypted with
+AES-ECB under the master key and the resulting ciphertexts
+are stored by MEGA’s servers.
+C. Node Encryption
+To encrypt a ﬁle F, the client ﬁrst samples a random 128-
+bit node key kF and a 64-bit nonce NF. Large ﬁles are then
+partitioned into chunks Fi of size between 128 KB and 1 MB.4
+Consequently, there are between 210 and 213 AES blocks per
+chunk, each 128 bits large. The chunks are encrypted with a
+custom implementation of AES-CCM with key kF and nonce
+NF. Additionally, the ﬁle attributes attr (containing metadata
+such as the ﬁlename) are encrypted using AES-CBC with a
+zero IV and key kF. The full node encryption procedure is
+shown in Figure 2. For folders, which do not have ﬁle content,
+the ﬁle input F is ignored and only the attributes are encrypted.
+Figure
+3
+describes
+AES-CCM∗,
+MEGA’s
+variant
+of
+AES-CCM. This deviates from the speciﬁcation in RFC
+4Clients usually select a single chunk size and use it for all chunks.
+ObfKey(kF, NF, Tcond):
+Given: node key kF, ﬁle nonce NF, condensed MAC Tcond
+Returns: obfuscated ﬁle key
+1 τ1∥τ2∥τ3∥τ4 ←Tcond |τi| = 4, ∀i ∈[0, 3]
+2 Tmeta ←τ1 ⊕τ2∥τ3 ⊕τ4
+3 x ←kF ⊕(NF∥Tmeta)
+4 return x∥NF∥Tmeta
+DeobfKey(kobf
+F ):
+Given: obfuscated ﬁle key kobf
+F
+Returns: node key kF, ﬁle nonce NF, metamac Tmeta
+5 x∥NF∥Tmeta ←kobf
+F
+6 kF ←x ⊕(NF∥Tmeta)
+7 return kF, NF, Tmeta
+Fig. 4. MEGA’s key obfuscation and de-obfuscation procedures.
+3610 [27],5 which invalidates the formal security analysis
+in [29]. However, we did not ﬁnd attacks on AES-CCM∗.
+To ﬁnish the node encryption in Figure 2, the client ag-
+gregates the ﬁle chunk MACs T1, T2, . . ., Tn into a single
+condensed tag value Tcond using CBC-MAC with the key kF
+applied to the concatenation of all chunk MACs. Additionally,
+the client computes an “obfuscated ﬁle key”, kobf
+F , from the
+node key kF, nonce NF, and condensed tag Tcond. This
+kobf
+F
+is then encrypted with AES-ECB under the master key
+and uploaded to MEGA’s servers together with the encrypted
+attributes and ﬁle chunks. Note that no MAC tag is computed
+for the attributes, implying a lack of integrity protection.
+D. Key Obfuscation
+MEGA applies an obfuscation procedure to the node key,
+nonce and MAC tag before they are encrypted and uploaded to
+the server. The obfuscation, described in Figure 4, aggregates
+the condensed MAC Tcond to a so-called “metamac” Tmeta by
+splitting Tcond into four 4-byte chunks and XORing together
+the ﬁrst two chunks, as well as the last two chunks. The key
+kF is then XORed with the concatenation of NF and Tmeta.
+The ﬁnal obfuscated key kobf
+F
+is obtained by appending NF
+and Tmeta to the scrambled ﬁle key.
+Unfortunately, MEGA provides no reasoning for the design
+of the key obfuscation. We hypothesize that the aim is to create
+a binding between the involved components. However, as we
+show in Section V, the structure introduced by ObfKey leads
+to attacks on the integrity of node ciphertexts.
+E. Authentication and Session ID Exchange
+When a user logs into their MEGA account, the client
+derives the authentication key ka from the password and sends
+it over a TLS connection to the server for authentication. The
+server compares the ﬁrst 128 bits of the SHA-256 hash of
+ka to a value stored during registration, indexed by the user’s
+5The CBC-MAC tag of the plaintext chunk Fi is computed using the IV
+NF∥NF, rather than the zero bytes string (cf. RFC 3602 [28]). Furthermore,
+the CBC-MAC tag is returned in the clear, rather than encrypted with the
+ﬁrst key stream block from the counter mode encryption. This means that
+MEGA’s variant of AES-CCM is effectively an Encrypt-and-MAC scheme,
+rather than MAC-then-Encrypt.
+149
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+DecSid([skencoded
+share
+]kM , [m]pkshare):
+Given: encrypted RSA private key [skencoded
+share
+]kM , encrypted
+message [m]pkshare
+Returns: decrypted and unpadded SID sid′
+1 skencoded
+share
+←AES-ECB.Dec(kM, [skencoded
+share
+]kM )
+2 N, e, d, p, q, dp, dq, u ←DecodeRsaKey(skencoded
+share
+)
+3 m′
+p ←([m]pkshare)dp mod p
+4 m′
+q ←([m]pkshare)dq mod q
+5 t ←m′
+p −m′
+q mod p
+6 h ←t · u mod p
+7 m′ ←h · q + m′
+q
+8 sid′ ←m′[3:45] Unpad 43 B SID.
+9 return sid′
+Fig. 5. SID decryption during MEGA’s client authentication using RSA.
+email address. If these values match, the server generates a
+session ID (SID) sid and pads it with two bytes to the left
+and 211 bytes to the right.6 Let (pkshare, skshare) be the 2048-
+bit RSA key pair of the user and let m be the padded sid.
+After generating the SID, the server encrypts m with pkshare
+and sends it to the client, together with the encrypted version
+of skshare.
+Figure 5 provides an in-depth description of the client
+side decryption of the encrypted private RSA key and SID.
+First, the client decrypts the RSA key, which is encoded for
+RSA-CRT as follows:
+skencoded
+share
+←l(q)∥q∥l(p)∥p∥l(d)∥d∥l(u)∥u∥P.
+Here, q and p are the two 1024-bit prime factors of the RSA
+modulus N, d is the secret exponent, and u ←q−1 mod p
+is an additional value useful for the RSA-CRT decryption
+described below. P is padding and l(x) denotes the two-
+byte big-endian length encoding of the byte-length of x ∈
+{p, q, d, u}. For 2048-bit RSA, the encoding consists (with
+high probability7) of three 128 B elements (q, p, and u) and
+one 256 B part d. Since AES blocks are 16 B, this results in
+41 blocks in total, where the last block contains the eight byte
+padding P.
+Next, DecodeRsaKey parses skencoded
+share
+into components and
+calculates dp ←(d−1) mod p and dq ←(d−1) mod q. The
+client only sanity checks the length encodings to ensure that
+the result is split into exactly four parts. Neither the padding
+nor the lengths of the individual components are veriﬁed. No
+integrity check is performed during decryption since the key
+is encrypted using AES-ECB. After decoding the private key,
+the client performs RSA-CRT decryption of the encrypted SID.
+Lines 3 and 4 of Figure 5 decrypt the padded session ID m
+in the smaller rings Zp and Zq. Lines 5–7 recover the padded
+SID m′ using Garner’s formula [30]. Instead of checking the
+padding, line 8 uses the known SID length to truncate m′ to
+sid′. Before truncation, m′ is left-padded with zero bytes until
+6The exact padding scheme is not published by MEGA. However, the need
+for compatibility with the client-side decryption determines the position of
+sid in the encoded string, which sufﬁces for our attacks to work.
+7Inverses modulo a random x-bit number are approximately uniformly
+distributed and, thus, have close to x bits with high probability.
+its length matches the byte length of N. In a correct execution,
+we have sid′ = sid. The client sends sid′ in subsequent
+requests to the server to complete the authentication.
+F. MEGAchat
+In addition to the cloud storage service, MEGA provides
+the end-to-end encrypted chat messaging service MEGAchat.
+The chat messages are encrypted with AES-CTR using 16-
+byte keys which are periodically rotated. The sender generates
+these symmetric chat keys and encrypts them for the recipient
+using the user’s long-term asymmetric Curve25519 key. If the
+Curve25519 public key is not available,8 the sender uses the
+RSA-2048 share keys to encrypt the symmetric chat keys as
+a fallback option.
+III. RSA KEY RECOVERY
+In this section, we present a practical attack to recover a
+user’s RSA private key by exploiting the lack of integrity
+protection of key ciphertexts. By tampering with the encrypted
+RSA private key, a malicious server can deceive the client
+into leaking information about one of the prime factors of
+the RSA modulus during the session ID exchange. More
+speciﬁcally, the session ID that the client decrypts with the
+mauled private key and sends to the server will reveal whether
+the prime is smaller or greater than an adversarially-chosen
+value. This information enables a binary search for the prime
+factor, with one comparison per client login attempt, allowing
+the adversary to recover the private RSA key after 1023
+client logins. The number of required login attempts can be
+reduced from 1023 to 512 by implementing a lattice-based
+optimization, which allows an attacker to terminate the search
+early and recover the remaining missing bits of the prime.
+A. Threat Model
+We assume a malicious service provider (that is, the adver-
+sary controls MEGA’s core infrastructure).
+B. Attack Description
+The attack begins with a key overwriting step, in which
+the attacker exploits the lack of integrity protection of key
+ciphertexts to modify the client’s outsourced RSA private key.
+The resulting key is altered in the last part of the encoding
+before the padding, such that it contains u′ ̸= u = q−1 mod p.
+When the client uses the thus modiﬁed private RSA key to
+decrypt a ciphertext [m]pkshare containing a message m chosen
+by the adversary, the result leaks information about whether
+m < q or m ≥q, where q ∈[21023, 21024 −1] is one of the
+prime factors of the RSA modulus N.
+This case distinction oracle arises due to properties of
+RSA-CRT, and allows the adversary to perform a binary
+search for q, by choosing m such that the search interval is
+halved by each client decryption. To make the client decrypt
+8Comments in the source code suggest that accounts created before 2016
+did not have a long-term asymmetric Curve25519 key pair. For contacts
+added before Curve25519 keys were introduced, the sender may not yet
+have updated the record of public keys for the recipient and therefore lack
+the Curve25519 public key.
+150
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+messages of its choice, the adversary uses the session ID sent
+from the server at the start of each session. That is, instead
+of choosing a SID the way the server would, the attacker sets
+m to the middle value of the remaining search interval for q
+and sends [m]pkshare, the encryption of m, in the place of the
+encrypted SID. Once one factor q has been determined, the
+adversary can easily recover the remaining private key.
+Next we describe the details of each step of the attack.
+1) Key Overwriting: First, [skencoded
+share
+]kM is modiﬁed such
+that the resulting decrypted RSA private key contains a differ-
+ent u-value than the original private key encoding. Recall that
+u is a 128 B value spanning blocks 33–41 of skencoded
+share
+, with
+partial coverage of blocks 33 and 41. Since the encoded key is
+encrypted with AES-ECB, it can be altered at block granularity
+by modifying the corresponding ciphertext block. Hence the
+desired modiﬁcation can be achieved by applying any non-
+identity transform to one of ciphertext blocks 33–41. Although
+the resulting value is unknown, it sufﬁces for the attack that the
+client recovers u′ ̸= u := q−1 mod p. In our implementation
+of the attack, we modify the second to last ciphertext block
+of [skencoded
+share
+]kM to maintain correct length encodings and to
+avoid garbling the padding. The former ensures that the client’s
+decoding succeeds. The latter increases the robustness of the
+attack in case client versions that we did not analyze were to
+perform a format check on the padding.
+2) RSA-CRT Case Distinction Oracle: In the second step
+of the attack, the adversary chooses a message m, encrypts
+it to [m]pkshare and sends to the client in the place of the
+encrypted SID. When the client uses the modiﬁed RSA private
+key sk′
+share to decrypt [m]pkshare, the result allows the attacker
+to distinguish the case m < q from m ≥q. We analyze
+each case separately to show how the oracle arises. A slight
+challenge – and notable difference to previous work on fault
+attacks – is that the adversary only sees part of the result of
+the decryption, due to the unpadding performed by the client.9
+Case m < q. In this case, [m]pkshare correctly decrypts to
+m, despite the fact that the modiﬁed key sk′
+share is used in
+place of skshare. To see this, ﬁrst note that if m < q, then
+m′
+q = m, because by the Chinese remainder theorem (CRT)
+m ≡q m′
+q, and since m < q we have m mod q = m. For m′
+p,
+we again have by the CRT that m ≡p m′
+p. Therefore, there
+exists α ∈Z such that m = m′
+p + α · p. Combining these
+observations on m′
+q and m′
+p, we have on Line 5 of Figure 5
+that t ←−α·p mod p = 0. Therefore, h = 0, independent of
+the value of u′. In other words, the client recovers the correct
+result m′ ←h·q+m′
+q = m despite the modiﬁed u′ value. This
+results in sid′ = 0 because m < q < 21024. (Recall that q is
+a 1024-bit prime.) The client left pads the decrypted m′ with
+zero bytes to 256 B and then removes the rightmost 211 B.
+Therefore, m is hidden in the padding, and the client recovers
+and uses sid′ = 0.
+Case m ≥q. In this case, the message m will not be
+correctly decrypted, allowing the adversary to detect that the
+9Recall that in an honest execution, the plaintext m contains the padded
+session ID, which the client truncates to 43 B before returning it to the server.
+value returned by the client is different from the one sent. To
+see this, we consider each step of the RSA-CRT decryption
+procedure again.
+By deﬁnition, there exist α, β ∈Z such that m′
+p = m−α·p
+and m′
+q = m−β·q. Then, t ←m′
+p−m′
+q mod p = β·q mod p.
+Since p and q are coprime, t ̸= 0 iff gcd(β, p) = 1. This hap-
+pens with overwhelming probability 1−1/p for primes chosen
+uniformly at random. Thus, with high probability (w.h.p.),
+h ←t · u′ mod p ̸= 0 and m′ ←h · q + m′
+q ̸= m. Although
+m′ ≡q m′
+q, we have m′ ̸≡p m′
+p because u′ ̸= q−1 mod p and,
+therefore, Lines 5–7 of Figure 5 no longer apply the CRT.
+We observe that m′ ≥256211 w.h.p. because of the summand
+h·q. The integers h and q are random numbers of approx. 1024
+bits. Therefore, h · q has approx. 2048 bits. Thus, w.h.p., m′
+is larger than 256111, giving sid′ ̸= 0.
+In conclusion, despite the truncated decryption oracle, the
+adversary can distinguish whether q < m or m ≥q with
+overwhelming probability based on whether the session ID
+sid′ returned by the client is 0 or not.
+3) Binary Search: Using the RSA-CRT case distinction
+oracle, the adversary can perform a binary search for the
+RSA prime factor q. For each login attempt by the victim,
+the adversary chooses m to the middle value of the remaining
+search interval for q and then uses m instead of the padded
+SID. Note that due to the lax padding format used by MEGA,
+clients accept any integer m ∈[0, N −1] as a valid padded
+SID. Once the RSA factor q has been determined this way,
+the adversary can easily recover the remaining private key as
+p ←N/q and d ←e−1 mod (q −1)(p −1).
+C. Impact
+A compromised RSA private key allows the adversary to
+break the conﬁdentiality of all ﬁles shared with the victim by
+other MEGA users. Furthermore, chat keys that are exchanged
+using the RSA public key as a fallback can be compromised.
+Of even higher interest than the direct consequences of the
+recovering the RSA key, however, is the impact of this attack
+on the overall security of MEGA’s key hierarchy. The attacks
+described in Sections IV and V show how the conﬁdentiality
+and integrity of user data can be broken by chaining this attack
+with other vulnerabilities.
+D. Complexity and Optimizations
+Without optimizations, the attack requires 1023 queries due
+to the binary search on an interval of the size 21023. In the
+MEGA web client, a user needs to perform one login (i.e.,
+enter their password) for every query. If the adversary is the
+service provider, it can stealthily mount the attack by accepting
+any SID returned by the victim. In this case, the client may
+still fail later due to the garbled RSA private key. However,
+decryption errors caused by the faulty key are not always
+exposed to the user; on some occasions, the client simply
+removes and re-fetches the private key.
+We brieﬂy discuss how the number of required login re-
+quests can be reduced to make the attack faster in practice.
+151
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+1) Lattice-Based Optimizations: When the most signiﬁcant
+bits of the RSA prime factor have been recovered using
+the technique described above, the remaining bits can be
+determined without further interaction with the client by using
+lattice cryptanalysis. This allows the binary search to be
+terminated early, requiring fewer login attempts from the user.
+In Appendix A we describe the straightforward application
+of a low-dimensional lattice attack adapted from Gabrielle
+and Heninger [31] to the setting of our RSA key recovery
+attack. This approach recovers up to 341 unknown bits and
+therefore reduces the required number of queries for the attack
+from 1023 to 683. With more complex lattices described
+by Howgrave-Graham [32] and May [33], it is possible to
+recover up to 512 unknown bits (i.e., the attack needs only
+512 queries).
+2) Malicious Client Modiﬁcations: MEGA’s current web
+clients store user key material and the SID in the browser’s
+local storage by default. Users remain logged in, and the
+browser can access this key material without the need for
+the user to enter their password. We remark that a malicious
+provider could easily modify current clients to re-establish a
+new SID in the background instead of storing it locally. With
+such a seemingly harmless code change, the adversary could
+perform queries whenever the user accesses the MEGA cloud
+storage, entirely unbeknownst to the user.
+IV. PLAINTEXT RECOVERY ATTACK
+As we have seen in the previous section, MEGA’s authen-
+tication protocol can be used as an oracle to recover a user’s
+private RSA share key skshare, even though it is encrypted
+with the user’s master key using AES-ECB. MEGA encrypts
+the chat, sign, and node keys in the same manner, reusing
+the master key and without adding integrity protection for any
+of the encrypted keys. This leads to the natural question of
+whether, having recovered skshare, the adversary can go on to
+also recover the other keys.
+In this section, we show that this can be done: after inserting
+target AES-ECB ciphertext blocks encrypted under the master
+key kM into the AES-ECB ciphertext for skshare and choosing
+the SID in a special way, the session ID returned from the
+client during authentication leaks the corresponding plaintext
+blocks. For technical reasons explained below, this method can
+be used to recover up to two plaintext blocks for each run of
+the authentication protocol.
+A. Threat Model and Adversary
+Our threat model considers an adversary that controls
+MEGA’s servers. Additionally, we assume that the adversary
+knows the client’s RSA private key. For instance, it can recover
+this key by running the RSA private key recovery attack from
+Section III or performing a forensic investigation of the user’s
+unattended device (e.g., dumping the memory).
+The adversary aims to decrypt two (not necessarily consec-
+utive) ciphertext blocks ct1, ct2 ∈{0, 1}128 that are encrypted
+with AES-ECB under the master key kM.
+B. Attack Description
+The attack consists of three steps: key overwriting, simpli-
+fying RSA-CRT and recovering the plaintext.
+1) Key Overwriting: Recall from Section II-E the encoding
+of the RSA private key exchanged during client authentication:
+skencoded
+share
+←l(q)∥q∥l(p)∥p∥l(d)∥d∥l(u)∥u∥P
+The client encrypts this key using AES-ECB under the master
+key kM before uploading [skencoded
+share
+]kM to MEGA. The adver-
+sary can modify this ciphertext at AES block granularity since
+AES-ECB encrypts blocks independently. The [skencoded
+share
+]kM
+can be split into 41 AES ciphertext blocks c1, c2, . . . , c41:
+c1∥c2∥. . . ∥c41 ←[skencoded
+share
+]kM,
+where |ci| = 16 bytes for all i ∈[1, 41]. Of particular interest
+to the attack are the last 9 blocks, which contain the encryption
+of u.10 Speciﬁcally, block c33 encrypts the concatenation of
+the last 6 bytes of d, the length-encoding l(u), and u[1:8] (the
+ﬁrst 8 bytes of u). Blocks c34–c41 contain the ciphertext for
+u[9:128] including 8 bytes of trailing padding.
+For the plaintext recovery attack, we avoid modifying c33
+to preserve l(u) and enable successful client-side key parsing.
+Instead, we overwrite c34 and c35 with the target ciphertext
+blocks ct1 and ct2. That is, the adversary sends the following
+tampered encryption of the RSA key to the client.
+[skencoded
+share
+]′
+kM ←c1∥. . . ∥c33∥ct1∥ct2∥c36∥. . . ∥c41,
+This replacement results in a new RSA private key component,
+u′, which can be split into three parts u1∥x∥u2
+←u′,
+where u1 = u[1:8], x is the decryption of ct1∥ct2, and
+u2 = u[41:128] is the remaining preserved plaintext bytes of
+the original u. The adversary aims to recover x, which replaces
+the 32 bytes u[9:40] of u in u′.
+2) Simplifying RSA-CRT: To recover x, we leverage that
+the RSA-CRT decryption of the session ID with the modiﬁed
+sk′
+share uses u′. By assumption, the adversary knows the
+original skshare, including u1 and u2. By replacing the session
+ID with a speciﬁc message m, the RSA-CRT decryption can
+be simpliﬁed to enable the recovery of x.
+The adversary chooses m ←u · q as the “session ID” and
+encrypts it using the user’s RSA public key.11 The adversary
+sends [skencoded
+share
+]′
+kM and [m]pkshare to the client, which runs
+the RSA-CRT SID decryption described in Figure 5. The
+particular choice of m gives
+m′
+p ←([m]pkshare)dp mod p = u · q mod p = 1 and
+m′
+q ←([m]pkshare)dq mod q = u · q mod q = 0.
+This computation is not affected by the modiﬁed private key
+since it only uses p, q, and d. Furthermore, m′
+p = 1 and
+10In the following, we focus on the case where the private exponent d is
+256 bytes and u is 128 bytes to simplify the analysis. This means that u spans
+blocks 33–41. It would be straightforward to adapt our attack to corner cases
+with shorter encodings of d or u.
+11Although m does not have the expected form of a padded SID, the client-
+side processing tolerates any message (cf. Figure 5).
+152
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+m′
+q = 0 lead to t = 1 and h = u′ mod p. Consequently, the
+decryption of [m]pkshare simpliﬁes to m′ = h · q.
+We now argue that with high probability, m′ = u′ · q. If the
+adversary were given m′, it would be easy to recover u′, and
+thereby x, by computing u′ ←m′/q. We discuss later how
+the adversary can still recover x although it only receives 43
+bytes of m′. First, for m′ = u′ · q to hold, we need that
+u′ mod p = u′, i.e., u′ < p. To see that this is the case
+w.h.p., recall that u < p by deﬁnition. Split the prime p into
+p1∥p2 ←p, where |p1| = |u1| = 8 B and |p2| = 120 B. By
+construction, u and u′ both start with u1. Since u < p, it can
+only be the case that u′ ≥p if u1 = p1. Thus, we derive the
+following lower bound on the probability.
+Pr[u′ < p] ≥1 −Pr[u1 = p1] = 1 −p2 + 1
+p
+≥1 −2−63
+Hence, m′ = u′ · q with probability at least 1 −2−63.
+3) Recovering Plaintext: We show how an adversary can
+recover x from the truncated SID m′[3:45]. We assume that
+u′ < p such that m′ = u′ · q. Let y1∥y2∥y3 ←m′, where
+y1 is the removed 2-byte preﬁx, y2 is m′[3:45], and y3 is a
+211-byte unknown sufﬁx. To recover x, the adversary tries all
+possible preﬁx values ˆy1 ∈{0, 1}16 and performs arithmetic
+operations on ˆy1∥y2∥y3 to get u1∥x. The correct preﬁx guess
+ˆy∗
+1 can be detected when the result starts with u1.12
+To compute u1∥x, interpret the involved byte strings as big-
+endian encoded integers. Then, from m′ = u′·q, m′ = ˆy∗
+1 ∥y2 ·
+256211 + y3, and u′ = u1∥x · 25688 + u2, we obtain
+ˆy∗
+1 ∥y2 · 256211
+q
+= u1∥x · 25688 + u2 −y3
+q .
+The last term is bounded by y3
+q < 2665. Therefore, at least 39
+bits separate the preﬁx u1∥x from y3
+q . Thus, the subtraction
+of
+y3
+q
+can only affect x if u′ has the preﬁx u1∥x∥039.
+This happens with a probability of about 2−39 since u′ is
+approximately uniformly distributed. Hence, with probability
+1 −2−39,
+u1∥x =
+ ˆy∗
+1 ∥y2 · 256211
+q
+· 256−88
+
+,
+where u2 is rounded away because it is smaller than 25688.
+C. Complexity
+The adversary recovers the two plaintext blocks (32 B)
+corresponding to ct1, ct2 with a probability of at least 1−2−39,
+given that u′ < p. Let S be the event that the attack is
+successful. Then, the overall success probability is
+Pr[S] = Pr[S | u′ < p] · Pr[u′ < p] > 1 −2−38.
+The adversary needs to iterate over the 216 preﬁxes ˆy1, which
+is computationally trivial and does not involve any interaction
+with the victim. Additionally, a single login attempt of the
+12This method has a small false positive probability of approximately 2−64
+(since |u1| = 64). However, this can be avoided in practice using additional
+information to detect when the the correct plaintext x has been recovered
+(e.g., by attempting to decrypt a ﬁle using x as a key).
+user is required to perform the attack. Since each successful
+instantiation of the attack recovers two AES-ECB plaintext
+blocks, one query sufﬁces to recover a full node key or 32
+bytes of asymmetric key material. The attack cannot be used
+to decrypt three or more blocks per login attempt because then
+the preﬁx u1∥x is changed by the unknown term y3
+q with high
+probability. However, the adversary can iterate the attack to
+recover as much plaintext as it desires.
+D. Practical Considerations
+In practice, the web client often executes a special case13
+(not shown in Figure 5), where only a single preﬁx byte is
+removed during SID decryption instead of two. The above
+attack and analysis are straightforward to adapt to this case.
+The adversary iterates over the 28 values ˆy1 ∈{0, 1}8 and
+recovers the preﬁx u1∥x with probability 1−2−31. The overall
+success probability is Pr[S] > 1−2−30, and the computational
+cost is slightly lower.
+V. INTEGRITY ATTACKS
+Having successfully recovered the node, share, chat, and
+sign keys of any MEGA user using the attacks in the preceding
+sections, it is clear that at this point all conﬁdentiality of user
+data is lost. We now turn our attention to integrity, to see
+what guarantees MEGA’s system gives users in terms of ﬁle
+authenticity. The result is – perhaps unsurprisingly – that after
+recovering node keys, very little protection remains: access to
+the keys means that the adversary can trivially modify existing
+ﬁles by decrypting, changing, and then re-encrypting the ﬁles.
+More interesting is the ability to add new ﬁles to the user’s
+storage, without relying on existing node keys. We present two
+versions of this stronger type of attack.
+In the ﬁrst, an attacker can create a node key ciphertext
+by choosing any two AES-ECB ciphertext blocks, and use
+the plaintext recovery attack from Section IV to decrypt the
+obfuscated key. It may then use the knowledge of the resulting
+key, nonce and metamac to forge a valid ﬁle ciphertext for a
+plaintext of its choosing, up to one AES block. This enables a
+framing attack on the victim, who will not be able to provide
+cryptographic evidence that they did not upload the forged ﬁle.
+The second attack exploits the structure of MEGA’s ob-
+fuscated node keys to create a key ciphertext for the all
+zero key: by repeating a ciphertext block the adversary can
+ensure that the client derives the key kF = 0128. This attack
+is less surreptitious than the framing attack because of the
+low probability of the all-zero key appearing in an honest
+execution. In return, it does not rely on the ability to decrypt
+arbitrary AES-ECB ciphertexts; a single known plaintext-
+ciphertext AES block pair sufﬁces. With a known key, the
+attacker can forge a valid ciphertext for a chosen plaintext.
+A. Threat Model
+The
+threat
+model
+considers
+an
+adversary
+controlling
+MEGA’s core infrastructure. The ﬁrst attack assumes access
+13This special case is unlikely to occur during normal operation but happens
+with probability 1 −2−8 for our choice m = u · q for the SID.
+153
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+AES
+file 
+chunk 
+chunk 
+chunk 
+chunk 
+chunk 
+chunk 
+MAC 
+AES
+AES
+AES
+MAC 
+AES
+MAC 
+AES
+MAC 
+AES
+AES
+MAC 
+AES
+AES
+AES
+AES
+MAC 
+condensed 
+MAC 
+Fig. 6. Reconstruction of a mostly chosen ﬁle using a known node key kF and nonce NF that produces a ﬁxed metamac Tmeta.
+to a decryption oracle Odec for AES-ECB encryption under
+the master key kM. This oracle can be realized by exploiting
+the attack in Section IV, for example.
+The second attack requires knowledge of a single plaintext-
+ciphertext pair (pt, ct) such that ct = AES-ECB.Enc(kM, pt).
+This can again be obtained from the plaintext recovery attack
+in the preceding section, but can also be acquired in other
+ways. For instance, the attacker can use MEGA’s protocol
+for public ﬁle sharing to obtain the pair. When a user shares
+a ﬁle or folder publicly, they create a link containing the
+obfuscated node key in plaintext. Hence, a malicious cloud
+provider who obtains such a link knows both the plaintext
+and the corresponding ciphertext, since the latter is uploaded
+to MEGA when the ﬁle is created (before being shared).
+B. Attack Description
+We ﬁrst describe the two approaches to derive key material
+for the ﬁle forgery, based on the assumed adversarial resources.
+Apart from how the key is derived, both attacks then use
+the same procedure to construct a ﬁle and corresponding
+ciphertext which will pass all integrity checks.
+1) Decryption Oracle: In this scenario, the adversary has
+access to an AES-ECB decryption oracle Odec. To create
+a key ciphertext for which the attacker knows the plaintext
+obfuscated key, it proceeds as follows. The adversary selects
+two AES ciphertext blocks ct1, ct2 ∈{0, 1}128 uniformly at
+random. Next, it uses the decryption oracle to recover the
+corresponding plaintext blocks pt1∥pt2 ←Odec(ct1∥ct2).
+It then runs the key deobfuscation algorithm described in
+Figure 4 to obtain the node key, nonce, and metamac:
+kF, NF, Tmeta
+←
+DeobfKey(pt1∥pt2). Note that because
+of the random choice of ciphertext blocks, the resulting
+encryption key, nonce, and tag are indistinguishable from those
+of a genuinely uploaded ﬁle.
+2) Single Plaintext-Ciphertext Pair: In this second sce-
+nario, we assume that the adversary knows a plaintext-
+ciphertext pair (pt, ct) where ct = AES-ECB.Enc(kM, pt).
+Given this, the adversary can forge a key ciphertext that
+decrypts to a node key of all zero bytes. The forgery is
+possible due to the structure of obfuscated keys combined
+with AES-ECB encryption. The adversary chooses ct∥ct as
+encryption for the obfuscated ﬁle key. By construction, this
+key ciphertext decrypts to kobf
+F
+= pt∥pt, since AES-ECB
+decrypts the two blocks independently and with the same
+key kM. For kF, NF, Tmeta ←DeobfKey(pt∥pt) this gives
+NF∥Tmeta = pt and kF = pt ⊕(NF∥Tmeta) = 0128.
+Note that this works regardless of the plaintext content of
+the AES blocks. Hence the attacker can use any plaintext-
+ciphertext pair (pt, ct). The decryption and deobfuscation of
+the key ciphertext will always succeed since node keys are not
+integrity-protected.
+3) File Reconstruction: The adversary now has a node
+key kF, a nonce NF and a metamac Tmeta and wants to
+forge a ciphertext for a ﬁle F such that it veriﬁes under the
+tag Tmeta. On a high level, the adversary achieves this by
+working backward from the metamac and inserting a single
+AES block at a convenient location in the malicious ﬁle F.
+Note that many standard ﬁle formats such as PNG and PDF
+tolerate 128 injected bits (for instance, in the ﬁle’s metadata,
+as trailing data, or in unused structural components) without
+affecting the displayed content. Hence the modiﬁed ﬁle F′ can
+be constructed to appear identical to F.
+Figure 6 visualizes the construction of F′ given kF, NF,
+and Tmeta. The dark orange blocks are ﬁxed and imply
+constraints that must be satisﬁed for the forged ﬁle to pass
+the integrity veriﬁcation. The adversary starts by creating a
+condensed MAC Tcond that produces Tmeta. For this purpose,
+it splits Tmeta into two 32-bit chunks T1
+meta and T2
+meta. Next,
+it chooses τ1, τ3 ←$ {0, 1}32 u.a.r. and sets τ2 ←τ1 ⊕T1
+meta
+and τ4 ←τ3 ⊕T2
+meta. This ensures that the condensed MAC
+Tcond ←τ1∥τ2∥τ3∥τ4 produces Tmeta when the metamac is
+154
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+computed.
+Next, the ﬁle chunk MAC tags must be set to ensure that
+the condensed MAC is Tcond. Let F1∥F2∥. . . ∥Fn ←F be the
+ﬁle chunks of the adversarially chosen ﬁle, each consisting
+of lF AES blocks. Recall from Figure 2 that Tcond is the
+CBC-MAC of the concatenation of all n chunk MACs Ti for
+i ∈[1, n]. Because of the structure of CBC-MAC, all but a
+single chunk MAC tag can be chosen freely to give the desired
+Tcond. The last tag can then be reconstructed from the other
+tags and Tcond. Hence, to proceed, the adversary selects a
+chunk index j ∈[1, n] such that the ﬁle format of F tolerates
+128 random bits (aligned to AES blocks) in the j-th chunk.
+Then, it calculates all chunk MACs except Tj using MEGA’s
+AES-CCM∗encryption (cf. Figure 3):
+For all i ∈[1, n] \ {j} do :
+[Fi]kF, Ti ←AES-CCM∗.Enc(kF, NF∥(i · lF), Fi)
+Next, the adversary computes the condensed MAC tag
+for chunk j by applying a “meet-in-the-middle” CBC-MAC
+calculation, to ensure that the result of CBC-MAC over all the
+chunk MACs is Tcond. That is, it computes the intermediate
+condensed MAC Tcond,j−1 up to chunk j (the “forward di-
+rection”) by calculating the CBC-MAC of T1∥T2∥. . . ∥Tj−1.
+It also computes the intermediate condensed MAC values for
+chunks j + 1 to n backward, starting from the desired output
+Tcond,n ←Tcond. That is, for i = n −1, n −2, . . . , j let
+Tcond,i ←AES-ECB.Dec(kF, Tcond,i+1) ⊕Ti+1.
+The remaining tag Tj is deﬁned by Tcond,j−1 and Tcond,j:
+Tj ←Tcond,j−1 ⊕AES-ECB.Dec(kF, Tcond,j)
+Now, the MAC tag Tj for ﬁle chunk j is ﬁxed. For
+analogous reasons as above, the adversary can construct and
+insert a single AES block into Fj such that the MAC of the
+resulting ﬁle chunk F′
+j is Tj. The adversary then sets
+F′ ←F1∥. . . ∥Fj−1∥F′
+j∥Fj+1∥. . . ∥Fn
+and generates the ﬁle ciphertext CF by encrypting the ﬁle
+chunks with the key kF. The adversary can also encrypt ﬁle
+attributes of its choice using AES-CBC with key kF. Note
+that any attributes may be chosen and that no modiﬁcation
+is necessary since ﬁle attributes are not integrity-protected by
+MEGA. Finally, the attacker places the key ciphertext (either
+ct1∥ct2 for the two randomly chosen ciphertext blocks in the
+decryption oracle scenario, or ct∥ct for the known plaintext-
+ciphertext pair (pt, ct)), the ﬁle ciphertext and the attribute
+ciphertext in the victim’s cloud storage.
+C. Impact
+With either attack, the adversary is able to add a new ﬁle
+to the user’s cloud. The ﬁle can be chosen by the adversary,
+up to one AES block in a ﬂexible location. The impact of this
+ﬁxed block is small in practice since many ﬁle formats tolerate
+sufﬁciently long sections of arbitrary bytes.
+In MEGA’s threat model, the expected ﬁle integrity protec-
+tion is that only the user can upload ﬁles to their storage due to
+the client-side user-controlled encryption. Hence an adversary
+exploiting these vulnerabilities can frame a user for possession
+of incriminating ﬁles, that, in theory, only the victim could be
+the creator of. For example, a conceivable attack might frame
+someone as a whistle-blower and place an extensive collection
+of internal documents in that person’s account.
+D. Complexity
+The attacks require only a trivial amount of computation.
+The ﬁle reconstruction solely uses simple bit operations and
+fast AES block cipher applications. If the decryption oracle is
+instantiated with the plaintext recovery attack from Section IV,
+the attack needs a single user login attempt. The second
+integrity attack does not require additional effort.
+VI. GUESS-AND-PURGE BLEICHENBACHER ATTACK
+In this section, we present a new Guess-and-Purge variant of
+Bleichenbacher’s attack [4] (GaP-Bleichenbacher) to decrypt
+RSA ciphertexts using a padding oracle exposed by the fall-
+back chat key exchange for MEGAchat. The attack is adapted
+from PKCS#1 v1.5 padding to the custom padding scheme
+used by MEGA clients for RSA encryption of chat keys when
+no Curve25519 key is available. Our attack devices a new
+strategy that guesses the unknown two-byte preﬁx tolerated
+by this padding scheme and quickly purges wrong guesses.
+The overall GaP-Bleichenbacher attack requires 216.9 client
+login attempts on average to decrypt one ciphertext.
+Although this attack is weaker than the RSA key recovery
+in Section III (in the sense that a key recovery implies
+plaintext recovery), it is complementary in the vulnerabilities
+that it exploits and hence requires separate countermeasures.
+Additionally, the Bleichenbacher attack may be performed by
+a weaker adversary.
+A. Threat Model and Adversary
+The threat model assumes an adversary with chosen-
+plaintext capability for the RSA encryption used as a fallback
+chat key exchange. The adversary needs a channel to the
+victim over which it can send encrypted chat keys. The
+client throws different errors depending on whether the RSA
+decryption of the chat keys was successful or not. We assume
+that the adversary is able to observe this error oracle.
+We outline two possible realizations of this adversary. First,
+a malicious service provider can send any message encrypted
+with the target’s RSA public key to the user disguised as
+encrypted chat keys. The client reports a different error mes-
+sage to the server when RSA decryption fails and when chat
+message decryption fails (because random bytes are used as
+chat key after a successful RSA decryption).
+Second, another user who has a direct chat with the victim
+may execute the same attack by sending maliciously chosen
+messages instead of chat keys during the key exchange. We
+consider it possible that such an adversary can infer the target’s
+decryption success. Error messages that the target sends to
+155
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+the server may be forwarded to the chat partner to inform the
+sender that transmission failed. Otherwise, the adversary could
+observe the encrypted network trafﬁc between MEGA and the
+target’s client and distinguish error messages sent to the server
+based on timing and message sizes.
+B. Attack Outline
+Recall that Bleichenbacher’s attack [4] on PKCS#1 v1.5
+padding maintains an interval of possible plaintexts. It exploits
+the malleability of RSA to test the decryption of multiples
+of the unknown target message. Successful unpadding leaks
+the preﬁx of the decrypted message due to the structure of
+the PKCS#1 v1.5 padding. This preﬁx allows an adversary
+to reduce intervals efﬁciently and recover the plaintext.
+MEGA’s padding scheme has an unknown preﬁx of two
+bytes that prevents the direct application of Bleichenbacher’s
+attack. Every successful decryption corresponds to many dis-
+joint solution interval candidates leading to a state explosion.
+Our attack guesses the unknown preﬁx and removes it
+before updating the solution interval. We ﬁnd empirically that
+wrong guesses lead to an empty solution interval within a few
+iterations of the GaP-Bleichenbacher attack steps. By using
+practical optimizations – including dynamic programming and
+early termination – we can avoid both repeating queries and
+spending time to recover padding bits.
+We provide a detailed description of GaP-Bleichenbacher,
+including the intricate adaption of Bleichenbacher’s attack
+steps, in Appendix B.
+C. Complexity
+Our experiments evaluated the attack to require 216.9 queries
+on average, where 25% of all runs need less than 214 queries,
+and the distribution has a long tail. We provide further details
+in Appendix B.
+D. Impact
+An adversary can use a vulnerable client to decrypt any RSA
+ciphertext due to the reuse of a single RSA key pair. Hence,
+the attack enables the recovery of chat keys transferred using
+RSA, as well as node keys shared with the victim.
+VII. PROOF OF CONCEPT
+We set up a test account on MEGA and implemented a
+PoC of our attacks to test them in practice.14 Each PoC is
+implemented in two settings: sim and real.
+In sim, the entire attack is run against a local simulation
+of the relevant parts of MEGA to avoid affecting MEGA’s
+operation. In real, we verify that our simulation accurately
+models MEGA’s system by carefully testing the components
+of the attack on the MEGA web client v. 4.11.2.15 Since the
+server code is not published, we cannot implement a PoC
+where the adversary controls MEGA. Instead, we implement a
+14The implementation of our PoCs is published on GitHub: https://github.
+com/MEGA-Awry/attacks-poc.
+15Since we exploit fundamental ﬂaws in the cryptographic architecture, we
+expect the vulnerabilities to apply to other clients and versions as well.
+Fig. 7. Forged ﬁle with 128 chosen bits after IEND, the last PNG chunk.
+MitM attack by installing a bogus TLS root certiﬁcate on the
+victim. This setup allows us to impersonate MEGA towards
+the user while using the real servers to execute the server code
+(which is unknown to us). We can patch server responses and
+perform our attacks on the ﬂy since they do not rely on secrets
+stored by the server.
+For our RSA key recovery attack from Section III, we ran
+the full binary search and simple lattice optimization described
+in Appendix A in sim to ensure that the attack succeeds
+reliably in 683 login attempts. The lattice recovery of 341
+missing bits of the prime succeeded in 1000 out of 1000 runs.
+Afterwards, we recovered the ﬁrst and last few bits of the RSA
+prime factor in the real setting. This way, we were able to
+verify the correctness of the attack while avoiding having to
+perform excessively many login requests on MEGA’s servers.
+Our plaintext recovery attack from Section IV only requires
+a single login query to recover a node key when the RSA
+private key is known. Therefore, we implemented a full PoC
+in both settings. We investigated the internal state of MEGA’s
+command-line client to obtain the private key material of our
+test account and the expected node key decryption.
+Using the integrity attacks from Section V, we successfully
+forged a valid ciphertext for the PNG image shown in Figure 7.
+The PNG ﬁle format ignores any data appended to the image,
+making it simple to modify the image to add the necessary
+block needed to pass the integrity veriﬁcation. In sim, we
+veriﬁed that our reconstructed MEGA ﬁle decryption success-
+fully recovered the forged ﬁle. For real, we implemented the
+attacks only on the client-side to avoid uploading persistent
+bogus material to MEGA. We injected the ﬁle in the ﬁle tree
+hierarchy fetched by the web client and then intercepted the
+load request caused by the user when opening our forged
+image in the MEGA image viewer. Then, we served our forged
+ﬁle and veriﬁed that it displayed correctly on the client.
+For the fallback chat key transfer over RSA that the
+GaP-Bleichenbacher attack from Section VI targets, source
+code comments suggest that it is only used for accounts
+registered before 2016. Downgrade attacks for newer accounts
+cannot be ruled out but we did not attempt to implement
+156
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+this attack in the real setting due to the closed-source
+server code and the substantial number of queries. Instead,
+we only implemented it in sim to show that MEGA’s custom
+padding scheme is fundamentally vulnerable to an adaption of
+Bleichenbacher’s attack on PKCS#1 v1.5 padding.
+VIII. COUNTERMEASURES
+As part of our disclosure to MEGA, we detailed three sets
+of countermeasures: immediate patches, suggesting backward-
+compatible mitigations to temporarily protect against the most
+severe consequences of our attacks, minimal patches, provid-
+ing more robust protection while avoiding expensive opera-
+tions like re-encryption of all user ﬁles, and recommended
+measures, proposing steps toward a redesign of MEGA’s
+cryptographic architecture.
+Here, we focus on the root causes of the attacks and
+discuss some immediate countermeasures for MEGA. We also
+provide general recommendations and discuss best practices
+for encrypted cloud storage systems.
+A. Immediate Countermeasures
+1) Integrity-Protect Key Ciphertexts: The most effective
+countermeasure against our attacks is to add integrity pro-
+tection for the encrypted user keys stored by MEGA. This
+can be done in a non-invasive way by adding HMAC tags
+to the key ciphertexts. By extending the existing encryption,
+older clients can ignore the new authentication tags and remain
+functional. We advise the use of distinct keys for separate
+usages of HMAC, rather than re-using the master key, to avoid
+further vulnerabilities from the lack of key separation.
+This measure directly protects against the RSA key recovery
+in Section III. Consequently, it also prevents our plaintext re-
+covery and integrity attacks (Sections IV and V) because they
+build on the RSA key decryption and rely on the lack of key ci-
+phertext intergrity. However, this measure should only be con-
+sidered a temporary patch, since AES-ECB-then-HMAC still
+does not achieve authenticated encryption security. Neverthe-
+less, we propose this as a temporary solution due to MEGA’s
+challenging scale, the urgency of the issues, backward com-
+patibility considerations, and the ease of implementation.
+2) Separate Keys: MEGA broadly violates the principle of
+key separation: the practice of using separate keys for separate
+purposes. The most notable instance is the reuse of the master
+key to encrypt all other user keys, enabling the AES-ECB
+plaintext recovery attack in Section IV. As an immediate
+measure, we propose to replace the master key with a new,
+randomly chosen key derivation key, kD, and to use HKDF
+to derive a set of key encryption keys (KEKs) from kD to
+separately encrypt the share, chat, sign, and node keys.
+This measure offers additional protection against the
+AES-ECB plaintext recovery attack: the RSA private key
+decryption can no longer be used to decrypt other encrypted
+keys, since they are encrypted with distinct KEKs. However,
+users should also change their passwords after this patch
+is implemented, as a proactive measure to render the old
+master key kM inaccessible. Without a password change, the
+encryption key ke remains the same and can still decrypt kM.
+Thus, if a user could be tricked into decrypting the master
+key ciphertext (for instance, by using an outdated client), our
+attacks could still be performed by a malicious entity that
+stored earlier versions of key ciphertexts. Nevertheless, even
+users who do not update their password would still beneﬁt
+from the proposed key separation, as the AES-ECB plaintext
+recovery attack could no longer be used to compromise the
+keys of newly uploaded ﬁles.
+3) Use a Stricter RSA Padding Format: We propose to
+enforce stricter client-side checks on MEGA’s custom RSA
+padding to increase the number of queries needed for the
+GaP-Bleichenbacher attack. Enforcing a ﬁxed 2-byte padding
+preﬁx would increase the number of queries needed for the
+attack to approximately 233 because conforming messages are
+then harder to ﬁnd. This modiﬁcation is a short-term measure
+that does not remove the padding oracle. An attack requiring
+233 queries is still worrisome as it could be improved. Nev-
+ertheless, this measure would reduce the practicality of the
+attack and make it easier to detect.
+B. General Recommendations
+1) Use Authenticated Encryption: An AEAD scheme such
+as AES-GCM should be used to encrypt user keys and data, re-
+placing the use of unauthenticated modes. For key encryption,
+we advise following standard key-wrapping practices [34] and
+using the associated data ﬁeld to newly authenticate control
+data such as expiration date and permitted usage of the key.
+Additionally, for asymmetric primitives, the public key can be
+added as associated data to avoid key confusion attacks.
+This measure would address our attacks more adequately
+than the minimal measures. However, AES-GCM needs to be
+used carefully to avoid issues with nonce reuse [35], cache
+side-channel attacks [36], [37], fragile authentication [38], [39]
+and attacks from lack of key commitment [12], [13], [14].
+2) Use Library Implementations of Standard Primitives:
+Whenever possible, using a well-tested implementation of a
+standardized primitive is recommended over “rolling your own
+crypto”. In the case of MEGA, this would mean removing
+the key obfuscation procedure and replacing the non-standard
+implementation of AES-CCM. Concretely, we recommend
+the use of HKDF [40] for key derivation, AES-GCM [41]
+for ﬁle encryption and CMAC [42] to compute MACs over
+variable-length messages. Furthermore, we suggest the use
+of RSA-OAEP [43] for RSA encryption to protect against
+Bleichenbacher-style attacks on the padding, and the aug-
+mented PAKE OPAQUE [44] for user authentication.16
+3) Consistently Separate Keys: Beyond the top-level key
+separation introduced in the immediate countermeasures, we
+recommend the use of distinct keys for separate purposes
+throughout the system. For example, separate data encryption
+keys should be used for ﬁles and attributes. Furthermore, when
+the design of the system changes to introduce updates or new
+16Even with OPAQUE, MEGA could still mount dictionary attacks against
+individual user passwords, since the server would still store password-related
+data, allowing guesses to be tested against the stored values.
+157
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+features, new keys should be used for new functions to avoid
+vulnerabilities from legacy code. In MEGA’s case, separate
+RSA key pairs should be used for the node sharing and the
+legacy chat key transfer. Lastly, we recommend regular key
+rotation for all key-encryption keys.
+IX. DISCUSSION
+MEGA is not the ﬁrst – and almost certainly not the last
+– system to contain critical security vulnerabilities. While se-
+curity analyses like ours will remain important in establishing
+and improving the privacy of users of cryptographic systems,
+it is unfortunate that such attacks continue to be discovered.
+When a system has grown popular enough to attract the atten-
+tion of independent researchers, skilled adversaries may have
+already compromised the system. Mitigating attacks cannot
+undo the consequences of such compromises. Additionally,
+the process to patch a large-scale system like MEGA is at
+best cumbersome, at worst impossible.
+The problem of bridging the knowledge gap between cryp-
+tographers and implementers is a long-standing one, and
+beyond the familiar advice to stick to well-tested implementa-
+tions of standardized and provably secure primitives, we will
+not discuss it further in general here. Rather, we choose to
+highlight some speciﬁc lessons learned from our review of
+MEGA and give recommendations for the future.
+A. How and Why MEGA’s Design Fails
+The attacks presented in this work arise from unexpected
+interactions between seemingly independent components of
+MEGA’s cryptographic architecture. They hint at the difﬁculty
+of maintaining large-scale systems employing cryptography,
+especially when the system has an evolving set of features and
+is deployed across multiple platforms. The challenges involved
+in a complete redesign of a cryptographic architecture can
+make ad hoc ﬁxes and short-term solutions attractive. In turn,
+this can lead to even more complexity that becomes more dif-
+ﬁcult to maintain, due to the introduction of new dependencies
+and the desire to provide backward compatibility.
+As an example, our recommended transition to authenticated
+encryption in MEGA would require all customers to download,
+decrypt, re-encrypt, and upload all their data, due to the end-
+to-end security features of the system. With 1000 PB of data
+stored by MEGA, this would take more than half a year at
+MEGA’s peak bandwidth of 1000 Gbit/s. It would also place
+an immense load on MEGA’s storage infrastructure. Perhaps
+because of challenges like this, MEGA decided to deploy a
+more short-term approach, leading to additional complexity.
+Hence, a design that anticipates cryptographic updates and
+allows new features to easily be added without introducing
+cross-domain vulnerabilities is crucial. A core feature of such
+a design is good key hygiene. Careful key separation not
+only minimizes the risk for unintended and dangerous interac-
+tions between cryptographic components, but can also protect
+against downgrading attacks and vulnerabilities in legacy code.
+Another central issue in MEGA’s design is the lack of
+consistent provision of integrity for ciphertexts: MEGA at-
+tempted to provide integrity for stored ﬁles, but not for the
+keys used to protect those ﬁles. This gave rise to a complete
+breach of conﬁdentiality of user data. We hypothesize that
+this distinction in how integrity is provided arises from a
+misunderstanding concerning the strength of the relevant threat
+model for the analysis of MEGA. By now it seems to be well-
+understood that both conﬁdentiality and integrity are needed
+when securing data at rest, but perhaps this is not so obviously
+true when securing keys at rest when faced with a malicious
+service provider. Some practitioners may also have the impres-
+sion that security notions for authenticated encryption assume
+unrealistically powerful adversaries. However, as our attacks
+on MEGA show, (partial) decryption oracles can exist in prac-
+tice, especially in the setting of a malicious service provider.
+We observe that RSA-CRT is particularly vulnerable to key
+overwriting attacks in a chosen-plaintext setting since the
+decryption directly uses the prime factors of the RSA modulus,
+potentially leaking useful information for factorization. Here,
+establishing the use of AEAD as the default is an important
+step in reducing the potential for attacks.
+B. Consequences
+Besides the effort and computational power required to
+patch a large system, vulnerabilities like the ones presented
+in this paper can have dire consequences for the system’s
+users. The attacks presented here show that it is possible
+for a motivated party to ﬁnd and exploit vulnerabilities in
+real world cryptographic architectures, with devastating results
+for security. It is particularly concerning that services like
+MEGA – which advertise privacy as a core feature and hence
+particularly attract users in need of strong protection – fail to
+withstand cryptanalysis. It is conceivable that systems in this
+category attract adversaries who are willing to invest signiﬁ-
+cant resources to compromise the service itself, increasing the
+plausibility of high-complexity attacks. Moreover, the cost of
+ﬁnding and exploiting such vulnerabilities is amortized by the
+large number of accounts to which they can be applied.
+Once the system has been compromised, recovering security
+(and trust) may be challenging even if the vulnerability is
+discovered and countermeasures applied. Ideally, users should
+be able to regain security after a compromise by updating their
+key material, for example by resetting their password. How-
+ever, even with such defensive mechanisms in place, in-depth
+insight into the vulnerability would be needed for users to
+assess what security guarantees remain, and how well patches
+protect their old and new data. Of course, we cannot expect
+consumers to make such assessments, and they may very well
+lose trust in the provider or fail to (for example) reset their
+password because they cannot judge the security implications.
+C. Future Work
+Given the popularity of cloud computing in general, and
+outsourced storage in particular, it is safe to assume that the
+demand for secure and private cloud services will continue to
+rise. Rather than leaving the task of designing a secure system
+to individual providers – which, paradoxically, would require
+users to trust the (by assumption) untrusted cloud provider
+158
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+with a secure design and correct implementation – we advocate
+for a standardization of secure cloud storage.
+Such a standard would ideally provide a secure and robust
+foundation obviating the need for ad hoc designs, while still
+leaving room for vendor-speciﬁc customization and improve-
+ments. For instance, support for additional features should be
+provided by design, and the speciﬁcation should be crypto-
+graphically agile. Developing a good standard would require
+deep engagement with a broad spectrum of stakeholders,
+including but not limited to cryptographers. We believe that
+this would be the easiest path to avoid attacks stemming from
+the lack of expert knowledge among developers, and that it
+would enable users to ﬁnally have conﬁdence that their data
+remains just that – theirs.
+ACKNOWLEDGMENT
+The authors would like to thank MEGA for the responsive
+communication during the responsible disclosure process and
+the bug bounty. Moreover, we thank our reviewers for the
+positive feedback.
+REFERENCES
+[1] “About Us – Encrypted Cloud Storage – MEGA,” https://mega.io/about,
+visited on March 16, 2022.
+[2] “Eight years of MEGA – Tweet,” https://twitter.com/MEGAprivacy/
+status/1352564229044277248?s=20, January 2021, visited on January
+10, 2022.
+[3] “Security and Why It Matters – MEGA,” https://mega.io/security, visited
+on March 31, 2022.
+[4] D. Bleichenbacher, “Chosen ciphertext attacks against protocols based
+on the RSA encryption standard PKCS #1,” in CRYPTO’98, ser. LNCS,
+H. Krawczyk, Ed., vol. 1462.
+Springer, Heidelberg, Aug. 1998, pp.
+1–12.
+[5] “MEGA security white paper,” https://mega.nz/SecurityWhitepaper.pdf,
+January 2020, visited on October 22, 2021.
+[6] A. P. K. Dalskov and C. Orlandi, “Can you trust your encrypted cloud?:
+An assessment of SpiderOakONE’s security,” in ASIACCS 18, J. Kim,
+G.-J. Ahn, S. Kim, Y. Kim, J. L´opez, and T. Kim, Eds.
+ACM Press,
+Apr. 2018, pp. 343–355.
+[7] K. K. Niehage, “Cryptographic vulnerabilities and other shortcomings
+of the Nextcloud server side encryption as implemented by the default
+encryption module,” Cryptology ePrint Archive, Report 2020/1439,
+2020, https://eprint.iacr.org/2020/1439.
+[8] V. Klima and T. Rosa, “Attack on private signature keys of the
+OpenPGP format, PGP(TM) programs and other applications compatible
+with OpenPGP,” Cryptology ePrint Archive, Report 2002/076, 2002,
+https://eprint.iacr.org/2002/076.
+[9] L. Bruseghini, K. G. Paterson, and D. Huigens, “Victory by KO:
+Attacking OpenPGP using key overwriting,” in ACM CCS 2022.
+ACM
+Press, 2022.
+[10] D. Boneh, R. A. DeMillo, and R. J. Lipton, “On the importance of
+checking cryptographic protocols for faults (extended abstract),” in
+EUROCRYPT’97, ser. LNCS, W. Fumy, Ed., vol. 1233.
+Springer,
+Heidelberg, May 1997, pp. 37–51.
+[11] A. K. Lenstra, “Memo on RSA signature generation in the presence of
+faults,” 1996, available from the author: arjen.lenstra@epﬂ.ch.
+[12] A. Albertini, T. Duong, S. Gueron, S. K¨olbl, A. Luykx, and S. Schmieg,
+“How to abuse and ﬁx authenticated encryption without key com-
+mitment,” Cryptology ePrint Archive, Report 2020/1456, 2020, https:
+//eprint.iacr.org/2020/1456.
+[13] Y. Dodis, P. Grubbs, T. Ristenpart, and J. Woodage, “Fast message
+franking: From invisible salamanders to encryptment,” in CRYPTO 2018,
+Part I, ser. LNCS, H. Shacham and A. Boldyreva, Eds., vol. 10991.
+Springer, Heidelberg, Aug. 2018, pp. 155–186.
+[14] J. Len, P. Grubbs, and T. Ristenpart, “Partitioning oracle attacks,” in
+USENIX Security 2021, M. Bailey and R. Greenstadt, Eds.
+USENIX
+Association, Aug. 2021, pp. 195–212.
+[15] H. B¨ock, J. Somorovsky, and C. Young, “Return of Bleichenbacher’s
+oracle threat (ROBOT),” in USENIX Security 2018, W. Enck and A. P.
+Felt, Eds.
+USENIX Association, Aug. 2018, pp. 817–849.
+[16] T. Jager, S. Schinzel, and J. Somorovsky, “Bleichenbacher’s attack
+strikes again: Breaking PKCS#1 v1.5 in XML encryption,” in ES-
+ORICS 2012, ser. LNCS, S. Foresti, M. Yung, and F. Martinelli, Eds.,
+vol. 7459.
+Springer, Heidelberg, Sep. 2012, pp. 752–769.
+[17] C. Meyer, J. Somorovsky, E. Weiss, J. Schwenk, S. Schinzel, and
+E. Tews, “Revisiting SSL/TLS implementations: New Bleichenbacher
+side channels and attacks,” in USENIX Security 2014, K. Fu and J. Jung,
+Eds.
+USENIX Association, Aug. 2014, pp. 733–748.
+[18] E. Ronen, R. Gillham, D. Genkin, A. Shamir, D. Wong, and Y. Yarom,
+“The 9 lives of Bleichenbacher’s CAT: New cache ATtacks on TLS
+implementations,” in 2019 IEEE Symposium on Security and Privacy.
+IEEE Computer Society Press, May 2019, pp. 435–452.
+[19] Y. Zhang, A. Juels, M. K. Reiter, and T. Ristenpart, “Cross-tenant side-
+channel attacks in PaaS clouds,” in ACM CCS 2014, G.-J. Ahn, M. Yung,
+and N. Li, Eds.
+ACM Press, Nov. 2014, pp. 990–1003.
+[20] M. Borgmann, T. Hahn, M. Herfert, T. Kunz, M. Richter, U. Viebeg,
+and S. Vowe, “On the security of cloud storage services,” Fraunhofer
+SIT, Tech. Rep., 2012.
+[21] S. Messmer, J. Rill, D. Achenbach, and J. M¨uller-Quade, “A novel
+cryptographic framework for cloud ﬁle systems and cryfs, a provably-
+secure construction,” in Data and Applications Security and Privacy
+XXXI, G. Livraga and S. Zhu, Eds.
+Cham: Springer International
+Publishing, 2017, pp. 409–429.
+[22] C. Boyd, G. T. Davies, K. Gjøsteen, H. Raddum, and M. Toorani,
+“Security notions for cloud storage and deduplication,” in ProvSec 2018,
+ser. LNCS, J. Baek, W. Susilo, and J. Kim, Eds., vol. 11192.
+Springer,
+Heidelberg, Oct. 2018, pp. 347–365.
+[23] S. Kamara and K. Lauter, “Cryptographic cloud storage,” in FC 2010
+Workshops, ser. LNCS, R. Sion, R. Curtmola, S. Dietrich, A. Kiayias,
+J. M. Miret, K. Sako, and F. Seb´e, Eds., vol. 6054. Springer, Heidelberg,
+Jan. 2010, pp. 136–149.
+[24] W. Chen and R. A. Popa, “Metal: A metadata-hiding ﬁle-sharing
+system,” in NDSS 2020.
+The Internet Society, Feb. 2020.
+[25] W. Chen, T. Hoang, J. Guajardo, and A. A. Yavuz, “Titanium: A
+metadata-hiding ﬁle-sharing system with malicious security,” Cryptology
+ePrint Archive, Report 2022/051, 2022, https://eprint.iacr.org/2022/051.
+[26] “MEGA: Malleable Encryption Goes Awry,” https://mega-awry.io/.
+[27] D. Whiting, R. Housley, and N. Ferguson, “Counter with CBC-
+MAC (CCM),” RFC 3610, Sep. 2003. [Online]. Available: https:
+//www.rfc-editor.org/info/rfc3610
+[28] S. Frankel, K. R. Glenn, and S. G. Kelly, “The AES-CBC Cipher
+Algorithm and Its Use with IPsec,” RFC 3602, Sep. 2003. [Online].
+Available: https://www.rfc-editor.org/info/rfc3602
+[29] J. Jonsson, “On the security of CTR + CBC-MAC,” in SAC 2002,
+ser. LNCS, K. Nyberg and H. M. Heys, Eds., vol. 2595.
+Springer,
+Heidelberg, Aug. 2003, pp. 76–93.
+[30] H. L. Garner, “The Residue Number System,” in Papers Presented
+at the the March 3-5, 1959, Western Joint Computer Conference, ser.
+IRE-AIEE-ACM ’59 (Western).
+New York, NY, USA: Association
+for Computing Machinery, 1959, p. 146–153. [Online]. Available:
+https://doi.org/10.1145/1457838.1457864
+[31] G. D. Micheli and N. Heninger, “Recovering cryptographic keys from
+partial information, by example,” Cryptology ePrint Archive, Report
+2020/1506, 2020, https://eprint.iacr.org/2020/1506.
+[32] N. A. Howgrave-Graham, “Computational Mathematics Inspired by
+RSA,” Ph.D. dissertation, 1998.
+[33] A. May, “Using LLL-reduction for solving RSA and factorization
+problems,” ser. ISC, P. Q. Nguyen and B. Vall´ee, Eds.
+Springer,
+Heidelberg, 2010, pp. 315–348.
+[34] P. Rogaway and T. Shrimpton, “A provable-security treatment of the
+key-wrap problem,” in EUROCRYPT 2006, ser. LNCS, S. Vaudenay,
+Ed., vol. 4004.
+Springer, Heidelberg, May / Jun. 2006, pp. 373–390.
+[35] A. Joux, “Authentication Failures in NIST version of GCM,” p. 3,
+2006, https://csrc.nist.gov/csrc/media/projects/block-cipher-techniques/
+documents/bcm/comments/800-38-series-drafts/gcm/joux comments.
+pdf.
+[36] B. Huang, “Cache-collision timing attacks against AES-GCM,” 2010,
+master’s thesis. http://udspace.udel.edu/handle/19716/9765.
+[37] E. Kasper and P. Schwabe, “Faster and timing-attack resistant AES-
+GCM,” Cryptology ePrint Archive, Report 2009/129, 2009, https://
+eprint.iacr.org/2009/129.
+159
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+[38] N. Ferguson, “Authentication weaknesses in GCM. Comments submitted
+to NIST Modes of Operation Process,” 2005, http://csrc.nist.gov/groups/
+ST/toolkit/BCM/documents/comments/CWC-GCM/Ferguson2.pdf.
+[39] S. Gueron and V. Krasnov, “The fragility of AES-GCM authentication
+algorithm,” Cryptology ePrint Archive, Report 2013/157, 2013, https:
+//eprint.iacr.org/2013/157.
+[40] D. H. Krawczyk and P. Eronen, “HMAC-based Extract-and-Expand
+Key Derivation Function (HKDF),” RFC 5869, May 2010. [Online].
+Available: https://www.rfc-editor.org/info/rfc5869
+[41] D. McGrew and J. Viega, “The Galois/Counter Mode of Operation
+(GCM),” Submission to NIST Modes of Operation Process, vol. 20, pp.
+0278–0070, 2004.
+[42] M. J. Dworkin et al., “NIST SP 800-38B. Recommendation for block
+cipher modes of operation: The CMAC mode for authentication,” 2016.
+[43] M. Bellare and P. Rogaway, “Optimal asymmetric encryption,” in
+EUROCRYPT’94, ser. LNCS, A. D. Santis, Ed., vol. 950.
+Springer,
+Heidelberg, May 1995, pp. 92–111.
+[44] S. Jarecki, H. Krawczyk, and J. Xu, “OPAQUE: An asymmetric PAKE
+protocol secure against pre-computation attacks,” in EUROCRYPT 2018,
+Part III, ser. LNCS, J. B. Nielsen and V. Rijmen, Eds., vol. 10822.
+Springer, Heidelberg, Apr. / May 2018, pp. 456–486.
+[45] A. K. Lenstra, H. W. Lenstra, and L. Lov´asz, “Factoring Polynomials
+with Rational Coefﬁcients,” Mathematische Annalen, vol. 261, no.
+ARTICLE, pp. 515–534, 1982.
+[46] P. Q. Nguyen and D. Stehl´e, “LLL on the Average,” in Algorithmic
+Number Theory.
+Springer Berlin Heidelberg, 2006, pp. 238–256.
+APPENDIX A
+LATTICE CRYPTANALYSIS FOR RSA KEY RECOVERY
+ATTACK
+We brieﬂy describe the straightforward application of a
+low-dimensional lattice attack adapted from Section 4.2.2
+of Gabrielle and Heninger [31]. The attack can be used to
+recover up to 341 of the unknown least signiﬁcant bits of the
+RSA prime factor q after the most signiﬁcant bits have been
+determined using the key recovery attack in Section III.
+Let ˆq2 be the leftmost (1024 −l) bits of q and q1 the
+remaining l unknown bits. Let q2 ←ˆq2 · 2l such that q =
+q2+q1. On a high level, we rewrite the problem of recovering
+q1 to the task of ﬁnding small roots of a polynomial. For this
+purpose, we consider the following three polynomials f1, f2,
+and f3 over Z, which all have the small root q1 modulo q:
+f1(x) = x · (q2 + x),
+f1(q1) = q1 · (q2 + q1) ≡q 0
+f2(x) = q2 + x,
+f2(q1) = q2 + q1 ≡q 0
+f3(x) = N,
+f3(q1) = N ≡q 0
+We observe that every linear combination of these polynomials
+has the same root q1 modulo q. We use this observation to
+construct the following lattice basis B, where we put the
+coefﬁcient vectors of the previous polynomials in the rows
+and scale the ﬁrst column by L2 and the second by L for
+L = 2l:
+B =
+
+
+L2
+Lq2
+0
+0
+L
+q2
+0
+0
+N
+
+
+The column scaling ensures that the L1 norm of any vector
+in the lattice is an upper bound on the value of the unscaled
+polynomial corresponding to the coefﬁcient vector when eval-
+uated at q1. Consequently, if we can ﬁnd a vector w with
+||w||1 < q in the lattice, then there is a corresponding unscaled
+polynomial g, such that g(q1) < q. Since q1 is a root of g
+modulo q by construction, it follows that g(q1) = 0 over the
+integers.
+We can efﬁciently recover the missing bits q1 of q by
+factoring the polynomial. The LLL algorithm [45] ﬁnds an
+exponential approximation of the shortest vector in polynomial
+time. Nguyen and Stehl´e showed in [46] that the vector w
+found by LLL satisﬁes ||w||2 ≤1.02n det(B)1/n on average
+for random lattices. For our lattice basis B with dimension
+n = 3 and determinate det B = L3 · N, we derive as the
+condition for ||w||1 < q that l ≤log2(N 1/6). We can therefore
+recover up to l = 341 bits for RSA-2048 using this simple
+lattice. Higher-dimensional lattices would allow us to decrease
+the number of queries to 512 as shown in [32], [33].
+APPENDIX B
+GUESS-AND-PURGE BLEICHENBACHER ATTACK:
+DETAILED DESCRIPTION
+We ﬁrst specify MEGA’s custom padding and the oracle
+that it exposes. Then, we extend Bleichenbacher’s attack steps
+for PKCS#1 v1.5 padding [4] to work on MEGA’s custom
+padding despite an unknown preﬁx. We conclude by analyzing
+the correctness and complexity of our GaP-Bleichenbacher
+attack.
+A. MEGA’s Padding Scheme
+When no long-term Curve25519 chat key is available,
+MEGA uses RSA encryption as a fallback method to exchange
+one or more 16-byte chat keys, concatenated together to K.
+The encryption procedure applies the following padding:
+MEGA PAD(K) := t∥L∥K∥P,
+where t is a two-byte preﬁx, L encodes the byte length of the
+chat key(s) K in two bytes (with big-endian encoding), and
+P is random padding that extends the message to 256 bytes.
+The server uses t ←016.
+The client parses the above message after RSA-2048 de-
+cryption as follows. First, it removes and ignores the preﬁx
+t. Second, it recovers the key length and checks that it is
+a multiple of 16, the byte length of a single chat key. If this
+check succeeds, the client extracts the chat key(s) and discards
+the padding. Otherwise, it throws an exception and reports the
+error to the server.
+The padding removal is successful iff L is of the form
+08∥{0, 1}4∥04. Our GaP-Bleichenbacher attack mainly uses
+the zero preﬁx. The rightmost four zero bits of L can poten-
+tially be used for further optimizations.
+B. Attack Description
+This section explains our extension of the original attack
+steps from [4] to account for MEGA’s leakage pattern and the
+unknown preﬁx.
+To stay close to the notation of [4], let c = me mod N be
+the RSA ciphertext of a target message m. Let B ←256252 be
+the power of two that exceeds the largest possible unencoded
+plaintext by one. We call a message conforming when it is
+correctly padded. Let m0 be the conforming multiple of the
+160
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+
+
+
+
+
+Fig. 8.
+Visualization of the Guess-and-Purge strategy for our modiﬁed
+Bleichenbacher attack with T = 216 preﬁx guesses t ∈{0, 1}16. The blue
+path up to iteration i corresponds to a workload w = (Mi,ti , Hi,ti ), where
+Mi,ti is the solution interval implicitly associated to the path that depends on
+the previous choice of multipliers (s0,ϵ, s1,ϵ, s2,t2, . . . , si,ti ) stored in Hi,ti .
+Paths with empty intervals (marked by a cross) are not extended.
+target plaintext. If m0 is of known byte length lm0, then m0
+has to be in the interval [lm0 · B, (lm0 + 1) · B −1] due to the
+padding scheme.
+The execution of our attack can be visualized as a tree
+(see Figure 8), where nodes represent a multiplier and the
+corresponding preﬁx guess. Every node has an associated set
+of intervals of candidate decryptions of our target ciphertext
+c. If the preﬁx guesses on the path to this node were correct,
+then there is some interval that contains the decryption m
+of our target ciphertext. In every iteration, we select a new
+multiplier for every leaf node. Each multiplier has T = 216
+possible preﬁxes. We add new successor nodes if the interval
+of possible plaintext decryptions is still non-empty. Otherwise,
+we know that there was a wrong preﬁx guess on this path, and
+we no longer extend this path in the next iteration (marked
+with a cross in Figure 8). The multipliers selected for different
+leaves may differ since they depend on the previous multipliers
+and preﬁxes.
+We introduce the concept of workloads for our variant of
+Bleichenbacher’s attack. A workload corresponds to a path
+in the attack tree. In other words, it stores the state of one
+possible solution path, including all preﬁx guesses that led to
+the current state and a set of intervals. We formalize this as
+follows. Let Hi,ti = (s0,t0, s1,t1, . . . , si,ti) denote the history
+of multipliers on the path. The guesses tj ∈{0, 1}16 for all
+j ∈[0, i] are the leftmost two bytes of sj,tj · m0 mod N after
+left padding the result with zero bytes to 256 B. Let Mi,ti
+denote the set of closed intervals after iteration i, resulting
+from the choice of multipliers. We deﬁne a workload w
+to be the tuple (Mi,ti, Hi,ti). Furthermore, we denote by
+t0 = t1 = ϵ that there is no preﬁx guess for the ﬁrst two
+multipliers.
+As explained in detail below, the multipliers are chosen in-
+dependently of any preﬁx guess: Step 1 chooses s0,t0 randomly
+and Step 2.a linearly searches for s1,t1, starting from a value
+derived from the initial bounds. For k ∈[2, i], Step 2.c chooses
+the multiplier sk,tk ∈Z based on the shifted preﬁx guess
+yk ←2562·B·tk of the conforming message sk,tk ·m0 mod N
+and the previous intervals Mk−1,tk−1 such that sk,tk reduces
+the size of the possible solution intervals adequately. We guess
+the shifted preﬁx yk before selecting sk,tk.
+We remark that our indices for multipliers and preﬁx
+guesses are only unique within the same workload. We do not
+use globally unique identiﬁers to avoid a cluttered notation. In
+particular, the multipliers and preﬁxes for different workloads
+in the same iteration do not have to be equal.
+Finally, we introduce the oracle Oc0(s) which returns true
+iff the RSA chat key decryption succeeds for the ciphertext c0
+multiplied by se mod N.
+For our GaP-Bleichenbacher attack, we perform Step 1
+once at the beginning of the attack. For every itera-
+tion i, we perform Step 2 to Step 4 for every workload
+w = (Mi−1,ti−1, Hi−1,ti−1) ∈Wi−1.
+Step 1: Blinding. Given a target ciphertext c = me mod N,
+we sample random multipliers s0,ϵ until Oc0(s0,ϵ)
+returns true. For the ﬁrst successful value s0,ϵ, we
+set:
+c0 ←(c · (s0,ϵ)e) mod N
+M0,ϵ ←{[ptmin, ptmax −1]}
+H0,ϵ ←(s0,ϵ)
+W0 ←{(M0,ϵ, H0,ϵ)}
+i ←1
+where ptmin ←0 and ptmax ←241·B are the small-
+est resp. largest possible plaintexts (including length
+encoding) which conform to MEGA’s padding. The
+subsequent attack recovers m0 ←(s0,ϵ · m) mod N,
+which is the decryption of c0. We do not need any
+preﬁx guess (as indicated by ϵ) as M0,ϵ contains
+a single interval specifying the maximum range of
+conforming plaintexts.
+Step 2: Searching for a multiplier satisfying Oc0.
+Step 2.a:
+Starting the search. For i = 1, we have only
+a single workload with M0,ϵ = {[a, b]} (in the
+generic case, a = 0 and b = 241 · B −1). We
+search for the smallest s1,ϵ ≥N/(b + 1) such
+that Oc0(s1,ϵ) returns true.
+Step 2.b: Sequential searching with
+Mi−1,ti−1
+ > 1. For
+i > 1 and more than one interval left, where
+si−1,ti−1 ∈Hi−1,ti−1, we search for the smallest
+si,ti > si−1,ti−1 where Oc0(si,ti) returns true.
+Step 2.c:
+Interval-based searching with
+Mi−1,ti−1
+ = 1.
+For i > 1 and exactly one interval [a, b] left,
+where si−1,ti−1 ∈Hi−1,ti−1, we iterate over all
+possible preﬁx guesses ti ∈{0, 1}16 with the
+corresponding shifted values yi ←2562 · B · ti
+of the still unknown value si,ti · m0 mod N. For
+every preﬁx guess, we search the smallest pair of
+variables ri and si,ti which satisfy the following
+161
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+two constraints as well as Oc0(si,ti). Due to the
+choice of ri and si,ti, we approximately halve the
+interval [a, b] in Step 3.
+We start incrementing ri from
+ri ≥2 · b · si−1,ti−1 −ptmin −yi
+N
+.
+For every ri value, we try the following multipli-
+ers:
+ptmin + ri · N + yi
+b
+≤si,ti < ptmax + ri · N + yi
+a
+.
+Section B-C discusses the reasoning for this
+search procedure in detail. However, the intuition
+is as follows: there exists at least one solution
+because we are guaranteed to ﬁnd a conform-
+ing si,ti value for the workload with all correct
+preﬁx guesses since our procedure then performs
+Step 2.c from the original Bleichenbacher attack
+without an unknown preﬁx. If we end up using
+another multiplier si,ti for a wrong preﬁx guess,
+this still reduces our intervals. Although this si,ti
+might not eliminate as many plaintext candidates
+as the one for the correct preﬁx, it is still a
+correct multiplier because the oracle decision is
+independent of our preﬁx guess.
+Step 3: Narrowing the set of solutions. For all intervals
+[a, b] ∈Mi−1,ti−1 and the multiplier guess history
+Hi−1,ti−1
+= (s0,t0, s1,t1, . . . , si−1,ti−1), we update
+the bounds for every preﬁx guess t∗∈{0, 1}16
+of (si,ti · m0) mod N and the corresponding y∗←
+2562 · Bt∗. We update the intervals and preﬁx guess
+history as follows, where si,t∗←si,ti:
+Mi,t∗←∪a,b,r {[a′, b′]}
+Hi,t∗←
+ s0,t0, s1,t1, . . . , si−1,ti−1, si,t∗
+.
+In the above equations, the bounds a′ and b′ are
+speciﬁed as follows:
+a′ ←max
+
+a,
+ptmin + r · N + y∗
+si,ti
+
+b′ ←min
+
+b,
+ptmax −1 + r · N + y∗
+si,ti
+
+.
+for all r values in the following range:
+a · si,ti −ptmax + 1 −y∗
+N
+≤r ≤b · si,ti −ptmin −y∗
+N
+We add a new workload (Mi,t∗, Hi,t∗) to Wi when-
+ever Mi,t∗̸= ∅.
+It is necessary to consider all possible preﬁxes
+t∗∈{0, 1}16 to guarantee the existence of a fully
+correct preﬁx guess history t0, t1, . . . , t∗(which is
+implicitly stored in Hi,t∗). For instance, if we would
+only use the preﬁx ti for which Step 2.c found the
+multiplier si,ti, then the target plaintext m0 might not
+be in any of the remaining intervals because the ﬁrst
+two bytes t∗of si,ti · m0 mod N are not equal to ti.
+Step 4: Computing the solution. If there is only one work-
+load Wi−1 = {(Mi−1,ti−1, Hi−1,ti−1)} and only one
+interval Mi−1,ti−1
+= {[a, a]} containing a single
+value, then we have a = m0 and return the solution
+m ←a · (s0,ϵ)−1 mod N.
+Otherwise, we continue executing the attack. If we
+did not yet iterate over all workloads in Wi−1, we
+go to Step 2 with the next workload from that set. If
+there is no workload left for iteration i, then we set
+i ←i + 1 and continue with Step 2 for the new set
+of workloads Wi.
+213
+214
+215
+216
+217
+218
+219
+220
+# Queries
+0
+50
+100
+150
+200
+250
+Density
+Fig. 9. Density plot of the number of oracle queries.
+C. Correctness
+The extension of Bleichenbacher’s attack [4] to MEGA’s
+padding scheme is challenging because of the unknown preﬁx
+yi. We adapt the equations from [4] to account for yi as
+follows:
+Oc0(si) =⇒∃r ∈Z, ∃t∗∈{0, 1}16 such that
+ptmin ≤si · m0 −rN −2562 · Bt∗≤ptmax −1.
+(1)
+Let r ∈Z and t∗∈{0, 1}16 with the corresponding shifted
+value y∗←2562 ·Bt∗be values satisfying the right-hand side
+of the implication in Equation 1, for some si such that Oc0(si).
+We solve the inequalities for m0 to derive the bounds for m0
+used in Step 3 to narrow down the intervals:
+ptmin + r · N + y∗
+si
+≤m0 ≤ptmax −1 + r · N + y∗
+si
+.
+(2)
+Furthermore, we can derive the bounds for r used in Step 3
+from Equation 1 by using a ≤m0 ≤b for some interval
+[a, b] ∈Mi,t and m0 ∈[a, b]:
+si · a −ptmax + 1 −y∗
+N
+≤si · m0 −ptmax + 1 −y∗
+N
+≤r
+r ≤si · m0 −ptmin −y∗
+N
+≤si · b −ptmin −y∗
+N
+.
+(3)
+162
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+
+0
+20
+40
+60
+80
+100
+120
+140
+Conforming Multiplier
+0
+100
+101
+102
+103
+Workloads (symlog scale)
+Purged
+Remaining
+Fig. 10. Number of purged and remaining workloads for every multiplier.
+The bounds for the multipliers used in Step 2 can be derived
+similarly.
+We can use the above statements to prove the correctness
+of our algorithm by induction over i. Let
+T(i) ≡(∃ti ∈{0, 1}16)(∃[a, b] ∈Mi,ti) s.t. m0 ∈[a, b]
+be our induction hypothesis stating that in every iteration, there
+exists at least one interval containing the target message m0.
+Since the last interval has length one, this implies that we ﬁnd
+the correct plaintext m0 and, thus, return the decryption m of
+the target ciphertext c.
+The base case T(0) trivially holds because M0,ϵ
+=
+{[ptmin, ptmax]} and m0 ∈[ptmin, ptmax] by deﬁnition since
+ptmin and ptmax are the smallest, respectively largest, plaintext
+values.
+We assume T(i −1) for the induction step and show T(i).
+Step 2 uses some si with Oc0(si) by construction. Therefore,
+by Equation 1 there exist r and t∗∈{0, 1}16 such that the
+right-hand side of the implication holds. By Equation 3, we
+know that the range of r values used in Step 3 contains the
+correct one. Furthermore, we iterate over all t∗∈{0, 1}16
+and add intervals to Mi,t∗. Therefore, for the correct r and
+t∗, we narrow [a, b] to [a′, b′] in Step 3 where the bounds
+from Equation 2 guarantee that m0 ∈[a′, b′]. We conclude
+the induction proof by noting that [a′, b′] ∈Mi,t∗implies
+T(i).
+D. Complexity
+The
+density
+histogram
+in
+Figure
+9
+shows
+that
+our
+GaP-Bleichenbacher has a query complexity of µ ≈216.9
+on average with a comparatively high standard deviation of
+σ ≈217.3. A quarter of all runs only require 214 queries,
+but the distribution has a long tail, and we aborted 71 out of
+1000 runs because they exceeded our cutoff of 106 queries.
+We use the Freedman-Diaconis binning rule to decide on an
+appropriate number of bins of equal width.
+The query complexity of our GaP-Bleichenbacher attack is
+signiﬁcantly lower than executing 216 classic Bleichenbacher
+attacks for every preﬁx guess. Figure 10 visualizes the core
+reason: every conforming multiplier si,ti allows us to detect
+workloads with an invalid preﬁx guess in Hi,ti because they
+result in an empty solution interval Mi,ti = ∅. The stacked
+bar plot shows that the ﬁrst multiplier s1,ϵ adds approximately
+2500 plausible preﬁx guesses. The next multiplier s2,t2 elimi-
+nates more than 95% of the wrong guesses shown with a blue
+bar in Figure 9; the remaining workloads are gray with an error
+bar showing the standard deviation. As the solution intervals
+narrow, every multiplier adds fewer new workloads while
+following multipliers eliminate wrong guesses quickly. We
+do not require more queries than the classic Bleichenbacher
+attack after approximately 28 multipliers because only a single
+workload remains.
+Our optimizations are another reason for this good per-
+formance compared to the original attack. We use dynamic
+programming to avoid repeated queries for different work-
+loads. Furthermore, we utilize that MEGA’s padding ends in
+random bytes, which we do not need to recover. Therefore,
+we terminate the attack as soon as the interval of possible
+plaintexts has a stable preﬁx that includes all message bits.
+E. Conclusion
+The GaP-Bleichenbacher attack extends the original attack
+on PKCS#1 v1.5 padding to MEGA’s custom padding with
+unknown preﬁxes. We evaluated this variant to require 216.9
+queries on average despite guessing a two-byte preﬁx. The
+attack is still challenging to exploit in practice because it
+requires a substantial number of queries. The adversary is also
+challenging to instantiate in practice. Despite the theoretical
+nature of the GaP-Bleichenbacher attack, it still points out two
+weaknesses of MEGA’s system. First, implementing custom
+padding schemes instead of using provably secure standards is
+dangerous. Second, key reuse allows the adversary to decrypt
+arbitrary RSA ciphertexts using legacy code.
+163
+Authorized licensed use limited to: IEEE Xplore. Downloaded on October 31,2025 at 15:52:53 UTC from IEEE Xplore.  Restrictions apply. 
+

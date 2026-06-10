@@ -1,0 +1,2042 @@
+Fixing and Mechanizing the Security
+Proof of Fiat-Shamir with Aborts
+and Dilithium
+Manuel Barbosa1(B)
+, Gilles Barthe2
+, Christian Doczkal2
+, Jelle Don3,
+Serge Fehr3,4, Benjamin Gr´egoire5
+, Yu-Hsuan Huang3, Andreas H¨ulsing6
+,
+Yi Lee2,7
+, and Xiaodi Wu7
+1 University of Porto (FCUP) and INESC TEC, Porto, Portugal
+mbb@fc.up.pt
+2 Max Planck Institute for Security and Privacy, Bochum, Germany
+{gilles.barthe,christian.doczkal}@mpi-sp.org
+3 Centrum Wiskunde & Informatica, Amsterdam, The Netherlands
+{jelle.don,serge.fehr,yhh}@cwi.nl
+4 Leiden University, Leiden, The Netherlands
+5 Inria Centre at Universit´e Cˆote d’Azur, Valbonne, France
+benjamin.gregoire@inria.fr
+6 Eindhoven University of Technology, Eindhoven, The Netherlands
+andreas@huelsing.net
+7 University of Maryland, College Park, USA
+{xiaodiwu,ylee1228}@umd.edu
+Abstract. We extend and consolidate the security justiﬁcation for the
+Dilithium signature scheme. In particular, we identify a subtle but crucial
+gap that appears in several ROM and QROM security proofs for signa-
+ture schemes that are based on the Fiat-Shamir with aborts paradigm,
+including Dilithium. The gap lies in the CMA-to-NMA reduction and was
+uncovered when trying to formalize a variant of the QROM security proof
+by Kiltz, Lyubashevsky, and Schaﬀner (Eurocrypt 2018). The gap was
+conﬁrmed by the authors, and there seems to be no simple patch for it.
+We provide new, ﬁxed proofs for the aﬀected CMA-to-NMA reduction,
+both for the ROM and the QROM, and we perform a concrete secu-
+rity analysis for the case of Dilithium to show that the claimed security
+level is still valid after addressing the gap. Furthermore, we oﬀer a fully
+mechanized ROM proof for the CMA-security of Dilithium in the Easy-
+Crypt proof assistant. Our formalization includes several new tools and
+techniques of independent interest for future formal veriﬁcation results.
+1
+Introduction
+Modern cryptographic standards, including AES and SHA3, are often selected
+through open, multi-year cryptographic competitions. An important goal of these
+Authors are listed in alphabetical order; see https://www.ams.org/profession/leaders/
+culture/JointResearchandItsPublicationﬁnal.pdf.
+c
+⃝International Association for Cryptologic Research 2023
+H. Handschuh and A. Lysyanskaya (Eds.): CRYPTO 2023, LNCS 14085, pp. 358–389, 2023.
+https://doi.org/10.1007/978-3-031-38554-4_12
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+359
+competitions is to increase conﬁdence in the schemes selected for standardiza-
+tion. To this end, candidate schemes are exposed to scrutiny by the cryptography
+community. This scrutiny generally yields a combination of cryptanalytic attacks
+and provable security claims. The former leads to schemes being abandoned, nar-
+rowing the choice of candidates, while the latter plays a fundamental role in the
+selection of the remaining candidates. Overall, competitions increase conﬁdence
+in selected standards. However, competitions are not infallible. In particular,
+ﬂaws in candidate designs may go undetected by public scrutiny far into the
+standardization process. These “near misses” beg for complementary methods
+for validating provable security claims of widely used standards.
+Post-Quantum Cryptography and Dilithium. In 2016, NIST initiated a
+competition for standardizing cryptographic algorithms that could withstand
+quantum adversaries. The competition recently reached an important milestone
+with the selection of four standards: one KEM (Kyber) and three signature
+algorithms (Dilithium, Falcon, SPHINCS+). These algorithms were chosen out
+of 69 candidates, some of which may still be selected during a fourth round.
+The selected candidates will form the backbone of quantum-resistant cryptogra-
+phy. Given the stakes, there is ample motivation for supporting all the selected
+candidates with computer-aided security proofs.
+Dilithium [1,2] is a lattice-based digital signature based on the Fiat-Shamir
+with aborts (FSwA) paradigm introduced by Lyubashevsky [3,4]. Recall that
+the classic Fiat-Shamir (FS) paradigm transforms an interactive identiﬁcation
+scheme (IDS) based on the standard commit-challenge-response structure into a
+digital signature scheme. The FS transform takes an IDS scheme ID and a hash
+function H (which is typically modelled as a random oracle) and sets the signa-
+ture key pair to be that of ID. Then, to produce a signature on message m, the
+signer generates a ﬁrst message w, locally sets the challenge to be c :“ H(w, m)
+and completes the signature as σ :“ (w, z), where z is the response gener-
+ated by ID upon ﬁrst message w and challenge c. A signature σ “ (w, z) is
+valid if (w, H(w, m), z) is accepted by ID. The Fiat-Shamir with aborts (FSwA)
+paradigm extends the FS transform to allow for the response generation proce-
+dure to abort1 — hence FS with aborts — which means that the signing algorithm
+must now execute the IDS repeatedly until a valid trace (w, c, z) is produced.
+We will denote this transformation by FSwA[ID, H].
+The security of FSwA has been analyzed many times. In particular, the orig-
+inal analysis in [4] (in the ROM) concludes that the resulting signature scheme
+is secure down to the underlying lattice-based assumption. Later, Kiltz, Lyuba-
+shevsky, and Schaﬀner [5] (KLS) developed a modular framework that follows
+the structure of the FSwA transform and used it to extend the results of the secu-
+rity analysis to quantum attackers in the Quantum-accessible Random Oracle
+Model (QROM).
+1 This is necessary for a large class of lattice-based IDS, to avoid leaking the secret
+key via biased responses z.
+
+360
+M. Barbosa et al.
+Computer-Aided Cryptography (CAC). CAC is an emerging approach
+that develops computer tools for building and independently verifying provable
+security claims [6]. CAC formal veriﬁcation tools have been used to validate
+the security claims for a number of cryptographic primitives and protocols, and
+they have progressed to a point where they can be used to increase the level
+of assurance in standardisation processes. The most outstanding application of
+CAC to date is arguably the TLS (Transport Layer Security) protocol: the most
+recent version, TLS 1.3, was designed under the coordination of the IETF with
+the active involvement of formal veriﬁcation experts, who used formal tools to
+unveil logical ﬂaws in previous versions of TLS and intermediate designs, and to
+validate the security arguments [7–10].
+In this paper we focus on EasyCrypt, a tool designed for machine-checking
+code-based computational security proofs, and hence ideally suited for formally
+verifying the security proofs for low-level primitives such as digital signature
+and encryption schemes. EasyCrypt permits stating and proving computational
+security goals using the same formalisms adopted in cryptographic papers. We
+report the results of our eﬀorts to formally verify the security proof for the
+Dilithium signature scheme and provide further evidence that computer-aided
+cryptography permits guraranteeing the absence of design ﬂaws in cryptographic
+standards to a much higher level of assurance than manual inspection.
+Main Contributions. The main contributions of this paper are three-fold.
+First, we identify a subtle but crucial gap that appears in several ROM and
+QROM security proofs of Dilithium and other schemes based on FSwA, includ-
+ing [4] and [5]. This gap was uncovered when formalizing a variant of the proof
+in [5]. Second, we provide ﬁxed proofs, both for the ROM and the QROM. Third,
+we fully mechanize the ROM proof in the EasyCrypt proof assistant. Our for-
+malization includes several new tools and techniques of independent interest for
+future formal veriﬁcation results.
+We elaborate on these contributions below, but stress at this point two impor-
+tant take-aways: 1) our results extend and consolidate the security justiﬁcation
+for the Dilithium signature scheme and 2) the gap in the proof would have
+been found earlier if any of the aﬀected works, most prominently the Dilithium
+submission to the NIST post-quantum competition, had been subject to formal
+veriﬁcation in the past.
+The Gap. The gap in the proof of FSwA occurs in the reduction from chosen
+message attacks (CMA) to no-message attacks (NMA). In this step, signature
+queries made by the considered CMA-attacker ASign,H, which has access to a
+singing oracle and the random oracle, must be answered without knowledge of
+the secret key, replacing real signatures with fake ones produced by an Honest-
+Veriﬁer Zero Knowledge (HVZK) simulator associated with the IDS. To ensure
+that the attacker cannot detect that it is being given fake signatures, it is also
+necessary to reprogram the random oracle to be consistent with the transcripts
+produced by the simulator. The crucial step boils down to replacing the ora-
+cle Sign by the oracle Trans (see Fig. 1), where Resp is an algorithm that may
+return K.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+361
+Sign(m):
+1: repeat
+2:
+(w, st) ←Com(sk)
+3:
+c :“ H(w, m)
+4:
+z :“ Resp(w, c, st)
+5: until z ̸“ K
+6:
+7: return (w, z)
+Trans(m):
+1: repeat
+2:
+(w, st) ←Com(sk)
+3:
+c ←ChSet
+4:
+z :“ Resp(w, c, st)
+5: until z ̸“ K
+6: H(w, m) :“ c
+7: return (w, z)
+Fig. 1. Oracles Sign and Trans.
+Clearly, the adversary A can attempt to guess w and query H on w before
+calling Sign/Trans, and then detect the inconsistency introduced by the repro-
+gramming in case of Trans. However, even if the adversary makes no prior H-
+queries, the distribution of the random oracle changes, and this is where the
+gap lies. The reprogramming in Trans only reprograms the random oracle with
+accepting transcripts and thereby shifts the random oracle slightly towards pairs
+((w, m), c) such that Resp(w, c, st) ̸“ K. Even though one expects this change in
+the distribution of the random oracle to be small, there is still a gap that needs
+to be properly bounded.
+Both Lyubashevsky [4] and KLS [5] miss the loss incurred by the bias in H
+in their analysis. In [4] this is missed in the hop from the real signing oracle
+to Hybrid 1 in the proof of Lemma 5.3 — note that the bound in [4] remains
+correct due to a loose analysis. In [5] the gap is missed in the game hop from
+G0 to G1 in the proof of Theorem 3.2. Moreover, this oversight is not a problem
+limited to [4] and [5], and it potentially aﬀects all FS-based schemes involving
+rejection sampling. This includes a long list of works [2,11–14] on lattice-based
+and isogeny-based signature schemes (and non-interactive proof systems) that
+need to be re-examined carefully.
+Brigding the Gap. Our second contribution is a new, ﬁxed proof for the CMA-
+to-NMA reduction for FSwA in general, and for Dilithium in particular. We
+address both the ROM and the QROM case; in order to optimize the reduction
+loss, we use slightly diﬀerent (lower level) hybrids for the two cases.2
+In order to circumvent the gap (while keeping the reduction loss reasonable),
+we follow a rather diﬀerent (but in some sense also more natural) proof strategy
+than [5]. We present a high-level outline of the proof (which is the same for ROM
+and QROM) in Sect. 3. The proof requires ﬁne-grained control of the modiﬁca-
+tions to the random oracle, which we handle using nested hybrid arguments.
+In order to deal with QROM adversaries, we make use of the compressed-oracle
+technique [15]. However, special care has to be taken to deal with the potentially
+unbounded number of random oracle queries done by the signing procedure, as a
+result of the unbounded rejection sampling loop; moreover, this number depends
+on the choice of the message to be signed, which is under the adversary’s control.
+2 We note that for simplicity, we consider ordinary unforgeability. It is not too hard
+to extend our results to strong unforgeability if the considered IDS satisﬁes the
+additional property of having computational unique-responses.
+
+362
+M. Barbosa et al.
+Result-wise, we note that our CMA-to-NMA reduction diﬀers from the
+(ﬂawed) one in [5] in that we can rely on a weaker variant of HVZK than in [5].
+On the downside, the bound we obtain for the CMA-to-NMA reduction is worse
+than the one claimed in [5]. For this reason, we conclude in Sect. 7 with an
+analysis of the security loss incurred by our proof for concrete parameters — the
+analysis is close to that given in [5], but we improve the analysis of relevant
+entropy metrics — and conﬁrm that the parameters in the Dilithium NIST sub-
+mission [1] provide suﬃcient slack to accommodate the additional loss and still
+comfortably reach the claimed security for all considered NIST security levels
+(2, 3, and 5).
+Machine-Checked
+Proof. We mechanize the entire security proof of
+Dilithium in the ROM using EasyCrypt.3 The formalization covers the ﬁxed
+CMA-to-NMA reduction (Sect. 5), the correctness of an HVZK simulator for the
+IDS underlying Dilithium, and the reduction from NMA security to MLWE and
+SelfTargetMSIS. The latter two proofs largely follow the original proofs in [5] and
+are described in Sect. 6. These results guarantee the absence of additional gaps in
+the ROM proof and, due to their similarity, give high conﬁdence that such gaps
+also do not exist in the QROM proof. In fact, in Sect. 3 we show that the two
+proofs have the same overall structure and that the only signiﬁcant diﬀerences
+lie in how the probability of bad events is bounded in the ROM and the QROM.
+The intricacy of the security proof, particularly the new CMA-to-NMA reduc-
+tion, posed interesting challenges when formalizing the proof in EasyCrypt (even
+in the ROM). Indeed, the mechanized proof uses several tools that were not used
+in earlier mechanized cryptographic proofs.
+– Proving an advantage bound that matches the pen-and-paper proof implies
+reasoning about the expected number of iterations of the unbounded rejec-
+tion sampling loop in Dilithium. To do this, we make use of an expectation
+logic that was recently added to EasyCrypt to reason about the expected
+complexity of randomized programs [17]. The logic is based on the seminal
+work by Kozen [18].
+– Some hybrid arguments in the proof modify the operation of the rejection
+sampling loop one iteration at the time, which means that the total number
+of hybrid steps is potentially inﬁnite. In consequence, we need to prove the
+convergence of advantage expressions that result from putting together all
+the hybrid steps, as the number of hybrid steps goes to inﬁnity.
+– In addition to various minor additions to existing EasyCrypt libraries (e.g.,
+for limits of sequences and sums, or for conditional sampling) we developed a
+new matrix library supporting variable-width matrices and vectors as well as
+block matrices.4 For the application to Dilithium, we created a new library
+that reﬁnes the existing EasyCrypt support for abstract polynomial rings
+modulo an ideal. This was necessary to express and prove low-level properties
+that justify some of the optimizations in Dilithium.
+3 Support for QROM in EasyCrypt is still under active development [16], and the
+existing features do not yet allow to formally verify the QROM proof.
+4 This was done in collaboration with Oskar Goldhahn and has now been merged into
+the EasyCrypt standard library.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+363
+Altogether, the machine-checked security proof is about 6000 lines long. In addi-
+tion, the generic library extensions also amount to several thousand lines. The
+EasyCrypt development, along with documentation on where to ﬁnd the vari-
+ous theorem statements and how to automatically machine-check the proofs, is
+available at https://github.com/formosa-crypto/dilithium.
+Concurrent Work. Concurrent and independent work [19] partially over-
+laps with the results we present in this paper. Both our work and [19] iden-
+tify the same gap in the CMA-to-NMA reduction that is present in prior works
+on Fiat-Shamir with aborts. Furthermore, both [19] and our work oﬀer new,
+corrected CMA-to-NMA reductions (both in the ROM and QROM), where the
+high-level strategy to ﬁx the previous proofs involves reprogramming the ran-
+dom oracle both on accepted and rejected transcripts. But then, the two works
+proceed diﬀerently. [19] considers an HVZK simulator for the underlying IDS
+that can be used simultaneously for reprogramming accepted and rejected tran-
+scripts; such a simulator is then constructed for a particular class of signatures.
+On the other hand, in this paper we introduce an additional hybrid step that
+removes the reprogrammings of the rejected transcripts, which allows us to rely
+on a weaker HVZK simulator that only needs to simulate accepting transcripts.
+Finally, beyond the above, [19] and our work include the following respective
+disjoint contributions: [19] identiﬁes and discusses some further diﬃculties with
+the Fiat-Shamir with aborts paradigm, e.g., with the history-free approach from
+[5], and with termination and correctness in the unbounded case. On the other
+hand, we oﬀer a fully mechanized security proof for Dilithium (for the classical
+ROM setting) using the EasyCrypt formal-veriﬁcation platform.
+Outline. We ﬁrst explain the high-level structure of the CMA-to-NMA reduc-
+tion (Sect. 3). We then show how we bound the critical game hops in the QROM
+proof (Sect. 4) and the mechanized ROM proof (Sect. 5). Based on this, we
+describe the mechanized security proof for Dilithium (Sect. 6). We conclude with
+a concrete analysis of the security loss for speciﬁc parameters (Sect. 7).
+2
+Preliminaries
+We consider a signature scheme obtained by applying Fiat-Shamir with aborts
+(FSwA) to an interactive identiﬁcation scheme (IDS) that follows the standard
+commit-challenge-response structure. The latter means that for a public/secret
+key pair (pk, sk), the scheme works in three ﬂows: 1) the Prover generates a ﬁrst
+message (w, st) ←Com(sk) (sometimes also called the commitment), and sends
+w to the Veriﬁer; 2) the Veriﬁer choses a random challenge c ←C and sends
+it back to the Prover; 3) the Prover computes a response z :“ Resp(sk, w, c, st),
+which the Veriﬁer checks using Verify(pk, w, c, z).5 We write KeyGen for the algo-
+rithm that generates the key pair (pk, sk).
+The Fiat-Shamir transformation turns such an IDS into a signature scheme
+by computing the challenge c as the hash of w and the to-be-singed message m.
+5 Throughout the paper, when clear from the context, we often omit the dependence
+on pk and sk in our notation.
+
+364
+M. Barbosa et al.
+We stress that by considering FSwA, we allow the IDS to abort, i.e., Resp to
+output z “ K; in this case, the signing procedure will simply retry with a fresh
+new ﬁrst message w until it succeeds (see Sign in Fig. 1 or 2). For a given key
+pair (pk, sk), we let the abort probability for w generated by Com and a random
+challenge c be
+p(pk,sk) :“
+Pr
+(w,st)←Com(sk)
+c←C
+[Resp(w, c, st) “ K] .
+The entropy of w will be an important parameter, implicitly captured by the
+guessing probability
+ϵ(pk,sk) :“ max
+w0PW
+Pr
+(w,st)←Com(sk)[w “ w0] .
+(1)
+where W is the support set for IDS commitments. Finally, we require the IDS
+to satisfy the following honest-veriﬁer zero-knowledge variant, which admits to
+simulate accepted transcripts.6
+Deﬁnition 1. (Accepting Honest-veriﬁer Zero-knowledge) An IDS as above is
+said to be acHVZK with simulation error ζzk if there exists a poly-time algorithm
+ZKSim that, when given the public key pk, outputs (w, c, z) with a distribution
+that has statistical distance at most ζzk from the distribution of a transcript
+(w, c, z) produced by an honest execution of the protocol conditioned on z ̸“ K.
+We note that this is a diﬀerent ﬂavor of HVZK than naHVZK considered
+in [5], and it is weaker (at least in spirit). In [5] the simulator must match the
+full distribution of traces, which means that a (strict or expected) poly-time
+naHVZK simulator implies an expected poly-time simulator as we require it: the
+acHVZK simulator repeatedly runs the naHVZK simulator until a good trace is
+generated. Whether the acHVZK simulator is strict or expected poly-time will
+determine whether we require the computational hardness assumption to hold
+for strict or expected poly-time algorithms.7 E.g., the scheme considered in [4]
+admits a strict poly-time acHVZK simulator, while for Dilithium we only know
+how to simulate accepted transcripts in expected poly-time.
+3
+Outline of the Proof
+In this section, we provide a detailed account of how we closed the gap in the
+proof described in the introduction. We ﬁrst give some intuition about the gen-
+eral proof strategy, and we pinpoint the main two technical steps of the proof,
+i.e., we isolate two quantities (corresponding to two distinguishing advantages
+for some game hops) that remain to be bounded. We then discuss the challenges
+6 For simplicity, and since this is suﬃcient for out main application (Dilithium),
+we consider statistical indistinguishability of the simulated transcript. Our results
+extend to a computational variant in the obvious way.
+7 Also note that, at the cost of an increased simulation error, an expected poly-time
+simulator can always be turned into a strict poly-time one by cutting the runtime.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+365
+in bounding these quantities, and we provide some intuition on how we solve
+them. The rigorous analyses of these quantities are then done in subsequent
+sections, separately for the QROM and the mechanized ROM proof.
+Below, we consider an IDS as considered above, which satisﬁes Deﬁnition 1,
+and the goal is to show that EF-NMA security implies EF-CMA security for the
+signature scheme that is obtained from the IDS via FSwA.8
+3.1
+Proof Skeleton
+We follow the common approach, which is to show that for any CMA attacker
+ASign,H, which has access to a signing oracle Sign and the random oracle H, one
+can replace the signing oracle Sign by an oracle Sim that does not have the secret
+key, but instead produces a valid transcript by using the acHVZK-simulator and
+reprograms H to be consistent with the transcript (see the description of Sim
+in Fig. 2 below). Turning ASim,H into an NMA attacker BH that does not ask
+signature queries (and does not reprogram H and produces forgeries consistent
+with H) is then a standard argument (discussed in more detail further down).
+In order to show that replacing Sign by Sim has little eﬀect, we introduce
+two hybrid oracles Prog and Trans, as speciﬁed in Fig. 2, and we show that
+ASign,H « AProg,H « ATrans,H « ASim,H .
+The oracle Prog samples transcripts (w, c, z) of the IDS for randomly chosen chal-
+lenges c and then reprograms H consistently (denoted H(w, m) :“ c ←C), both
+for rejected and accepted transcripts. We emphasize that, since the reprogram-
+ming happens independently of whether the transcript is accepted or not, there
+is no dependency between w and c, circumventing the issue in [5]. Intuitively,
+in order to notice the diﬀerence, A must have queried H on one of the points
+(w, m) before H gets reprogrammed on it; this is unlikely if w has high entropy.
+The oracle Trans is as Prog, except that it only reprograms H on the ﬁnal
+accepted transcript. This modiﬁcation to the game introduces a bias in H
+towards accepting transcripts. However, this should remain unnoticed unless A
+queries such a pair (w, m) where Trans reprograms H yet Prog does not. Because
+w is chosen with high-entropy and not revealed to A, this is unlikely to happen.
+Finally, closeness of ATrans,H and ASim,H follows by deﬁnition of the acHVZK
+property: for each of the calls A makes to Trans, replacing it by a call to Sim
+changes the output distribution of A by at most ζzk.
+The key part of the proof is bounding the loss incurred by the hops to AProg,H
+and ATrans,H, which we will do separately for the QROM proof (Sect. 4) and the
+mechanized ROM proof (Sect. 5). Here, we rigorously deﬁne those quantities and
+explain the arguments that are common to both proofs.
+For any 0 ď ϵ and p ă 1, for any key pair (pk, sk) with p(pk,sk) ď p and
+ϵ(pk,sk) ď ϵ, and for any choice of qS, qH P N, let the quantities ΔSignÑProg
+p,ϵ
+(qS, qH)
+8 The acronym EF-NMA (resp. EF-CMA) stands for existential unforgeability against
+no (resp. chosen) message attacks.
+
+366
+M. Barbosa et al.
+Sign(m):
+1: repeat
+2:
+(w, st) ←Com(sk)
+3:
+c :“ H(w, m)
+4:
+z :“ Resp(w, c, st)
+5: until z ̸“ K
+6: return (w, z)
+Prog(m):
+1: repeat
+2:
+(w, st) ←Com(sk)
+3:
+H(w, m) :“ c ←C
+4:
+z :“ Resp(w, c, st)
+5: until z ̸“ K
+6: return (w, z)
+Trans(m):
+1: repeat
+2:
+(w, st) ←Com(sk)
+3:
+c ←C
+4:
+z :“ Resp(w, c, st)
+5: until z ̸“ K
+6: H(w, m) :“ c
+7: return (w, z)
+Sim(m):
+1: (w, c, z) ←ZKSim(pk)
+2: H(w, m) :“ c
+3: return (w, z)
+Fig. 2. Overview of the diﬀerent oracles used for the hybrid proof.
+and ΔProgÑTrans
+p,ϵ
+(qS, qH) be monotone in p and in ϵ, bounded from above by 1,
+and so that
+ΔSignÑProg
+p,ϵ
+(qS, qH) ě
+Pr
+
+1 ←ASign,H
+´ Pr
+
+1 ←AProg,H
+and
+ΔProgÑTrans
+p,ϵ
+(qS, qH) ě
+Pr
+
+1 ←AProg,H
+´ Pr
+
+1 ←ATrans,H
+for any (classical or quantum) oracle algorithm ASign,H that makes at most qS
+classical calls to Sign and qH (classical or quantum) calls to the random oracle
+H, and outputs a single bit at the end. We take it as understood here that Sign
+uses the considered ﬁxed secret key sk for the public key pk given to A, and the
+same for Prog and Trans.
+Having control over these two parameters, we obtain the desired CMA-to-
+NMA reduction via the following result. We note that the statement holds both
+for classical and quantum A, where the latter can make quantum queries to
+H (but still only classical queries to Sign), with B then also being classical or
+quantum, respectively. In order to deal with unlikely “bad” keys that give rise
+to values of p(pk,sk) and ϵ(pk,sk) close to 1, which we need to avoid, the formal
+statement has a precondition that bounds these two quantities (in some ways)
+except with small probability.
+Lemma 1. Let ϵ ě 0 and p ă 1, and let δ :“ Pr[¬Γ] for an event Γ for which
+Pr[p(pk,sk) ď p ∧ϵ(pk,sk) ď ϵ | Γ] “ 1
+(2)
+where the randomness is over (pk, sk) ←KeyGen. Let ASign,H be a CMA attacker
+against FSwA[ID, H] that makes qS queries to the signing oracle Sign and qH
+queries to the random oracle H. Then, there exists an NMA attacker BH against
+FSwA[ID, H] so that
+AdvEF-CMA(A) ď AdvEF-NMA(B)
+` qSζzk ` ΔSignÑProg
+p,ϵ
+(qS, qH ` 1) ` ΔProgÑTrans
+p,ϵ
+(qS, qH ` 1) ` δ ,
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+367
+and with running time TIME(BH) « TIME(A) ` qSTIME(ZKSim). If ΔSignÑProg
+p,ϵ
+and ΔProgÑTrans
+p,ϵ
+are concave as functions in ϵ, then (2) can be relaxed to
+E[ϵ(pk,sk)|Γ] ď ϵ
+and
+Pr[p(pk,sk) ď p | Γ] “ 1 .
+See full version [20, Proof of Lemma 1] for the proof.
+3.2
+Challenges, and How We Solve Them
+The challenges that arise in bounding ΔSignÑProg
+p,ϵ
+and ΔProgÑTrans
+p,ϵ
+— and also our
+solutions — apply independently of whether A is classical or quantum. The case
+of a classical A is conceptually simpler in that we can see the random oracle as
+using standard lazy sampling and the elementary steps in the proof are argued
+using up-to-bad reasoning: we deﬁne a series of hybrids, where two consecutive
+games are identical until a bad event is triggered. This bad event typically corre-
+sponds to the adversary being able to observe a change in the distribution of a
+single value sampled by the random oracle. The proof then follows from proving
+an upper-bound on the probability of each bad event occurring and aggregating
+these bounds into a global advantage term.
+In the case of a quantum A, we resort to the compressed oracle technique,
+which can be understood as a quantum version of lazy sampling. In this setting,
+a bad event as above may then be deﬁned via a measurement (we expand on this
+analogy in Sect. 4). Such a measurement typically disturbs the state, and thus
+the continuation of the experiment. However, thanks to the gentle-measurement
+lemma, if the probability of the event occurring is small (which follows from
+pretty much the same argument as classically) we immediately know that this
+disturbance is small as well. Thus, conceptually, there is no big diﬀerence in the
+argument for a classical and for a quantum A. However, and interestingly, it
+turns out that in order to optimize the respective bounds on ΔProgÑTrans
+p,ϵ
+, we have
+to use slightly diﬀerent approaches in the ROM and in the QROM proofs.
+We outline the proofs of the two non trivial hops next.
+The ‘Program always’ game hop.. To bound ΔSignÑProg
+p,ϵ
+, the game hop from
+ASign,H to AProg,H is broken down into multiple steps and substeps. At the top
+level, the qS calls to Sign are replaced by calls to Prog one by one. For each
+such replacement, the challenge lies in the fact that there is no ﬁxed upper
+bound on the number of loop iterations executed by the modiﬁed Sign oracle
+query, and thus on the number of reprogrammings that must be dealt with.
+Even worse, per-se, A could potentially aﬀect the number of loop iterations by
+choosing m dependent on responses to prior H-queries. To deal with this, for
+each replacement of Sign by Prog, we do the replacement gradually by replacing
+the loop body in the query to Sign by the content of the loop body in Prog one
+iteration at a time. I.e., we consider the hybrid Hybk, which programs H(w, m)
+to a fresh random c for the ﬁrst k iterations of the loop and sets c :“ H(w, m) for
+the remaining ones (see Fig. 3, middle). Thus, Hyb0 “ Sign and Hyb∞“ Prog.
+An important observation at this point is that we can exploit that the prob-
+ability of remaining in the loop becomes exponentially smaller for increasing
+k — i.e., Hybk and Hybk`1 become harder to distinguish — because the iteration
+
+368
+M. Barbosa et al.
+Sign(m):
+1: repeat
+2:
+(w, st) ←Com(sk)
+3:
+c :“ H(w, m)
+4:
+z :“ Resp(w, c, st)
+5: until z ̸“ K
+6: return (w, z)
+Hybk(m):
+1: i :“ 0
+2: repeat
+3:
+(w, st) ←Com(sk)
+4:
+if i ă k then
+5:
+H(w, m) :“ c ←C
+6:
+else
+7:
+c :“ H(w, m)
+8:
+z :“ Resp(w, c, st)
+9:
+i :“ i ` 1
+10: until z ̸“ K
+11: return (w, z)
+Prog(m):
+1: repeat
+2:
+(w, st) ←Com(sk)
+3:
+H(w, m) :“ c ←C
+4:
+z :“ Resp(w, c, st)
+5: until z ̸“ K
+6: return (w, z)
+Fig. 3. The oracles Sign (left) and Prog (right), and Hybk in-between (middle).
+where they could diﬀer is less likely to be reached. In particular, the probabil-
+ity that round k (counting from 0) is reached, which is the round where Hybk
+and Hybk`1 diﬀer, is pk — we stress that we crucially exploit here that in the
+previous rounds the challenge c was chosen at random (and not computed via
+H); this ensures that A cannot inﬂuence this probability by choosing m one or
+another way. Furthermore, if this round is reached then A can notice the diﬀer-
+ence between the two hybrids only if it has made a prior H-query to the point
+(w, m) where Hybk`1 reprograms H while Hybk does not.9 However, since w has
+high min-entropy, this is unlikely to have occurred. Altogether, one replacement
+of Sign by Prog thus incurs an error that is bounded by an inﬁnite geometric
+series, for which there is the high-school closed formula. Multiplying the result
+with qS, to account for the qS times we replace Sign by Prog, we then get the
+desired bound on ΔSignÑProg
+p,ϵ
+.
+The quantum case is slightly trickier in that we cannot directly “inspect”
+prior H-queries to see if the point (w, m), where Hybk`1 reprograms H while
+Hybk does not, has been queried before by A. However, one can mimic this line
+of reasoning using the compressed oracle technique and doing a certain measure-
+ment, which is likely to give the desired outcome again due to the high entropy of
+w; furthermore, the gentle measurement lemma then ensures that the measure-
+ment introduces little disturbance. The quantitative diﬀerence to the classical
+case is that conditioned on reaching iteration k, the distinguishing advantage
+(essentially) gets a square-root, but of course the probability of reaching that
+iteration remains to be pk, and so we end up with a similar, though slightly
+worse, inﬁnite geometric series.
+The ‘Program once’ game hop. The bounding of ΔProgÑTrans
+p,ϵ
+is handled dif-
+ferently in the QROM and the ROM, in order to optimize the respective bounds.
+For the classical proof, the structure of the hybrids is the same as in the previous
+hop, in that we replace Prog by Trans one by one, and for each replacement we do
+it gradually one iteration at a time. This will then give rise to a similar inﬁnite
+geometric series. The main diﬀerence to before is that if the crucial iteration
+9 Or, if H got reprogrammed on (m, w) already during a prior call to Prog.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+369
+(where one hybrid reprograms H at the point (m, w) and the other does not)
+is reached, then the reasoning for why the distinguishing advantage is small is
+diﬀerent. Here, we rely on the fact that in order to notice the diﬀerence, A must
+make a future H-query to (m, w), but since w has high min-entropy and is not
+revealed to A, this is unlikely to happen.
+In principle, a similar strategy can be applied in the QROM setting. However,
+the “inspection” of future H-queries will require a measurement for every future
+H-query, which will lead to a unnecessarily large loss. Instead, we will do a slight
+detour involving a “clone” H′ of H, and a variant of Prog (see Fig. 4) that also
+reprograms H′, but only on the accepted (m, w), and then the hybrid works by
+replacing A’s calls to H by calls to H′ one by one.
+The detailed bounds and proofs are given in Sects. 4 and 5.
+4
+Proof in the Quantum Random Oracle Model
+Here, we provide the technical details of the CMA-to-NMA reduction for the con-
+sidered signature scheme obtained via Fiat-Shamir with aborts, in the QROM.
+As explained in Sect. 3, this boils down to bounding ΔSignÑProg
+p,ϵ
+and ΔProgÑTrans
+p,ϵ
+,
+and applying Lemma 1.
+We start by introducing some notation and recalling a couple of elementary
+concepts in the context of quantum information (Sect. 4.1), and by introducing
+an abstract distance measure for oracles (Def. 2 in Sect. 4.2) that captures the
+indistinguishability of two oracles in the QROM.
+4.1
+Preliminaries
+Let ρE be a density operator. We can speak of a (classical) event Γ, if ρE decom-
+poses into ρE “ Pr[Γ]ρE|Γ `Pr[¬Γ]ρE|¬Γ for probabilities Pr[Γ] and Pr[¬Γ] that
+add up to 1, and density operators ρE|Γ and ρE|¬Γ . In typical cases ρE is part of
+a bigger state ρXE, where X is classical, and Γ is then obtained by requiring X
+to satisfy some property.
+We will also consider events that are obtained by applying a measurement.
+Let ρE be a density operator and {PΓ , P¬Γ } a binary projective measurement,
+labeled by Γ and ¬Γ. By default, we then write Γ (and correspondingly for ¬Γ)
+for the event of observing the measurement outcome associated with P, i.e.,
+Pr[Γ] “ tr(PΓ ρE), and we let ˜ρE|Γ “
+1
+Pr[Γ ]PΓ ρEPΓ be the corresponding post-
+measurement state.
+We use δ(ρE, ρE′) :“ 1
+2∥ρE´ρE′∥1 to denote the trace distance between density
+operators ρE and ρE′. The trace distance forms an upper bound to the advantage
+of any quantum algorithm in distinguishing ρE from ρE′.
+Lemma 2 (Gentle Measurement Lemma). Let ρE be a density operator and
+{PΓ , P¬Γ } a binary projective measurement. Then δ(ρE, ˜ρE|Γ ) ď
+
+Pr[¬Γ] .
+4.2
+Setting Up the Stage
+As explained in Sect. 3, in order to control ΔSignÑProg
+p,ϵ
+and ΔProgÑTrans
+p,ϵ
+, we consider
+a hybrid argument where we repeatedly replace one oracle call to a certain oracle
+
+370
+M. Barbosa et al.
+by another one. To smoothen the exposition, we introduce ﬁrst an abstraction
+of this core problem, together with a metric that captures the ﬁgure of merit.
+Replacing One Oracle by Another. We consider a quantum oracle algorithm
+AH,O1,...,Or,O that makes oracle calls to a random function H (i.e., a random
+oracle) and to arbitrary but speciﬁed oracles O1, . . . , Or, and it makes one call
+to an unspeciﬁed oracle O (though with a speciﬁed set M of possible inputs),
+and the goal will be to show that for two particular speciﬁcations O and O′, the
+algorithm A will not notice the diﬀerence whether O is instantiated with O or
+with O′, i.e., that Pr
+
+1 ←AH,O1,...,Or,O
+« Pr
+
+1 ←AH,O1,...,Or,O′
+.
+Considering that A is a quantum algorithm, we allow the queries to the
+random oracle H to be in superposition; for the purpose of this work, the queries
+to all the other oracles are classical though.
+Furthermore, we note that we allow the oracle instantiations O1, . . . , Or, as
+well as O and O′, to also have oracle (read) access to H, and even to have oracle
+write access, i.e., they may reprogram H at a chosen point to a chosen value.
+Formally, O1, . . . , Or, O, O′ are classical, stateless, possibly randomized oracle
+algorithms, with oracle read and write access to H.10
+Closeness of Oracles. In order to show indistinguishability of answering A’s
+O-query by O or O′, it is suﬃcient to show that the output produced by O(m)
+or O′(m), together with H (which may also look diﬀerent in one and the other
+case, due to possible diﬀerent reprogramming), look alike to A.
+Using the compressed oracle technique, we can consider H to be obtained by
+measuring a certain quantum system D (the “compressed oracle”); namely, H(x)
+can be obtained by measuring register Dx of D in the computational basis. Indeed
+the technique ensures existence of a system D, the state of which evolves (and
+gets entangled) upon random-oracle (superposition) queries, and that satisﬁes:
+1. The random-oracle queries commute with measuring any of the registers of D
+in the computational basis. This includes reprogramming queries, which, on
+input (x, y) replaces the state of register Dx by |y⟩.
+2. After q (read or write) random-oracle queries, measuring all of D in the Fourier
+basis produces a function table that is ˆ0 (sometimes denoted K) everywhere,
+except for up to q points. In particular, measuring all of D before any random-
+oracle query in the computational basis produces a uniformly random function
+(table) H.
+The above considerations motivate to deﬁne the (parameterized) following met-
+ric, which then gives rise to the subsequent Theorem 1.
+Deﬁnition 2. For oracle instantiations O and O′ of O, and for q P N,
+dq(O, O′) :“ max
+m,ρDE δ
+
+ρO(m)HE, ρO′(m)HE
+
+10 We may actually allow O1, . . . , Or, to be stateful, all having access to the same state,
+but for the propose of “switching” from O to O′ for any A, this state can always be
+maintained and provided by A.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+371
+where the maximum is over all possible m P M and over all states ρDE with
+the property that D behaves as in Item 2. above (for the considered q) upon
+measuring in the Fourier basis; furthermore, ρO(m)HE is obtained from m and
+ρDE by running O on input m, and by measuring all of D in the computational
+basis to obtain H, and the same for ρO′(m)HE.
+It is not too hard to argue that the maximum is indeed attained in the
+deﬁnition of dq. Furthermore, q′ ě q ⇒dq′ ě dq, and dq satisﬁes the triangle
+inequality.
+To help to understand the intuition for this metric, we point out that in the
+corresponding classical counter part, we would maximize over all query inputs
+m and over all possible lazy-sampled databases D that have at most q entries,
+and then compare the respective distributions of (O(m), H) and (O′(m), H),
+obtained by running O, respectively O′, on m, and obtaining H by ﬁlling in all
+the empty places in (the possibly reprogrammed) database D by random values.
+The following is straightforward to prove.
+Theorem 1. Consider a quantum oracle algorithm AH,O1,...,Or,O for arbitrary
+but ﬁxed oracle instantiations O1, . . . , Or, and let O and O′ be two possible
+instantiations for O, as speciﬁed above. Recall that A is restricted to making
+one query to O. Let Q be the number of oracle calls to H, made by A and
+O1, . . . , Or, prior to A’s oracle call to O.11 Then,
+Pr
+
+1 ←AH,O1,...,Or,O
+´ Pr
+
+1 ←AH,O1,...,Or,O′ ď EQ[dQ(O, O′)] .
+As a toy example application, consider a quantum oracle algorithm AH,O
+that makes at most qH queries to a random oracle H and qO queries to a non-
+instantiated oracle O. Let us assume that O and O′ are instantiations of O that
+make no queries to H, and it holds that dq(O, O′) ď qHε for any q. Then, by
+repeated application of Theorem 1 in order to switch from O to O′ one by one,
+we immediately obtain that
+ Pr
+
+1 ←AH,O
+´ Pr
+
+1 ←AH,O′ ď qHqOε .
+Typical Strategies. There are two generic approaches to prove that dq(O, O′)
+is small:
+Strategy 1. Show the existence of a (classical) event Γ (Γ for “good” event)
+with the property that, for any m and ρDE, (1) the event Γ has the same prob-
+ability Pr[Γ] of occurrence when running O and O′, and (2) O and O′ act
+identically conditioned on Γ, and thus the two states ρO(m)HE|Γ and ρO′(m)HE|Γ
+are identical. Indeed, in that case, by basic properties of the trace distance,
+δ
+
+ρO(m)HE, ρO′(m)HE
+
+ď Pr[Γ]δ(ρO(m)HE|Γ , ρO′(m)HE|Γ )
+` Pr[¬Γ]δ(ρO(m)HE|¬Γ , ρO′(m)HE|¬Γ )
+(3)
+ď Pr[¬Γ] .
+(4)
+11 This includes calls to reprogram H.
+
+372
+M. Barbosa et al.
+Strategy 2. Show the existence of a binary projective measurement {PΓ , P¬Γ }
+on D and the internal state of the respective oracles, so that when applied dur-
+ing the run of the oracle, similarly to above, (i) the event Γ (of observing the
+measurement outcome associated with PΓ ) has the same probability Pr[Γ] of
+occurrence when running O and O′, and (ii) O and O′ act identically condi-
+tioned on Γ, and thus the two states ˜ρO(m)HE|Γ and ˜ρO′(m)HE|Γ are identical.
+Indeed, in that case, by triangle inequality,
+δ
+
+ρO(m)HE, ρO′(m)HE
+
+ď δ(ρO(m)HE, ˜ρO(m)HE|Γ )
+` δ(˜ρO(m)HE|Γ , ˜ρO′(m)HE|Γ )
+` δ(˜ρO′(m)HE|Γ , ρO(m)HE)
+(5)
+ď 2
+
+Pr[¬Γ]
+(6)
+where the ﬁnal inequality is by applying the gentle measurement lemma twice.
+This extends in the obvious way to a classically-controlled measurement, i.e.,
+to a measurement that is only applied if a particular classical bit b is set, and
+such that (o) the classical bit b is set with the same probability when running
+O and O′, (i) conditioned on b being set, the event Γ has the same probability
+Pr[Γ] of occurrence when running O and O′, and (ii) O and O′ act identically
+conditioned on b not being set, or conditioned on b set and Γ. The above bound
+then becomes
+δ
+
+ρO(m)HE, ρO′(m)HE
+
+ď 2 Pr[b“1]
+
+Pr[¬Γ|b“1] .
+(7)
+4.3
+Core of the Proof
+We need to bound the quantities ΔSignÑProg
+p,ϵ
+(qS, qH) and ΔProgÑTrans
+p,ϵ
+(qS, qH). For
+that purpose, we consider a ﬁxed key (pk, sk) for which p(pk,sk) ď p and ϵ(pk,sk) ď
+ϵ, and we consider a quantum oracle algorithm A with a binary output, and
+which makes qS classical queries to Sign and qH quantum queries to the random
+oracle H. Our goal then is to bound the respective closeness of ASign,H and
+AProg,H and of AProg,H and ATrans,H; we do this below.
+Closeness of ASign,H and AProg,H. For the purpose of showing closeness of Sign
+and Prog, we introduce the following hybrid oracles. For every k P N, the oracle
+Hybk replaces the ﬁrst k evaluations c :“ H(w, m) in the loop of Sign to freshly
+reprogramming H(w, m) :“ c ←C, with the convention that Hyb0 :“ Sign. In
+other words, Hybk acts like Prog for the ﬁrst k iterations of the loop, and then
+like Sign for the remaining ones (if it is still looping then).
+Lemma 3. dq(Hybk´1, Hybk) ď 2pk´1
+(q ` k)ϵ for every k ě 1.
+The claim here is closely related to the adaptive reprogramming in [21]; how-
+ever, there are some subtle technical diﬀerences (with the crucial reprogramming
+step being reached only with a certain probability, and with prior reprogram-
+mings taking place). For this reason, and for consistency with the other parts of
+the proof, we prove Lemma 3 from scratch.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+373
+Proof. The oracle Hybk´1 and Hybk only diﬀer at the kth iteration, in which the
+former performs an evaluation c :“ H(w, m), while the latter performs a fresh
+reprogramming H(w, m) :“ c ←C. We call this the crucial iteration.
+We follow Strategy 2 and consider a binary projective measurement per-
+formed right before c is determined in the crucial iteration, classically controlled
+by the bit b that is set if the crucial iteration is executed (i.e., the loop has
+not stopped before). The measurement checks whether or not the sampled w
+in the crucial iteration is such that measuring D(w,m) in the Fourier basis pro-
+duces ˆ0, and Γ is satisﬁed if this is the case (i.e., if (w, m) is not recorded in the
+database). Recall that in case the loop terminates prior to the crucial iteration,
+no measurement is performed.
+Clearly, (o) b is set with the same probability when running Hybk´1 and Hybk,
+(i) if the crucial iteration is reached then Pr[Γ] is the same when running Hybk´1
+and Hybk, and (ii) if the crucial iteration is reached and Γ is satisﬁed then, in
+both cases, c is uniformly random and H(w, m) becomes c — in case of Hybk
+by construction, and in case of Hybk´1 since c is then obtained by measuring
+the state |ˆ0⟩of D(a,m) in the computational basis — and thus Hybk´1 and Hybk
+act identially. Hybk´1 and Hybk obviously also behave the same if the crucial
+iteration is not reached. Thus, by Inequality (7), dq(Hybk´1, Hybk) ď 2 Pr[b “
+1]
+
+Pr[¬Γ|b“1]. It remains to control this latter term.
+For b “ 1 to happen, the loop must have entered the kth iteration, which
+happens with probability Pr[b “ 1] “ pk´1 because every previous transcript is
+freshly sampled.
+Conditioned on b “ 1 where the loop enters the kth iteration, the database
+records no more than q ` k non-ˆ0 entries, and a is freshly sampled, and thus by
+Eq. (1) and union bound, we obtain Pr[¬Γ|b “ 1] ď (q `k)ϵ. This concludes the
+proof.
+⊓⊔
+Now applying Lemma 3 k times, together with the triangle inequality for dq we
+obtain
+dq(Sign, Hybk) ď
+
+1ďiďk
+2pi´1
+(q ` i)ϵ ď 2√ϵ
+1 ´ p(1 ´ p)
+
+iě1
+pi´1
+(q ` i)
+ď 2√ϵ
+1 ´ p
+	
+(1 ´ p)
+
+iě1
+pi´1q ` (1 ´ p)
+
+iě1
+pi´1i ď 2√ϵ
+1 ´ p
+	
+q `
+1
+(1 ´ p) ,
+(8)
+where the third inequality is Jensen’s inequality (exploiting that, by the standard
+formula for a geometric series, (1 ´ p) 
+i pi´1 “ 1), and the last one follows by
+again applying the standard formula for a geometric series (noting that the
+second term is the derivative of a geometric series).
+Next, we argue closeness of Hybk to Prog. Recall that Prog is obtained from
+Sign by replacing every evaluation c :“ H(w, m) in the loop to a fresh reprogram-
+ming H(w, m) :“ c ←C, whereas Hybk does so only for the ﬁrst k iterations.
+Lemma 4. dq(Hybk, Prog) ď pk for every k P N.
+
+374
+M. Barbosa et al.
+Proof. We follow Strategy 1 and deﬁne the good event Γ where a non-abort
+response z ̸“ K is output within the ﬁrst k iterations in a call to Hybk/Prog.
+Indeed, (i) the probability Pr[¬Γ] depends only on the ﬁrst k iterations, hence it
+is the same in both oracles, and (ii) conditioned on Γ, the loop terminates within
+k iterations, so that both oracles behave identically. Since within each iteration
+the transcript (w, c, z) is freshly sampled, the probability that all k iterations
+yield z “ K is bounded by Pr[¬Γ] ď pk. Thus, by Inequality (4) we conclude
+that dq(Hybk, Prog) ď Pr[¬Γ] ď pk.
+⊓⊔
+By combining Inequality (8) and Lemma 4, and letting k go to inﬁnity, we obtain
+dq(Sign, Prog) ď 2√ϵ
+1 ´ p
+
+q `
+1
+1 ´ p .
+Replacing every invocation of Sign in ASign,H by Prog from left to right, and
+further taking into account that the expected number of read/write queries to H
+prior to every replacement is E[Q] ď qH ` (qS ´ 1)/(1 ´ p), we apply Theorem 1
+qS times and obtain
+Pr
+
+1 ←ASign,H
+´ Pr
+
+1 ←AProg,H ď qS ¨ EQ[dQ(Sign, Prog)]
+ď qS ¨ EQ
+
+2√ϵ
+1´p
+
+Q `
+1
+1´p
+
+ď 2qS
+√ϵ
+1 ´ p
+
+EQ[Q] `
+1
+1 ´ p
+ď 2qS
+√ϵ
+1 ´ p
+
+qH `
+qS
+1 ´ p ,
+where the third inequality is by Jensen’s inequality. This proves Corollary 1.
+Corollary 1.
+Pr
+
+1 ←ASign,H
+´ Pr
+
+1 ←AProg,H ď 2qS
+√ϵ
+1´p
+
+qH `
+qS
+1´p .
+Closeness of AProg,H and ATrans,H.
+For the purpose of showing closeness of
+AProg,H and ATrans,H, we introduce a second instantiation H′ of the random
+oracle, which is set to be equal to H at the beginning, and we modify Prog to
+Prog′ so as to also reprogram H′, but only on the accepted transcript (see Fig. 4
+middle). Looking ahead, we notice that this detour via Prog′ and H′ is not done
+in the ROM proof; there, we have a (more) direct argument to go from AProg,H
+to ATrans,H, very similar to the one going from ASign,H to AProg,H. The reason
+we do it this way here is that we obtain a better bound than when trying to
+mimic the reasoning that is used in the ROM proof.
+Since the adverary A in an execution of AProg,H has its random-oracle queries
+answered by H, and A has no access to H′, we obviously have that AProg,H “
+AProg′,H. Similarly, AProg′,H′ “ ATrans,H. Thus, it remains to show closeness of
+AProg′,H and AProg′,H′. Towards this goal, we ﬁrst settle the following properties
+of an execution of Prog′.
+Proposition 1. For an arbitrary but ﬁxed message m0, let (w, c, z) be the ﬁrst
+non-K transcript produced in an invocation of Prog′(m0), and let S′ be the set
+of w’s sampled in the loop for which z “ K. Then the following holds.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+375
+Prog(m):
+1: repeat
+2:
+(w, st) ←Com(sk)
+3:
+H(w, m) :“ c ←C
+4:
+z :“ Resp(w, c, st)
+5: until z ̸“ K
+6: return (w, z)
+Prog′(m):
+1: repeat
+2:
+(w, st) ←Com(sk)
+3:
+H(w, m) :“ c ←C
+4:
+z :“ Resp(w, c, st)
+5: until z ̸“ K
+6: H′(w, m) :“ c
+7: return (w, z)
+Trans(m):
+1: repeat
+2:
+(w, st) ←Com(sk)
+3:
+c ←C
+4:
+z :“ Resp(w, c, st)
+5: until z ̸“ K
+6: H(w, m) :“ c
+7: return (w, z)
+Fig. 4. The oracles Prog, Prog′ and Trans.
+– The distribution of (S′, w, c, z) is invariant to the choice of m0.
+(9)
+– S′ is statistically independent of (w, c, z).
+(10)
+– For every w0 P A, Pr[w0 P S′] ď
+ϵ
+1´p.
+(11)
+Proof. Let ti “ (wi, ci, zi) be the transcript sampled in the i-th iteration of
+the loop. For the purpose of the analysis, we assume that ti is sampled for
+every i P Zą0, even if the loop stops before. Then, the ti’s are i.i.d. distributed,
+and S′ equals {w1, . . . , wK´1}, with K being minimal such that zK ̸“ K and
+(w, c, z) “ tK. As the sampling of (S′, w, c, z) does not involve m0 at all, Item (9)
+follows immediately.
+For the analysis of Item (10), we consider the list L :“ [t1, . . . , tK´1]; clearly
+showing independence of L and (w, c, z) implies independence of S′ and (w, c, z).
+Further consider an arbitrary but ﬁxed list L0 “ [t0
+1, . . . , t0
+k´1] of transcripts
+t0
+i “ (w0
+i , c0
+i , z0
+i ), and an arbitrary but ﬁxed transcript t0 “ (w0, c0, z0). With
+the goal to show that
+Pr
+
+L “ L0 and (w, c, z) “ t0
+“ Pr
+
+L “ L0
+¨ Pr
+
+(w, c, z) “ t0
+,
+(12)
+we may assume z0
+1 “ · · · “ z0
+k´1 “ K and z0 ̸“ K, because otherwise both sides
+of Eq. (12) vanish trivially. But then, by deﬁnition of L and (w, c, z),
+Pr
+
+L “ L0 and (w, c, z) “ t0
+“ Pr
+
+@i ă k : ti “ t0
+i and tk “ t0
+“ Pr
+
+@i ă k : ti “ t0
+i and tk “ t0 and zk ̸“ K
+
+“ Pr
+
+zk ̸“ K
+@i ăk : ti “ t0
+i
+
+¨ Pr
+
+tk “ t0
+
+zk ̸“ K
+@i ăk : ti “ t0
+i
+
+“ Pr
+
+zk ̸“ K
+@i ăk : ti “ t0
+i
+
+¨ Pr
+
+tk “ t0zk ̸“ K
+
+“ Pr
+
+L “ L0
+¨ Pr
+
+tk “ t0zk ̸“ K
+
+,
+where the fourth equality is due to independence between (t1, . . . , tk´1) and tk.
+Furthermore, summing up both sides of the above equality over all choices of L0,
+noting that Pr
+
+tk “ t0zk ̸“ K
+
+does not depend on k (since the ti’s are i.i.d.),
+
+376
+M. Barbosa et al.
+we immediately get that Pr
+
+tk “ t0zk ̸“ K
+
+“ Pr
+
+(w, c, z) “ t0
+, which shows
+Eq. (12) and thus Item (10).
+Next, notice that |L| ě ℓimplies z1 “ · · · “ zℓ“ K. Thus,
+Pr
+
+a0 P S′
+ď
+
+ℓě1
+Pr
+
+wℓ“ w0 and |L| ě ℓ
+
+ď
+
+ℓě1
+Pr
+
+wℓ“ w0 and z1 “ · · · “ zℓ´1 “ K
+
+“
+
+ℓě1
+Pr
+
+wℓ“ w0
+¨ Pr
+
+z1 “ · · · “ zℓ´1 “ K
+
+ď
+
+ℓě1
+pℓ´1ϵ ď
+ϵ
+1 ´ p ,
+where the equality holds due to the independence between aℓand (z1, . . . , zℓ´1).
+This concludes Item (11).
+⊓⊔
+For this purpose, for every 0 ď i ď qH we let Gi be the hybrid between
+AProg′,H and AProg′,H′ that has the ﬁrst i queries to the random oracle answered
+by H′, and the remaining ones by H. Obviously, G0 “ AProg′,H, while GqH “
+AProg′,H′. Thus, considering an arbitrary but ﬁxed 1 ď i ď qH and setting
+G :“ Gi´1 and G′ :“ Gi, it is suﬃcient to show that G and G′ are close. This is
+indeed the case:
+Lemma 5.
+Pr[1 ←G] ´ Pr[1 ←G′]
+ ď 2
+
+qSϵ
+1´p .
+Proof. Below, we refer to the i-th query of A to the random oracle, i.e., the
+query on which G and G′ diﬀer, as the crucial query.
+In the respective executions of G and G′, we deﬁne S as the set of all the
+w’s that Prog′ sampled but for which Resp(w, c, st) “ K, in all the invocations of
+Prog′ before the crucial query. Thus, by construction, at the time of the crucial
+query, H and H′ diﬀer at most at the points in S. (They might agree on a point
+in S, if the freshly sampled value for H at this point equals the old value.)
+For the sake of analysis, consider a binary projective measurement on the
+input query register for the crucial query, which measures whether or not the
+input (w, m) is such that w P S. Let Γ be satisﬁed if w ̸P S, and let ˜G and ˜G′
+be the two respective games obtained by performing this measurement. Since H
+and H′ only diﬀer at the places (w, m) where w P S, conditioned on Γ, the two
+oracles behave identically, and thus do ˜G and ˜G′. Furthermore, the probability
+Pr[Γ] is the same in both games.
+Thus by a double application of the gentle measurement lemma, we have
+| Pr[1 ←G] ´ Pr[1 ←G′]| ď | Pr[1 ←G] ´ Pr[1 ←˜G′ | Γ]|
+` | Pr[1 ←˜G′|Γ] ´ Pr[1 ←˜G| | Γ]|
+` | Pr[1 ←˜G|Γ] ´ Pr[1 ←G]|
+ď 2
+
+Pr[¬Γ] .
+Hence, it remains to bound the probability Pr[¬Γ]. The intuition is that S
+collects those w’s that Prog dismisses; thus, A does not get to see them, so it is
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+377
+hard for him to ﬁnd an element in S, hence Γ is satisﬁed most likely. However,
+turning this intuition into a rigorous argument is not fully straightforward, since
+the set S, as a random variable, has a somewhat odd distribution.
+Let Q be the random variable indicating the number of queries made to Prog
+prior to the crucial query; we have with certainty that Q ď qS.
+A crucial observation that holds for both G, G′ is that, conditioned on Q “ q
+for an arbitrary but ﬁxed q, the set S equals S′
+1∪· · ·∪S′
+q where every S′
+j is the set
+S′ that was produced in the jth query of Prog′ as speciﬁed in Proposition 1. We
+note that, at the time the adversary A makes the crucial query, H has not been
+queried, and (w, c, z) in Proposition 1 is the only information that is dissipated
+to the adversary for every prior query to Prog′. It follows from Item (9) and
+Item (10) that every S′
+j is independent from the view of adversary, and hence so
+is S.
+Due to the independence, it suﬃces to bound Pr[w0 P S|Q “ q] for every
+w0 P W. Then it follows from the union bound and Item (11) that
+Pr[w0 P S|Q “ q] ď
+
+jP[q]
+Pr[w0 P S′
+j] ď qSϵ
+1 ´ p .
+Putting things together, the proof is concluded.
+⊓⊔
+Corollary 2.
+Pr
+
+1 ←AProg,H
+´ Pr
+
+1 ←ATrans,H ď 2qH
+
+qSϵ
+1´p .
+4.4
+Wrapping Up
+From the above it follows that
+ΔSignÑProg
+p,ϵ
+(qS, qH) ď 2qS
+√ϵ
+1 ´ p
+
+qH `
+qS
+1 ´ p
+and
+ΔProgÑTrans
+p,ϵ
+(qS, qH) ď 2qH
+ qSϵ
+1 ´ p
+and thus by Lemma 1, we obtain the following.
+Theorem 2. Let ϵ, p, δ ă 1 be so that there exists an event Γ with Pr[¬Γ] ď
+δ, Pr[p(pk,sk) ď p | Γ] “ 1 and E[ϵ(pk,sk) | Γ] ď ϵ for (pk, sk) ←KeyGen. Let
+ASign,H be a quantum CMA attacker against FSwA[ID, H] that makes qS queries
+to the signing oracle Sign and qH quantum queries to the random oracle H.
+Then, there exists a quantum NMA attacker BH so that
+AdvEF-CMA(A) ď AdvEF-NMA(B)
+` 2qS
+√ϵ
+1 ´ p
+
+qH ` 1 `
+qS
+1 ´ p ` 2(qH ` 1)
+ qSϵ
+1 ´ p ` qSζzk ` δ
+and with running time TIME(BH) « TIME(A) ` qSTIME(ZKSim).
+
+378
+M. Barbosa et al.
+5
+The Mechanized ROM Proof
+We now describe the mechanized proof of the CMA-to-NMA reduction in the
+ROM. As argued in Sect. 3, the high-level structure is the same as in the QROM
+proof. We again want to instantiate Lemma 1. We assume query bounds qS for
+signature queries and qH for random oracle queries. In order to obtain the bound
+for the CMA-to-NMA reduction, we need to provide ΔSignÑProg
+p,ϵ
+and ΔProgÑTrans
+p,ϵ
+and prove these bounds for an arbitrary (but ﬁxed) key pair (pk, sk) such that
+p(pk,sk) ď p and ϵ(pk,sk) ď ϵ. We set:
+ΔSignÑProg
+p,ϵ
+:“ qSϵ
+ qS ` 1
+2(1 ´ p)2 `
+qH
+1 ´ p
+
+ΔProgÑTrans
+p,ϵ
+:“ qSqHϵ
+1 ´ p
+Applying some simpliﬁcations, this allows us to prove the following bound.
+Theorem 3. Let ϵ, p, δ ă 1 be as in Theorem 2. Let ASign,H be a classical CMA
+attacker against FSwA[ID, H] that makes qS queries to the signing oracle Sign
+and qH queries to the random oracle H. Then, there exists a classical NMA
+attacker BH against FSwA[ID, H] so that
+AdvEF-CMA(A) ď AdvEF-NMA(B) ` 2qS(qH ` 1)ϵ
+(1 ´ p)
+` qSϵ(qS ` 1)
+2(1 ´ p)2
+` qSζzk ` δ
+and with running time TIME(BH) « TIME(A) ` qSTIME(ZKSim).
+Proof. It suﬃces to show that the bounds for ΔSignÑProg
+p,ϵ
+and ΔProgÑTrans
+p,ϵ
+are indeed
+correct; the theorem then follows with Lemma 1. For ΔSignÑProg
+p,ϵ
+, as outlined in
+Sect. 3.2, we successively replace the individual loop iterations of the Sign ora-
+cle with iterations from the Prog oracle (cf. Hyb in Fig. 3). That is, we have qS
+sequences of hybrid arguments (one for each query), each replacing one-by-one
+κ loop iterations (cf. Hyb in Fig. 3). After κ steps, we cut oﬀthe remaining loop
+for a loss of pκ. This yields an intermediate game where A interacts with H
+and Progκ, the latter behaving like Prog but aborting after κ iterations. The
+ﬁnal bound is then obtained as the limit when κ is increased to inﬁnity (causing
+Progκ to become Prog). Consider the hybrid step where the queries 0 to i´1 are
+answered by Progκ, query i is answered by Hybj and all remaining queries are
+answered by Sign. We bound the loss of answering query i with Hybj`1 instead.
+Assuming a lazy implementation of the random oracle, both games behave the
+same unless iteration j on query i is reached and the pair (w, m) is already in the
+(previously queried) domain of H. The probability of this “bad” event occurring
+can be bounded by
+δi,j :“ pjϵ
+
+i
+1 ´ p ` qH ` j
+
+where the term in parentheses is an upper bound on the expected size of the
+(previously queried) domain of H at the point where the bad event might occur
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+379
+(i.e., iteration j of query i). In there, the term
+i
+1´p is the expected number of
+iterations of the i preceding calls. Summing the total loss over i and j we have
+qS´1
+
+i“0
+⎛
+⎝pκ `
+κ´1
+
+j“0
+δi,j
+⎞
+⎠ď qS ¨ pκ ` ΔSignÑProg
+p,ϵ
+which converges to ΔSignÑProg
+p,ϵ
+as κ is increased to inﬁnity. For ΔProgÑTrans
+p,ϵ
+the
+structure of the hybrid argument is exactly the same, the diﬀerence lies in how
+the bad event is bounded. Let Hyb2 be the analog to Hyb, replacing iterations
+of Prog with those of Trans, and consider the replacement of Hybj
+2 with Hybj`1
+2
+on query i. The two games behave the same, unless (a) iteration j of query i is
+reached and unsuccessful and (b) the adversary queries H using the pair (w, m)
+at some (later) point in the game. The probability of (a) is bounded by pj and
+the probability of b is at most qHϵ. Summing and taking the limit as above yields
+ΔProgÑTrans
+p,ϵ
+.
+⊓⊔
+Remark 1. The theorem we formalized in EasyCrypt is slightly less general
+than Theorem 3. We only consider the case of a perfect simulator (i.e., ζzk “ 0),
+and we restrict to the case where the simulator is obtained by wrapping a simu-
+lator for a single run of the IDS in a while loop. These simpliﬁcations naturally
+match our application to Dilithium.
+Mechanizing the proof of the aforementioned variant of Theorem 3 turned out
+to be challenging for a number of reasons. In the following, we brieﬂy comment
+on the most important ones.
+First and foremost, the analysis of the bad event used to establish the bound
+ΔSignÑProg
+p,ϵ
+crucially relies on the ability to take into account the expected size of
+the domain of the random oracle at the point where the bad event can (poten-
+tially) occur. Even with the intermediate oracle Progκ, a worst-case assumption
+on the i preceding queries would give a term of i ¨ κ instead of
+i
+1´p, causing the
+sum to no longer converge as κ is increased to inﬁnity. The expected-size analysis
+for the domain of the random oracle H is carried out using an expectation logic.
+This expectation logic is an adaptation of the seminal work by Kozen [18] and
+was recently added to EasyCrypt to reason about the expected complexity of
+randomized programs. Our work [17] provides the ﬁrst application of this logic
+to cryptographic proofs.
+Moreover, while the argument for ΔProgÑTrans
+p,ϵ
+is intuitively much simpler than
+the argument for ΔSignÑProg
+p,ϵ
+, the proof in EasyCrypt is almost as complex. Unlike
+for ΔSignÑProg
+p,ϵ
+, the bad event is not necessarily triggered during the critical itera-
+tion; it can be triggered whenever H is queried. In order to bound the probability
+of the bad event occurring, we exploit that—assuming that iteration j of query
+i is unsuccessful—the commitment w is never used. This allows us to bound
+the bad event by transforming the game into one where w is sampled after the
+adversary is ﬁnished. This is called an eager/lazy argument in EasyCrypt.
+Lastly, the hybrid arguments for bounding ΔSignÑProg
+p,ϵ
+and ΔProgÑTrans
+p,ϵ
+involve a
+complex interplay of up-to-bad reasoning, hybrid steps, and a limit construction
+
+380
+M. Barbosa et al.
+that ultimately lets the number of hybrid steps approach inﬁnity. To the best of
+our knowledge, such a construction has not been formalized in EasyCrypt before.
+6
+A Machine-Checked Security Proof for Dilithium
+We now describe the machine-checked security proof for Dilithium. More pre-
+cisely, we prove EF-CMA security of the “template scheme” from the speciﬁcation
+document [1, Fig. 1] extended with public key compression. This is equivalent
+to Dilithium-QROM [5, Figure 17] with A and y sampled randomly (i.e., not
+generated from a seed) and with an unbounded loop for the signing procedure.
+The overall structure of the machine-checked proof largely follows [5]. We
+ﬁrst prove EF-NMA security by a reduction from MLWE and SelfTargetMSIS. We
+then express Dilithium as the FSwA transform of an IDS and provide an HVZK
+simulator for this IDS. This allows us to instantiate Theorem 3 and conclude
+EF-CMA security of Dilithium.
+6.1
+Dilithium Speciﬁcation
+Most of the operations in Dilithium operate on vectors and matrices over the
+rings R :“ Z[X]/(Xn ` 1) and Rq :“ Fq[X]/(Xn ` 1). The speciﬁcation [1] sets
+n to 256 and q to the prime 8380417 “ 223 ´ 213 ` 1. In addition, there are
+a number of supporting algorithms (e.g., highBits or makeHint) that deal with
+certain kinds of rounding.
+While the speciﬁcation is written for one (parametric) mathematical struc-
+ture, the security proof of Dilithium only makes use of a select few properties
+of this structure. For the machine-checked security proof, we insert an extra
+layer of abstraction. We deﬁne an abstract theory deﬁning an abstract ring type
+Rq together with the various (abstract) supporting algorithms and the prop-
+erties relating them. We then carry out the entire security proof with respect
+to these abstract operations. We also prove that the polynomial ring from the
+speciﬁcation can be used to implement all operations such that all axioms are
+satisﬁed. While this extra layer of abstraction does not remove any proof bur-
+den, it allows us to make explicit the minimal structure required to carry out the
+security proof and cleanly separate the arithmetic reasoning required to build
+the required structure from the more high-level parts of the security proof.
+The supporting algorithms are as follows. In addition to L1 and the L∞
+norms, written ∥∥1 and ∥∥∞respectively, we have two rounding functions.
+Intuitively, power2round(r, d) rounds to the nearest multiple of 2d and removes
+trailing zeros. Similarly, highBits(r, α) round into α buckets of (roughly) equal
+size. We treat the result of highBits as an (abstract) bucket designation while
+lowBits(r, α) can be seen as the diﬀerence between r and the center of its desig-
+nated bucket. Lastly, h :“ makeHint(z, r, α) creates a “hint” for useHint(h, r, α)
+to compute the high bits of r ` z without knowing z, provided z is small. All
+operations, except ∥∥1 and ∥∥∞, are generalized pointwise to vectors Rk
+q. The
+former is only used on Rq while for the latter the vector version is deﬁned as
+∥r∥∞:“ maxi ∥ri∥∞. Further, we write Sl
+γ for the uniform distribution over Rl
+q
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+381
+keygen():
+1: A ←Rkˆl
+q
+2: (s1, s2) ←Sl
+η ˆ Sk
+η
+3: t :“ As1 ` s2
+4: t1 :“ power2round(t, d)
+5: t0 :“ t ´ t1 ¨ 2d
+6: pk :“ (A, t1)
+7: sk :“ (A, s1, s2, t0)
+8: return (pk, sk)
+verify(pk, m, σ):
+1: (A, t1) :“ pk
+2: (c, (z, h)) :“ σ
+3: w1 :“ useHint(h, Az ´ ct1 ¨ 2d, 2γ2)
+4: c′ :“ H(w1, m)
+5: return [[ ∥z∥∞ă γ1 ´ β ∧c “ c′ ]].
+sign(sk, m):
+1: (A, s1, s2, t0) :“ sk
+2: r :“ K
+3: while r “ K do
+4:
+y ←Sl
+γ1´1
+5:
+w :“ Ay
+6:
+w1 :“ highBits(w, 2γ2)
+7:
+c P Bτ :“ H(w1, m)
+8:
+z :“ y ` cs1
+9:
+if ∥z∥∞ă γ1 ´ β ∧∥lowBits(w ´ cs2, 2γ2)∥∞ă γ2 ´ β then
+10:
+h :“ makeHint(´ct0, w ´ cs2 ` ct0, 2γ2)
+11:
+r :“ (z, h)
+12: return (c, r)
+Fig. 5. The Dilithium signature scheme
+conditioned on ∥∥∞ď γ. With the supporting algorithms in place, the Dilithium
+signature scheme is deﬁned in Fig. 5.
+While we present our results using a conventional mathematical presenta-
+tion, the scheme and the security proof are completely formalized in EasyCrypt
+(see full version [20, Fig. 13]). Note that, in contrast to [5], we are working in a
+typed setting. In particular, the hash function (or random oracle) H takes pairs
+(w1, m), where m is a message and w : high2γ2, as arguments and outputs a
+uniformly random c P Bτ:
+Bτ :“ {c P Rq | ∥c∥∞“ 1 and ∥c∥1 “ τ} .
+In addition to the parameters n and q internal to Rq, the scheme has a
+number of additional parameters: the size of A (i.e., k ˆ l) the coeﬃcient ranges
+for s1, s2 (the interval [´η, η]) and y (the interval [´γ1`1, γ1´1]), the low-order
+rounding range (α :“ 2γ2), the number d of bits dropped from t, and the number
+τ of ˘1′s in c (cf. Bτ above). Further, there is the derived parameter β :“ τ ¨η.12
+We now give some of the properties of Rq and the supporting algorithms that
+we require for the security proof. Let q and α be integers such that 2α ă q, q ” 1
+mod α and α is even. Further let r and z be vectors over Rq where ∥z∥∞ď α/2
+12 See [1] for a discussion on how these parameters are set in practice.
+
+382
+M. Barbosa et al.
+and let h be a vector of hints. We require:
+useHint(makeHint(z, r, α), r, α) “ highBits(r ` z, α) ,
+(13)
+∥r ´ shiftα(useHint(h, r, α))∥∞ď α ` 1 ,
+(14)
+∥r ´ power2round(r, d) ¨ 2d∥∞ď 2d´1 , and
+(15)
+shiftα is injective.
+(16)
+There are, of course, a number of additional properties we require (e.g.,
+0 ď ∥r∥∞, ∥ct∥∞ď ∥c∥1 ¨ ∥t∥∞, or the triangle inequality ∥u ` v∥∞ď ∥u∥∞`
+∥v∥∞). For the complete list we refer to the DRing theory (for the properties
+of Rq and the supporting algorithms) and the DVect theory for the lifting to
+vectors.
+Even though verify only uses A and t1, the security proofs assume that
+the adversary knows t, allowing it to derive both t1 and t0. In particular, the
+entirety of t is needed to deﬁne the HVZK simulator for the EF-CMA to EF-NMA
+reduction. Hence, the ﬁrst step of the proof is to change the public key to (A, t),
+the secret key to (A, s1, s2), and adapt sign and verify to compute t1 and t0 as
+necessary. We call this scheme Simpliﬁed Dilithium (DilithiumS) and prove the
+following lemma showing that it is suﬃcient to establish security for this variant
+of the construction.
+Lemma 6. Let ASign,H be a CMA attacker against Dilithium. Then there exists
+an adversary BSign,H such that:
+AdvEF-CMA
+Dilithium(A) ď AdvEF-CMA
+DilithiumS(B) Further,
+Time(A) « Time(B).
+6.2
+Reduction to MLWE and SelfTargetMSIS
+We now prove EF-NMA security of the simpliﬁed scheme. The reduction to MLWE
+and SelfTargetMSIS closely follows [1,5]. We ﬁrst sketch the mathematical proof
+for the sake of completeness — we correct minor points with respect to the state-
+ments in [5] and [1] that became clear in the formal proof — and then com-
+ment on the formalization in EasyCrypt. We begin by recalling the MLWE and
+SelfTargetMSIS security assumptions for the ring Rq used by Dilithium.
+Deﬁnition 3 (MLWE Assumption). Let m and k be integers and let D :
+Rq →[0, 1] be a distribution. The advantage of an algorithm A for solving the
+decisional MLWEm,k,D problem over the ring Rq is:
+AdvMLWE
+m,k,D(A) :“
+Pr
+
+A(A, t) “ 1
+ A ←Rmˆk
+q
+; t ←Rm
+q
+
+´
+Pr
+
+A(A, As1 ` s2) “ 1
+ A ←Rmˆk
+q
+; s1 ←Dk; s2 ←Dm .
+Deﬁnition 4 (Self-target MSIS Assumption). Let m and k be integers and
+let H : Rm
+q ˆ M →Bτ be a random oracle.
+AdvSelfTargetMSIS
+H,m,k,γ
+:“
+Pr
+
+∥r∥∞ď γ
+H([ Im | A ] ¨ r, μ) “ r[m ` k ´ 1]
+A ←Rmˆk
+q
+; (r, μ) ←AH(A)
+
+.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+383
+keygen′():
+1: A ←Rkˆl
+q
+2: t ←Rk
+q
+3: return ((A, t), witness)
+C(A′ : Rkˆl`1
+q
+):
+1: (A, t) :“ A′
+2: t :“ ´t
+3: (m, (c, (z, h))) ←AH′(A, t)
+4: t1 :“ power2round(d, t)
+5: r :“ Az ´ ct1 ¨ 2d
+6: u1 :“ r ´ shiftα(useHint(h, r, α)
+7: u2 :“ c(t ´ t1 ¨ 2d)
+8: return ((u1 ´ u2) | z | [c])
+Fig. 6. Randomized keygen and reduction to SelfTargetMSIS
+The goal of this section is then to prove the following lemma.
+Lemma 7. For every adversary ASign,H breaking NMA security of simpliﬁed
+Dilithium, we can construct an MLWE adversary B and a SelfTargetMSIS adver-
+sary C such that:
+AdvEF-NMA
+DilithiumS(A) ď AdvMLWE
+k,l,Sη(B) ` AdvSelfTargetMSIS
+G,k,l`1,ζ
+(C)
+where ζ :“ max
+
+γ1 ´ β, 2γ2 ` 1 ` τ2d´1
+and G : Rq ˆ Msg →Bτ is a random
+oracle. Further Time(A) « Time(B) « Time(C).
+Proof (Sketch). The proof consists of three steps. The ﬁrst step is to replace key-
+gen with a keygen′, sampling t uniformly at random and returning an undeﬁned
+(and unused) secret key (cf. Fig. 6). Taking B to be the remainder of the EF-
+NMA security game after key generation, the diﬀerence between the two games is
+exactly AdvMLWE
+k,l,Rq(B). Next, we deﬁne an oracle H′(w1, m) :“ G(shiftα(w1), m).
+Since shiftα is injective and both H (used by our scheme) and G (the random
+oracle from the SelfTargetMSIS assumption) have as output distribution the uni-
+form distribution over Bτ, replacing H by H′ incurs no loss.
+It remains to construct the reduction C that returns a valid solution for
+the SelfTargetMSIS problem whenever AH′(A, t) successfully forges a signature
+(for some (A, t) derived from the SelfTargetMSIS instance). Writing | for vector
+concatenation, the reduction is given in Fig. 6. Given a SelfTargetMSIS instance
+A′ with dimensions k ˆ l ` 1, C splits oﬀthe last column, negates it, and passes
+the parts to the EF-NMA adversary. We have that the distribution of (A, t) is
+identical to the EF-NMA game (using keygen′ for key generation). Now assume
+that (m, (c, (z, h))) passes veriﬁcation with respect to H′. That is, we have:
+1. H′(useHint(h, Az ´ ct1 ¨ 2d, α), m) “ c
+2. ∥z∥∞ă γ1 ´ β
+Now with r′ :“ ((u1 ´ u2) | z | [c]) P Rk`l`1
+q
+as deﬁned in C, we have:
+G([Ik|A′] ¨ r′, m) “ G([Ik|A| ´ t] ¨ r′, m)
+“ G(Az ´ ct ` (u1 ´ u2), m)
+“ H′(useHint(h, Az ´ ct1 ¨ 2d, α), m)
+“ r′[k ` l] .
+
+384
+M. Barbosa et al.
+Hence, r′ satisﬁes the “self-target” condition and it remains to show ∥r′∥∞ď
+max
+
+γ1 ´ β, 2γ2 ` 1 ` τ2d´1
+. For z this follows by assumption, and for c we
+have ∥[c]∥∞“ 1. For (u1 ´ u2), recalling that we set α “ 2γ2, we have:
+∥u1 ´ u2∥∞ď ∥u1∥∞`∥u2∥∞ď 2γ2`1`∥c∥1¨∥t ´ t1 ¨ 2d∥∞ď 2γ2`1`τ2d´1
+where the bound for u1 follows with Inequality (14) and the bound for u2 follows
+with Inequality (15).
+⊓⊔
+The main technical diﬃculty when formalizing the results in this section was
+to develop a matrix library that would support all the required operations. This
+was done in collaboration and is shared between several developments. In the
+mathematical presentation we have assumed tacitly that all matrix operations
+are carried out on matrices and vectors of compatible dimensions. In EasyCrypt,
+we use a matrix theory where operations are deﬁned even if the dimensions do
+not match, with “undeﬁned” behaviors chosen to simplify the equational theory.
+This does not cause any problems for matrices and vectors provided by the
+schemes or games. However, vectors given by the adversary (i.e., the z and h
+component of a signature) need to be checked for the correct length by the verify
+procedure (see full version [20, Fig. 13]).
+6.3
+The HVZK Simulator and EF-CMA Security
+We now extend the security proof from EF-NMA to EF-CMA. This mainly
+amounts to instantiating Theorem 3. In order to do so, we need to express
+the simpliﬁed Dilithium scheme as the FSwA transform of an IDS and provide
+a HVZK simulator for this IDS. There are two minor technical complications.
+The ﬁrst is that, in order to simplify the mechanization of the proof of Theo-
+rem 3, we restricted ourselves to IDS where Com, Resp, and Verify were given as
+operators (i.e., mathematical functions) rather than procedures (i.e., imperative
+code such as that given in Fig. 5). Now we have to “pay” for this simpliﬁcation
+and show that our scheme can indeed be seen as the FS transform of such an
+operator-based IDS. The second complication is that Dilithium is actually based
+on a variant of the FS transform that is speciﬁc to commitment recoverable IDS,
+allowing to replace the commitment w with the (in practice much smaller) chal-
+lenge c in the signature. The diﬀerence is mainly in veriﬁcation as shown below
+(generic on the left, commitment recoverable on the right):
+verify(pk, m, σ “ (w, z)):
+1: c :“ H(w, m)
+2: return [[Verify(pk, w, c, z)]]
+verify(pk, m, σ “ (c, z)):
+1: w :“ Recover(pk, c, z)
+2: return [[Verify(pk, w, c, z)]] ∧[[c “ H(w, m)]]
+The Recover function for Dilithium is
+Recover((A, t), c, (z, h)) :“ useHint(h, Az ´ c ¨ power2round(t, d) ¨ 2d) .
+For Sign (cf. Fig. 5), Lines 4–6 correspond to Com while Lines 8–11 correspond
+to Resp. Deﬁning the remaining operators and proving that no context can dis-
+tinguish the original scheme from the FSwA transform of the IDS is routine.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+385
+Sim(pk “ (A, t)):
+1: r :“ K
+2: b ←Dz
+3: if b then
+4:
+t0 :“ t ´ power2round(t, d) ¨ 2d
+5:
+c ←Bτ
+6:
+z ←Sl
+γ1´β´1
+7:
+if ∥lowBits(Az ´ ct, α)∥∞ă γ2 ´ β then
+8:
+h :“ makeHint(´ct0, Az ´ ct ` ct0))
+9:
+r :“ (Recover(pk, c, z), c, (z, h))
+10: return r.
+Fig. 7. HVZK simulator
+Proving EF-CMA security of the scheme obtained using the FSwA transform
+for commitment-recoverable IDS can trivially be reduced to proving EF-CMA
+security of the standard FSwA transform. However, the reduction requires an
+additional qS random oracle queries to turn the signatures of the form (w, z),
+returned by the signing oracle, into signatures of the form (c, z) as expected by
+the adversary.
+Now we deﬁne the HVZK Simulator for the IDS sketched above. We let Dz
+be the distribution that with probability |Sl
+γ1´β´1|/|Sl
+γ1´1| returns true and oth-
+erwise returns false. The Sim in Fig. 7 is a minor variation of the one in [5,
+Figure 14]. The main diﬀerence is that we make explicit the use of Recover to
+satisfy the interface of Theorem 3. As mentioned earlier, executing Sim in a while
+loop until z ̸“ K yields an acHVZK simulator.
+Putting everything together, we obtain the security theorem for Dilithium as
+we have formalized it in EasyCrypt:
+Theorem 4. Let Γ, δ, ϵ and p0 ă 1 be such that PrA←Rkˆl
+q [¬Γ] ď δ,
+EA←Rkˆl
+q
+
+max
+w
+Pr
+y←Sl
+γ1´1
+[highBits(Ay, 2γ2) “ w]
+ Γ
+
+ď ϵ, and
+Prz←Sl
+γ1´β´1 [∥lowBits(Az ´ ct, 2γ2)∥∞ě γ2 ´ β] ď p0 for all A satisfying Γ, all
+c P Bτ and all t P Rl
+q. Then for every classical adversary ASign,H making at most
+qS signing queries and at most qH random oracle queries and for the adversaries
+B (against MLWE) and the CG (against SelfTargetMSIS) constructed in the proof
+of Lemma 7 we have:
+AdvEF-CMA
+Dilithium(A) ď AdvMLWE
+k,l,Sη(B) ` AdvSelfTargetMSIS
+G,k,l`1,ζ
+(C)
+` 2qS(qH ` qS ` 1)ϵ
+1 ´ p
+` qSϵ(qS ` 1)
+2(1 ´ p)2
+` δ
+where p :“
+|Sl
+γ1´β´1|
+|Sl
+γ1´1| p0 `
+
+1 ´ |Sl
+γ1´β´1|
+|Sl
+γ1´1|
+
+and ζ
+:“ max {γ1 ´ β, 2γ2 ` 1`
+τ2d´1
+.
+
+386
+M. Barbosa et al.
+We remark that we do not show in EasyCrypt that the execution times of B and
+C are close to the execution time of A, but this can be checked by inspection.
+As a consequence, the formal statement needs to be with respect to speciﬁc
+reductions rather than existentially quantiﬁed adversaries (see full version [20,
+Fig. 14]).
+7
+Concrete Security Analysis
+In the following, we quantify the security loss of our proof to analyze the impact
+on the concrete security of Dilithium. Our proof of security for Dilithium has the
+same overall structure as the one given in [5] regarding the reductions from the
+underlying computational assumptions MLWE and SelfTargetMSIS. Indeed, the
+bounds we establish for the advantage of both classical and quantum attackers
+diﬀer from the original proofs only in the additive terms, which in our case are
+larger due to additional (Q)ROM reprogramming steps.
+In the NIST submission [1, Sect. 6.2] the authors simplify the additive secu-
+rity loss as 2´254 — a conservative value — and claim that this bound is achieved
+for all of the parameter sets considered, based on the analysis performed in [5].
+In what follows, we give more precise bounds for this additive loss according to
+our corrected proofs. We show that it is still low enough to comfortably meet
+the requirements of the relevant NIST security levels.
+We recall the expressions for the security loss L in the ROM from Theorem 4,
+and its quantum counter part L∗obtained from Theorem 2, i.e.
+L :“ 2qS(qH ` qS ` 1)ϵ
+1 ´ p
+` qSϵ(qS ` 1)
+2(1 ´ p)2
+` δ
+and
+L∗:“ 2qS
+√ϵ
+1 ´ p
+
+qH ` 1 `
+qS
+1 ´ p ` 2(qH ` 1)
+ qSϵ
+1 ´ p ` δ .
+We present an extended analysis of the bounds on ϵ and δ for the diﬀerent
+parameter settings for Dilithium (for the diﬀerent NIST levels) in the full version
+[20, Appendix A] using a computer-aided analysis of the distribution of the rank
+of (the upper square part of) the matrix A. We note that δ and ϵ are related
+and allow for diﬀerent tradeoﬀs for ﬁxed parameters which we did not fully
+exploit, yet. For the rejection probability p, we use the heuristic from [5] to treat
+lowBits(Az ´ ct) as uniformly random in Sk
+γ2´1. This gives rise to the following
+table.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+387
+p
+qS
+qH
+δ
+ϵ
+loss
+NIST2
+ď 49
+64
+264
+2128
+2´209
+2´403
+L ď 2´206
+2´64
+2´446
+L∗ď 2´58
+264
+2´265
+2´390
+L ď 2´257
+2´117
+2´428
+L∗ď 2´113
+1
+2´265
+2´390
+L ď 2´257
+2´117
+2´428
+L∗ď 2´113
+NIST3
+ď 103
+128
+264
+2192
+2´867
+2´1108
+L ď 2´847
+2´362
+2´1180
+L∗ď 2´360
+NIST5
+ď
+759
+1024
+264
+2256
+2´1268
+2´1584
+L ď 2´1260
+2´540
+2´1664
+L∗ď 2´538
+Fig. 8. Concrete security loss of Dilithium from Theorems 2 (L∗) and 4 (L).
+The take-away from our analysis is that the statistical additive loss remains
+suﬃciently small for all scenarios and therefore the dominant terms for the secu-
+rity level will remain the bounds for MLWE and SelfTargetMSIS. To be more
+precise, the table says that an attacker doing qH hash computations only gains
+an additive advantage of 2´58 in the worst case (quantum attack against level 2).
+For reference, NIST security level 2 corresponds to a setting where the expected
+cost of a successful attack should match that of a collision search in a generic
+256-bit hash function. This is often estimated to be 256/3 « 86. So, after 286
+quantum queries, we would expect to ﬁnd a collision. In our case, even after 2128
+quantum queries, the success probability is bounded by 2´58. Actually, one num-
+ber that may appear debatable (in the sense of really guaranteeing the claimed
+security) is the bound for level 2 after a single query of a success probability
+of 2´113. This number is caused by the number of signing queries which domi-
+nates in this case. This implies that for this attack, the cost is also dominated
+by the signing queries (here 264). What the number says is that, if one could
+ignore the cost of the signing queries, then there would exist an attack with an
+expected cost of about 2113 which is just the number of hash queries. However,
+given that the cost of each of these attacks is at least 264 the total attack cost is
+2177. Hence, for all the parameters there is a comfortable margin regarding the
+security loss induced by the reduction. Thereby the full security of Dilithium is
+still determined by the hardness of solving MLWE and SelfTargetMSIS.
+Acknowledgments. Jelle Don is supported by the ERC-ADG project ALGSTR
+ONGCRYPTO (Project No. 740972). Benjamin Gr´egoire is supported by the Agence
+Nationale de la Recherche (French National Research Agency) as part of the France
+2030 programme - ANR-22-PECY-0006. Yu-Hsuan Huang is supported by the Dutch
+Research Agenda (NWA) project HAPKIDO (Project No. NWA.1215.18.002), which
+is ﬁnanced by the Dutch Research Council (NWO). Andreas H¨ulsing is supported
+by an NWO VIDI grant (Project No. VI.Vidi.193. 066). Xiaodi Wu is supported
+by AFOSR Young Investigator Program (YIP) Award (FA95502110094) and NSF
+CAREER Award (NSF-CCF-1942837).
+
+388
+M. Barbosa et al.
+References
+1. Ducas, L., et al.: CRYSTALS-Dilithium - algorithm speciﬁcations and support-
+ing documentation (version 3.1). Technical report (February 2021). Speciﬁcation
+document
+2. Ducas, L., et al.: CRYSTALS-Dilithium: A lattice-based digital signature scheme.
+IACR Trans. Cryptographic Hardware Embedded Syst., 238–268 (2018)
+3. Lyubashevsky, V.: Fiat-shamir with aborts: applications to lattice and factoring-
+based signatures. In: Matsui, M. (ed.) ASIACRYPT 2009. LNCS, vol. 5912, pp.
+598–616. Springer, Heidelberg (2009). https://doi.org/10.1007/978-3-642-10366-
+7 35
+4. Lyubashevsky, V.: Lattice signatures without trapdoors. In: Pointcheval, D.,
+Johansson, T. (eds.) EUROCRYPT 2012. LNCS, vol. 7237, pp. 738–755. Springer,
+Heidelberg (2012). https://doi.org/10.1007/978-3-642-29011-4 43
+5. Kiltz, E., Lyubashevsky, V., Schaﬀner, C.: A concrete treatment of Fiat-Shamir
+signatures in the quantum random-oracle model. In: Nielsen, J.B., Rijmen, V.
+(eds.) EUROCRYPT 2018. LNCS, vol. 10822, pp. 552–586. Springer, Cham (2018).
+https://doi.org/10.1007/978-3-319-78372-7 18
+6. Barbosa, M., et al.: Sok: Computer-aided cryptography. In: 42nd IEEE Symposium
+on Security and Privacy, SP 2021, San Francisco, CA, USA, 24–27 May 2021, pp.
+777–795. IEEE (2021)
+7. Bhargavan, K., Blanchet, B., Kobeissi, N.: Veriﬁed models and reference imple-
+mentations for the TLS 1.3 standard candidate. In: IEEE Symposium on Security
+and Privacy (S&P), pp. 483–502. IEEE Computer Society (2017)
+8. Delignat-Lavaud, A., et al.: Implementing and proving the TLS 1.3 record layer. In:
+IEEE Symposium on Security and Privacy (S&P), pp. 463–482. IEEE Computer
+Society (2017)
+9. Cremers, C., Horvat, M., Scott, S., van der Merwe, T.: Automated analysis and
+veriﬁcation of TLS 1.3: 0-rtt, resumption and delayed authentication. In: IEEE
+Symposium on Security and Privacy (S&P), pp. 470–485. IEEE Computer Society
+(2016)
+10. Cremers, C., Horvat, M., Hoyland, J., Scott, S., van der Merwe, T.: A comprehen-
+sive symbolic analysis of TLS 1.3. In: ACM Conference on Computer and Com-
+munications Security (CCS), pp. 1773–1788. ACM (2017)
+11. Lyubashevsky, V., Nguyen, N.K., Plancon, M.: Lattice-based zero-knowledge
+proofs and applications: Shorter, simpler, and more general. Cryptology ePrint
+Archive (2022)
+12. De Feo, L., Galbraith, S.D.: SeaSign: compact isogeny signatures from class group
+actions. In: Ishai, Y., Rijmen, V. (eds.) EUROCRYPT 2019. LNCS, vol. 11478, pp.
+759–789. Springer, Cham (2019). https://doi.org/10.1007/978-3-030-17659-4 26
+13. Beullens, W., Katsumata, S., Pintore, F.: Calamari and Falaﬂ: logarithmic (link-
+able) ring signatures from isogenies and lattices. In: Moriai, S., Wang, H. (eds.)
+ASIACRYPT 2020. LNCS, vol. 12492, pp. 464–492. Springer, Cham (2020).
+https://doi.org/10.1007/978-3-030-64834-3 16
+14. Beullens, W., Dobson, S., Katsumata, S., Lai, Y,-F., Pintore, F.: Group signatures
+and more from isogenies and lattices: Generic, simple, and eﬃcient. In: Annual
+International Conference on the Theory and Applications of Cryptographic Tech-
+niques, pp. 95–126. Springer (2022). https://doi.org/10.1007/s10623-023-01192-x
+15. Zhandry, M.: How to record quantum queries, and applications to quantum indif-
+ferentiability. In: Boldyreva, A., Micciancio, D. (eds.) CRYPTO 2019. LNCS, vol.
+
+Fixing and Mechanizing the Security Proof of Fiat-Shamir
+389
+11693, pp. 239–268. Springer, Cham (2019). https://doi.org/10.1007/978-3-030-
+26951-7 9
+16. Barbosa, M.: EasyPQC: Verifying post-quantum cryptography. In: Proceedings of
+the 2021 ACM SIGSAC Conference on Computer and Communications Security,
+CCS 2021, pp. 2564–2586. Association for Computing Machinery, New York (2021)
+17. Avanzini, M., Barthe, G., Gr´egoire, B., Moser, G., Vanoni, G.: A mechanisation of
+the complexity analysis of skiplists. Unpublished manuscript (2023)
+18. Kozen, D.: A probabilistic pdl. In: Proceedings of the Fifteenth Annual ACM
+Symposium on Theory of Computing, STOC 1983, pp. 291–297. Association for
+Computing Machinery, New York (1983)
+19. Devevey, J., Fallahpour, P., Passel`egue, A., Stehl´e, D.: A detailed analysis of Fiat-
+Shamir with aborts. Cryptology ePrint Archive, Paper 2023/245 (2023). https://
+eprint.iacr.org/2023/245
+20. Barbosa, M.: Fixing and mechanizing the security proof of Fiat-Shamir with aborts
+and Dilithium. Cryptology ePrint Archive, Paper 2023/246 (2023). https://eprint.
+iacr.org/2023/246
+21. Grilo, A.B., H¨ovelmanns, K., H¨ulsing, A., Majenz, C.: Tight adaptive reprogram-
+ming in the QROM. In: Tibouchi, M., Wang, H. (eds.) ASIACRYPT 2021. LNCS,
+vol. 13090, pp. 637–667. Springer, Cham (2021). https://doi.org/10.1007/978-3-
+030-92062-3 22
+
