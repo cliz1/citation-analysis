@@ -204,7 +204,7 @@ def extract_venue(reference: str) -> str:
             return _label
 
     # "Advances in Cryptology – CRYPTO 2021" / "Topics in Cryptology – CT-RSA 2020"
-    m = re.search(r"\b(?:Advances|Topics)\s+in\s+Cryptology\s*[–\-]\s*([A-Z][A-Z0-9\-]+)\s+(\d{4})", reference, re.I)
+    m = re.search(r"\b(?:Advances|Topics)\s+in\s+Cryp-?tology\s*[–\-—]\s*([A-Z][A-Z0-9\-]+)\s+(\d{4})", reference, re.I)
     if m:
         return f"{m.group(1)} {m.group(2)}"
 
@@ -254,14 +254,22 @@ def extract_venue(reference: str) -> str:
         return ""
 
     # Alpha-key style: venue appears after editors list — "In EDITORS, editors, CRYPTO 2019"
-    # Handles apostrophe-year too: "editors, ASIACRYPT'99"
+    # Handles apostrophe-year too: "editors, ASIACRYPT'99" / "editors, EUROCRYPT’96"
     # Two leading uppercase letters required to exclude book titles like "Some Title 2019".
-    m = re.search(r"\bed-?itor(?:s)?,\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z][A-Za-z0-9 &'\-–]{1,30}?(?:\s+\d{2,4}\b|'\d{2}))", reference)
+    # Character class and year suffix both accept typographic right-quote (U+2019) from PDFs.
+    m = re.search(r"\bed-?itor(?:s)?,\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Z][A-Z][A-Za-z0-9 &''’\-–]{1,30}?(?:\s+\d{2,4}\b|['’]\d{2}))", reference)
     if m:
         return m.group(1).strip()
 
     # Ordinal conference where year is not adjacent: "editor, 30th SODA, pages"
     m = re.search(r"\bed-?itor(?:s)?,\s+\d+(?:st|nd|rd|th)\s+([A-Z][A-Za-z0-9&\- ]{1,20})\b", reference)
+    if m:
+        return m.group(1).strip()
+
+    # Mixed-case conference name: "editors, Theory of Cryptography, pages 3" /
+    # "editors, ProvSec 2020, volume 12505". Requires ", pages \d" or ", volume \d"
+    # suffix as a structural guard against matching paper titles.
+    m = re.search(r"\bed-?itor(?:s)?,\s+([A-Z][A-Za-z0-9 \-–—]{3,50}?),\s*(?:volume\s+\d|pages\s+\d)", reference)
     if m:
         return m.group(1).strip()
 
