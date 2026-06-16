@@ -366,7 +366,9 @@ class _DblpRateLimited(Exception):
 
 def _fetch_dblp_venue(title: str) -> dict | None:
     """Single DBLP title lookup; returns full info dict on hit, None on miss.
-    Raises _DblpRateLimited on HTTP 429 so the caller can bail instead of retrying."""
+    Raises _DblpRateLimited on HTTP 429 so the caller can bail instead of retrying.
+    Always sleeps 1.5s after the HTTP call so rate-limit courtesy is enforced
+    only when an actual network request is made (not on cache hits)."""
     try:
         query = urllib.parse.quote(title.replace('-', ' '))
         url = f"https://dblp.org/search/publ/api?q={query}&format=json&h=1"
@@ -385,6 +387,8 @@ def _fetch_dblp_venue(title: str) -> dict | None:
         return None
     except Exception:
         return None
+    finally:
+        time.sleep(1.5)
 
 
 def query_dblp_for_venue(raw_reference: str) -> str:
@@ -475,8 +479,6 @@ def query_dblp_for_venue(raw_reference: str) -> str:
             dblp_cache[variant] = info
             return _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
         dblp_cache[variant] = _MISS
-        if i < len(variants) - 1:
-            time.sleep(1.0)  # match inter-ref cadence; genuine miss, not rate-limit
 
     return ""
 
@@ -625,7 +627,6 @@ for _, row in df_raw.iterrows():
                     n_dblp_misses += 1
                     dblp_miss_refs.append(ref)
         print(f"  DBLP result: {venue or 'none'}")
-        time.sleep(1.5)
 
     citation_rows.append({
         "source_paper": title,
