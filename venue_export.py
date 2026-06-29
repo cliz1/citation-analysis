@@ -144,9 +144,9 @@ def extract_venue(reference: str) -> str:
         candidate = re.sub(r'\s+\d[\d\.]*$', '', m.group(1).strip())  # strip trailing volume number
         # Bypass guard for known J.-prefixed journal abbreviations that the guard misidentifies
         # as author initials (e.g. "J. Cryptol." matches the guard's end-of-string branch).
-        if re.match(r'^J\.\s+(?:Cryptol|ACM\b|Comput|Math|Number|Symb\.)', candidate, re.I):
+        if re.match(r'^J\.\s+(?:Cryptol|ACM\b|Comput|Math|Number|Symb\.|Am\.)', candidate, re.I):
             return candidate
-        if not re.match(r'^J\.\s+(?:[A-Z]\.\s+)*[A-Z][a-z]{2,}(?:[\.,](?:\s+[A-Z]|$)|\s+[a-z]|$)', candidate):
+        if not re.match(r'^J\.\s+(?:[A-Z]\.\s+)*[A-Z][a-z]+(?:[\.,](?:\s+[A-Z]|$)|\s+[a-z]|$)', candidate):
             return candidate
 
     # (eds.) abbreviation + ordinal: "Boneh, D. (eds.) 45th ACM STOC, ACM Press"
@@ -178,16 +178,23 @@ def extract_venue(reference: str) -> str:
         return m.group(1).strip()
 
     # "In STOC. ACM, 1990" / "In NDSS. The Internet Society, 1999" — venue before ". Publisher"
-    m = re.search(r"\bIn\s+([A-Z][A-Z0-9]{2,10})\.\s+(?:ACM|IEEE|Springer|USENIX|The\s+Internet\s+Society)[,\s]", reference, re.I)
-    if m:
+    # Also legitimately matches mixed-case venues here, e.g. "In EuroSys. ACM, 2022" --
+    # so case can't be the guard. Instead deny the generic structural words ("Proc.",
+    # "Proceedings.") that share the same ". Publisher" shape but aren't venue names.
+    m = re.search(r"\bIn\s+([A-Za-z][A-Za-z0-9]{2,15})\.\s+(?:ACM|IEEE|Springer|USENIX|The\s+Internet\s+Society)[,\s]", reference, re.I)
+    if m and m.group(1).lower() not in ("proc", "proceedings"):
         return m.group(1).strip()
 
     # "In CRYPTO (2), pages" — venue with volume number in parens
+    # No confirmed overcapture for this anchor; left as the original full re.I match.
     m = re.search(r"\bIn\s+([A-Z][A-Z0-9]{2,10})\s+\(\d{1,2}\)[,\s]", reference, re.I)
     if m:
         return m.group(1).strip()
 
     # "in FMCAD, ser. Lecture Notes..." — venue immediately before ", ser."
+    # Unlike the publisher-name pattern above, this one's anchor (", ser.") doesn't
+    # risk matching "Proc"/"Proceedings", and mixed-case venue names (Inscrypt,
+    # EuroSys, ProvSec) genuinely rely on re.I here -- keep it unscoped.
     m = re.search(r"\bIn\s+([A-Z][A-Z0-9&\- ]{1,20}),\s*ser\.", reference, re.I)
     if m:
         return m.group(1).strip()
@@ -209,6 +216,8 @@ def extract_venue(reference: str) -> str:
         return f"{m.group(1)} {m.group(2)}"
 
     # "In ACRONYM, volume X of LIPIcs" — Dagstuhl LIPIcs series with acronym before volume
+    # Same reasoning as the ser. pattern above: anchor is distinctive, mixed-case
+    # venue names (OPODIS, AFT) rely on re.I -- keep it unscoped.
     m = re.search(r"\bIn\s+([A-Z][A-Z0-9&\-]{1,15}),\s+volume\s+\d+\s+of\s+LIPIcs\b", reference, re.I)
     if m:
         return m.group(1).strip()
@@ -311,17 +320,27 @@ def extract_venue(reference: str) -> str:
     if m:
         return m.group(1).strip()
 
+    # Connector words that signal the match below is a truncated fragment of a
+    # longer journal name (e.g. "Mathematics of Computation" -> "Computation",
+    # "Transactions on Networking" -> "Networking") rather than a complete venue.
+    # "in" is deliberately excluded: "In FOCS, vol. 82" / "In NDSS, vol. ..." use
+    # "in" as the citation's own marker, not as a mid-title connector, and the
+    # acronym there is already correct -- including "in" would defer correct
+    # matches to DBLP for no reason. Confirmed against the corpus: of/on/and/for/the
+    # never precede an already-correct acronym match, only genuine truncations.
+    _TRUNCATION_CONNECTOR = re.compile(r'\b(?:of|on|and|for|the)\s*$', re.I)
+
     # Abbreviated journal names ending in volume/issue numbers.
     # Each word must start uppercase so the pattern can't span into a paper title.
     # [\s,]+ handles "Commun. ACM, 24(2)" where comma separates journal from volume.
     m = re.search(r"([A-Z][A-Za-z\.]{1,12}(?:\s+[A-Z][A-Za-z\.]{1,12}){0,4})[\s,]+\d+\(\d+\)", reference)
-    if m:
+    if m and not _TRUNCATION_CONNECTOR.search(reference[:m.start(1)]):
         return m.group(1).strip()
 
     # Journal names with "vol. X, no. Y" notation: "Int. J. Inf. Sec., vol. 14, no. 6, 2015"
     # Each word must start uppercase (same guard as above) to prevent spanning paper titles.
     m = re.search(r"([A-Z][A-Za-z\.]{1,12}(?:\s+[A-Z][A-Za-z\.&]{1,12}){0,4}),?\s+vol\.\s*\d", reference)
-    if m:
+    if m and not _TRUNCATION_CONNECTOR.search(reference[:m.start(1)]):
         return m.group(1).strip()
 
     # Standalone venue names that appear without an "In" prefix.
@@ -602,7 +621,24 @@ for _, row in df_raw.iterrows():
         continue
 
     venue = extract_venue(ref)
-    if venue:
+    if venue == "web":
+        # Generic URL fallback can mask standards docs that carry a URL but no
+        # recognized venue text (RFC, NIST/FIPS, ISO/IEC, IETF drafts, etc.) --
+        # give the more specific matchers a chance before accepting "web".
+        standards_label = match_standards(ref)
+        if standards_label:
+            venue = standards_label
+            source = "standards"
+            n_standards_hits += 1
+        else:
+            grey_lit_label = match_grey_lit(ref)
+            if grey_lit_label:
+                venue = grey_lit_label
+                source = "grey_lit"
+                n_grey_lit_hits += 1
+            else:
+                source = "regex"
+    elif venue:
         source = "regex"
     else:
         print(f"  DBLP query ref: {ref[:80]}")
