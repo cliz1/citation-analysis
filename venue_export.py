@@ -99,7 +99,8 @@ _CONF_FULL_NAMES: list[tuple[str, str]] = [
     (r"Annual International Conference on the Theory and Applications of Cryptographic Techniques", "EUROCRYPT"),
     (r"International Conference on the Theory and Application of Cryptology and Information Security", "ASIACRYPT"),
     (r"IACR International (?:Conference|Workshop) on Public.Key Cryptography", "PKC"),
-    (r"ACM (?:SIGSAC )?Conference on Computer and Communications Security", "CCS"),
+    (r"Asia(?:n)? Conference on Computer (?:and|&) Communications Security", "AsiaCCS"),
+    (r"ACM (?:SIGSAC )?Conference on Computer (?:and|&) Communications Security", "CCS"),
     (r"(?:International Conference on\s+)?Applied Cryptography and Network Security", "ACNS"),
     (r"International Workshop on Fast Software Encryption", "FSE"),
     (r"International Workshop on Selected Areas in Cryptography", "SAC"),
@@ -113,6 +114,13 @@ _CONF_FULL_NAMES: list[tuple[str, str]] = [
     (r"Proceedings on Privacy Enhancing Technologies", "PoPETs"),
     (r"IACR Real World Crypto Symposium", "RWC"),
     (r"IEEE International Symposium on Information Theory", "ISIT"),
+    (r"IACR Transactions on Cryptographic Hardware and Embedded Systems", "TCHES"),
+    (r"IACR Transactions on Symmetric Cryptology", "TOSC"),
+    (r"USENIX Symposium on Operating Systems", "OSDI"),
+    (r"Management of Data", "SIGMOD"),
+    (r"Foundations of Computer Science", "FOCS"),
+    (r"Information-Theoretic Cryptography", "ITC"),
+
 ]
 
 
@@ -139,7 +147,7 @@ def extract_venue(reference: str) -> str:
     # Journal style: checked before academic URL block so DOI-bearing journal refs
     # (e.g. "J. Cryptol. 32(2)... https://doi.org/...") are caught here rather than
     # intercepted by the URL handler and forwarded to DBLP unnecessarily.
-    m = re.search(r"\b((?:J\.|Journal|Trans\.|IEEE Trans(?:actions)?\.?|ACM Trans\.)\s+[A-Za-z][A-Za-z0-9 \.]{2,40})", reference)
+    m = re.search(r"\b((?:J\.|Journal|Trans\.|IEEE Trans(?:actions)?\.?|ACM Trans\.)\s+[A-Za-z][A-Za-z0-9 \.\-]{2,40})", reference)
     if m:
         candidate = re.sub(r'\s+\d[\d\.]*$', '', m.group(1).strip())  # strip trailing volume number
         # Bypass guard for known J.-prefixed journal abbreviations that the guard misidentifies
@@ -288,7 +296,7 @@ def extract_venue(reference: str) -> str:
         return m.group(1).strip()
 
     # IEEE year-first style: "In 2018 IEEE Symposium on Security and Privacy, pages"
-    m = re.search(r"\bIn\s+\d{4}\s+([A-Z][A-Za-z0-9 &'\-]{3,50})(?:,|\s+pages|\s+vol|\.\s)", reference)
+    m = re.search(r"\bIn\s+\d{4}\s+([A-Z][A-Za-z0-9 &'\-]{3,50})(?:,|\s+pages|\s+vol|\.\s)", reference, re.I)
     if m:
         return m.group(1).strip()
 

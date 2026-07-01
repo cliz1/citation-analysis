@@ -160,6 +160,7 @@ ABBREV_MAP = {
 
     # Security venues
     "CSF": "IEEE Computer Security Foundations Symposium",
+    "IEEE CNS": "The Conference on Communications and Network Security",
     "Financial Cryptography": "Financial Cryptography and Data Security",
     "Proceedings of USENIX Security": "USENIX Security Symposium",
 
@@ -201,6 +202,8 @@ ABBREV_MAP = {
 
     # Security venues
     "AsiaCCS": "ACM Asia Conference on Computer and Communications Security",
+    "ACM AsiaCCS": "ACM Asia Conference on Computer and Communications Security",
+    "SIGMOD": "ACM SIGMOD International Conference on Management of Data",
     "ACSAC": "Annual Computer Security Applications Conference",
     "WPES@CCS": "Workshop on Privacy in the Electronic Society",
 
@@ -254,8 +257,9 @@ def normalize_venue(venue_raw: str) -> str:
     normalized = re.sub(r'\s+\d{4}[a-z]?$', '', normalized)
     # Strip trailing volume/issue numbers
     normalized = re.sub(r'\s+\d+(\(\d+\))?$', '', normalized)
-    # Fix hyphenation artifacts (hyphen followed by whitespace)
+    # Fix hyphenation artifacts (hyphen followed by whitespace, or mid-word hyphen before lowercase)
     normalized = re.sub(r'-\s+', '', normalized)
+    normalized = re.sub(r'([A-Za-z])-([a-z])', r'\1\2', normalized)
     # Collapse internal spaces after hyphen removal
     normalized = re.sub(r'\s{2,}', ' ', normalized)
     # Strip "Advances in Cryptology - " prefix (handles both hyphen and em-dash)

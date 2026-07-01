@@ -62,31 +62,7 @@ Reads `csv/<Conference>_citations_raw.csv` and assigns a venue label to each cit
 
 **Output:** `csv/<Conference>_citations_venues.csv` — one row per real citation with venue labels added; `csv/<Conference>_suspected_fps.csv` — suspected parser artifacts for manual audit.
 
-### Known extraction losses
-
-Overall extraction rate (venue assigned): EuroCrypt **95.1%**, Crypto **96.3%**, Oakland **93.2%**, USENIX **94.0%**
-
-The remaining ~4–7% are unresolved citations where all three passes failed. The breakdown of why falls into three categories.
-
-#### Structural limitations (harder to fix, not pursued)
-
-These would require changes to the pipeline architecture rather than new patterns:
-
-- **Back-references** (`In: Wiener [53], https://doi.org/...`): The citation points to another entry in the same bibliography. Resolving it would require a second lookup pass over the already-parsed reference list. ~3 entries.
-- **DOI-only references**: A bare DOI with no venue text before the URL. The title-extraction heuristic fires but produces nothing usable for DBLP. ~6 entries.
-- **Editor-preamble citations**: `In: Kaliski Jr. (ed.) CRYPTO '97` — the editor's name appears immediately after `In:`, so the venue name is never at the expected position. The `In:` pattern family requires the venue acronym to follow the colon directly. Would require parsing past the `(ed.)` prefix for old-style LNCS citations.
-- **Niche abbreviated journals** (`Period. Math. Hungar.`, `Phys. Rev. A`, `Quantum Inf. Comput.`): Would require maintaining a large lookup table of abbreviated journal names. ~12 entries across all conferences.
-
-#### Citations without a Venue
-
-These are not pattern gaps — they are reference types for which no venue exists or can be inferred from the text:
-
-- Physics, math, and CS theory journals cited in cryptography papers (`Phys. Rev. A/X/Lett.`, `Theor. Comput. Sci.`, `Mathematische Annalen`, etc.) — these are real citations but the venue isn't one we track
-- Books and textbooks (Cambridge UP, MIT Press, Elsevier, Springer monographs)
-- Cross-references to other papers in the same proceedings (`In Takagi and Peyrin [35]`, `In Canetti and Garay [10]`)
-- Preprints with no venue metadata (no year, no URL, no conference)
-- GitHub repositories, blog posts, and lecture notes cited as references
-- Proof-body or appendix text that bled into the reference section during PDF extraction (not a citation at all)
+**Overall extraction rate (venue assigned):** EuroCrypt **95.1%**, Crypto **96.3%**, Oakland **93.2%**, USENIX **94.0%**. See [Known Limitations](#known-limitations) below for the full breakdown of unresolved citations and known regex tradeoffs.
 
 ---
 
@@ -99,13 +75,7 @@ Takes `csv/<Conference>_citations_venues.csv` and normalizes the raw venue strin
 
 **Output:** `csv/<Conference>_citations_matched.csv` — same rows as the venues file with added `venue_matched` and `match_score` columns.
 
-### Known matching losses
-
-Overall matching rate: EuroCrypt **80.2%**, Crypto **76.7%**, Oakland **65.7%**, USENIX **67.7%**
-
-Citations that remain unmatched after this stage are primarily:
-- Venues not yet in `ABBREV_MAP` (known gaps: NSDI, SOSP, OSDI, EuroSys, ICML — these appear in Oakland's top-15 unmatched list)
-- Garbled or highly fragmented venue strings from hyphen artifacts upstream
+**Overall matching rate:** EuroCrypt **80.2%**, Crypto **76.7%**, Oakland **65.7%**, USENIX **67.7%**. See [Known Limitations](#known-limitations) below for the `ABBREV_MAP` gaps driving most of this loss.
 
 ---
 
@@ -122,6 +92,29 @@ Breaks down venue citation share by application awareness level (from the Google
 ### `web_venue_breakdown.py`
 
 Analyzes the `"web"` catch-all bucket in more detail.
+
+---
+
+## Known Limitations
+
+Everything below is a characterized, known gap — not a bug discovered by chance. Consolidated here in one place rather than scattered across stages.
+
+**Stage 1 (extraction):** hyphen artifacts from two-column PDF layouts fragment venue names; `dehyphenate()` mitigates but doesn't fully eliminate this. USENIX is worst-affected (two-column), EuroCrypt least (single-column LNCS). A small number of PDFs also have no detectable "References" heading, or have their final reference clipped by a directly-adjacent appendix section.
+
+**Stage 2 (venue assignment), structural gaps not pursued (would need architecture changes, not new patterns):**
+- **Back-references** (`In: Wiener [53], https://doi.org/...`) — points to another entry in the same bibliography; ~3 entries.
+- **DOI-only references** — bare DOI, no venue text for the title heuristic to use; ~6 entries.
+- **Editor-preamble citations** (`In: Kaliski Jr. (ed.) CRYPTO '97`) — editor name sits where the venue acronym is expected.
+- **Niche abbreviated journals** (`Period. Math. Hungar.`, `Phys. Rev. A`, `Quantum Inf. Comput.`) — would need a large hand-built lookup table; ~12 entries.
+- **Generic-noun misfires** (`"...Test in Europe. ACM"` → `venue_raw = "Europe"`) — 4 of 14,209 citations (0.03%); not worth a denylist since the offending words aren't a closed set.
+
+**Stage 2, citations with no venue to find** (not pattern gaps): physics/math/CS-theory journals outside what we track, books and textbooks, cross-references to other papers in the same proceedings, metadata-free preprints, GitHub/blog/lecture-note citations, and proof-body or appendix text that bled into the reference section during PDF extraction.
+
+**Stage 2, DBLP fuzzy-match accuracy:** Pass 2 resolves roughly **58–65%** (≈61% average across the four conferences) of the citations it's queried on. The title-extraction heuristic that builds the DBLP query is necessarily imprecise for citations with no clean title delimiter — the remainder are genuine DBLP misses, not pipeline bugs, and fall through to Pass 3 or `"none"`.
+
+**Stage 2, regex precision/recall tradeoff (found during this round of fixes):** the connector-word guard that catches journal-name truncation (e.g. `"Mathematics of Computation"` → `"Computation"`) occasionally defers an already-correct single-word venue match to DBLP when a connector word happens to appear earlier in the sentence for unrelated reasons (e.g. `"Workshop Record of SASC"` → `"SASC"` deferred even though it was already right). Confirmed in 1 instance; expected to still resolve correctly via DBLP, just at the cost of an extra query.
+
+**Stage 3 (matching):** the dominant loss is venues not yet in `ABBREV_MAP` — known gaps include NSDI, SOSP, OSDI, EuroSys, and ICML (all appear in Oakland's top-15 unmatched list) — plus venue strings too garbled by upstream hyphen artifacts to fuzzy-match.
 
 ---
 
@@ -192,7 +185,7 @@ If you want to force a fresh DBLP lookup for a conference, delete its cache file
 ## Dependencies
 
 ```
-pip install pymupdf pandas matplotlib fuzzywuzzy google-api-python-client google-auth google-auth-oauthlib
+pip install -r requirements.txt
 ```
 
 - `credentials.json` — Google OAuth credentials for Sheets access
@@ -219,3 +212,9 @@ python venue_by_awareness.py
 # Or run stages 1–2 for all conferences with automatic DBLP cooldowns:
 ./run_all_conferences.sh
 ```
+
+---
+
+## AI Use Disclosure
+
+Claude Code (Anthropic) was used as the primary tool for implementation and debugging throughout this pipeline. The author retained responsibility for validation, documentation, and design decisions. 
