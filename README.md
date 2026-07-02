@@ -156,13 +156,15 @@ Extends the venues file with two additional columns after venue normalization by
 
 For analysis, `venue_matched` is the primary field to aggregate on. `venue_raw` is useful for debugging unmatched or low-confidence rows.
 
+TODO: text and logs 
+
 ---
 
 ### `json/<Conference>_dblp_cache.json`
 
 A key-value store mapping extracted reference titles to the DBLP-returned venue string. Produced and read by `venue_export.py` to avoid redundant API calls across runs.
 
-Keyed by the title string passed to DBLP; values are the raw venue string returned. If you re-run `venue_export.py` on a conference that already has a cache file, only titles not already in the cache will trigger new API requests. This keeps runs fast and results reproducible — without the cache, DBLP results can shift as their database updates.
+Keyed by the title string passed to DBLP; values are the raw venue string returned. If you re-run `venue_export.py` on a conference that already has a cache file, only titles not already in the cache will trigger new API requests. This keeps runs fast and results reproducible.
 
 If you want to force a fresh DBLP lookup for a conference, delete its cache file before running.
 
@@ -197,6 +199,8 @@ python venue_by_awareness.py
 
 # Or run stages 1–2 for all conferences with automatic DBLP cooldowns:
 ./run_all_conferences.sh
+
+TODO: new script updates (stage 3 and flags)
 ```
 
 ---
