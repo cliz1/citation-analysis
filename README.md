@@ -25,24 +25,14 @@ Reads paper metadata from a Google Sheet (one tab per conference), locates the c
 3. **Reference section isolation** (`extract_references_section`) — Finds the last "References" / "Bibliography" heading and truncates at any trailing appendix or acknowledgements section.
 4. **Reference parsing** (`parse_references`) — Splits the section text into individual citation strings by detecting numeric (`[1]`, `1.`) and alpha (`[ABC+23]`, `ABC+23.`) citation markers.
 
-**Output:** `csv/<Conference>_citations_raw.csv` — one row per extracted citation, with `source_paper`, `app_awareness`, and `raw_reference`. No venue information at this stage.
+**Output:** `csv/<Conference>_citations_raw.csv` — one row per extracted citation, with `source_paper`, `app_awareness`, and `raw_reference`. `text/<Conference>/<title>.txt` - full text for each paper in the corpus. No venue information at this stage.
 
-**Configuration** (top of script):
+**Configuration** (top of script): TODO: externalized config changes
 
 ```python
 ZOTERO_STORAGE = Path("/Users/.../Zotero/storage/")
 SPREADSHEET_ID = "..."
 ```
-
-### Known extraction losses
-
-| Loss type | Description |
-|---|---|
-| **No references section** | PDF text extraction succeeded but no "References" heading was found |
-| **Truncated section** | A post-bibliography appendix immediately follows the last reference; the section is cut short and the final citation may be lost |
-| **Hyphen artifacts** | Two-column PDF layout inserts soft hyphens at line breaks, fragmenting venue names; `dehyphenate()` mitigates this but does not fully eliminate it |
-
-USENIX has the highest hyphen artifact rate due to its two-column PDF format. EuroCrypt's single-column LNCS format is the most parser-friendly.
 
 ---
 
@@ -52,9 +42,9 @@ Reads `csv/<Conference>_citations_raw.csv` and assigns a venue label to each cit
 
 **FP filter** (`is_likely_real_citation()`): Before venue extraction, each reference is checked for hallmarks of a real citation (a publication year, URL, or known structural cue). References that fail are flagged as suspected parser artifacts and written to a separate audit CSV — they do not reach venue extraction or DBLP.
 
-**Pass 1 — Regex patterns** (`extract_venue()`): Pattern-matches known venue strings, journal abbreviations, ePrint identifiers, publisher URL domains, and structural cues (`In:`, `eds.`, ordinal prefixes) directly in the reference text. No network calls. Handles the large majority of citations.
+**Pass 1 — Regex patterns** (`extract_venue()`): Pattern-matches known venue strings, journal abbreviations, ePrint identifiers, publisher URL domains, and structural cues (`In:`, `eds.`, ordinal prefixes) directly in the reference text. Handles the large majority of citations.
 
-**Pass 2 — DBLP title lookup** (`query_dblp_for_venue()`): If regex finds nothing, extracts a likely title from the reference string and queries the [DBLP API](https://dblp.org/faq/How+to+use+the+dblp+search+API.html). Results are cached per-conference in `json/<Conference>_dblp_cache.json` to avoid redundant calls across runs.
+**Pass 2 — DBLP title lookup** (`query_dblp_for_venue()`): If regex finds nothing, extracts a likely title from the reference string and queries the [DBLP API](https://dblp.org/faq/How+to+use+the+dblp+search+API.html). Results are cached per-conference in `json/<Conference>_dblp_cache.json` to avoid redundant calls across runs. TODO: DBLP misses are cached now, but ideally they shouldn't be for the first few runs? 
 
 **Pass 3 — Standards and grey literature** (`match_standards()`, `match_grey_lit()`): Post-DBLP pattern match for reference types DBLP cannot resolve: RFCs, NIST publications, FIPS standards, ISO/IEC documents, technical reports, theses, and books. Only runs on DBLP misses.
 
@@ -75,8 +65,6 @@ Takes `csv/<Conference>_citations_venues.csv` and normalizes the raw venue strin
 
 **Output:** `csv/<Conference>_citations_matched.csv` — same rows as the venues file with added `venue_matched` and `match_score` columns.
 
-**Overall matching rate:** EuroCrypt **80.2%**, Crypto **76.7%**, Oakland **65.7%**, USENIX **67.7%**. See [Known Limitations](#known-limitations) below for the `ABBREV_MAP` gaps driving most of this loss.
-
 ---
 
 ## Stage 4: Visualization
@@ -91,15 +79,15 @@ Breaks down venue citation share by application awareness level (from the Google
 
 ### `web_venue_breakdown.py`
 
-Analyzes the `"web"` catch-all bucket in more detail.
+A work-in-progress approach that uses keyword matching to analyze the `"web"` citation bucket in more detail.
 
 ---
 
 ## Known Limitations
 
-Everything below is a characterized, known gap — not a bug discovered by chance. Consolidated here in one place rather than scattered across stages.
+Everything below is a characterized, known gap in the pipeline.
 
-**Stage 1 (extraction):** hyphen artifacts from two-column PDF layouts fragment venue names; `dehyphenate()` mitigates but doesn't fully eliminate this. USENIX is worst-affected (two-column), EuroCrypt least (single-column LNCS). A small number of PDFs also have no detectable "References" heading, or have their final reference clipped by a directly-adjacent appendix section.
+**Stage 1 (extraction):** hyphen artifacts from two-column PDF layouts fragment venue names; `dehyphenate()` mitigates but doesn't fully eliminate this. USENIX is worst-affected (two-column), EuroCrypt least (single-column LNCS). A small number of PDFs also have no detectable "References" heading, or have their final reference clipped by a directly-adjacent appendix section. TODO: add percentage from spot checking here
 
 **Stage 2 (venue assignment), structural gaps not pursued (would need architecture changes, not new patterns):**
 - **Back-references** (`In: Wiener [53], https://doi.org/...`) — points to another entry in the same bibliography; ~3 entries.
@@ -110,11 +98,12 @@ Everything below is a characterized, known gap — not a bug discovered by chanc
 
 **Stage 2, citations with no venue to find** (not pattern gaps): physics/math/CS-theory journals outside what we track, books and textbooks, cross-references to other papers in the same proceedings, metadata-free preprints, GitHub/blog/lecture-note citations, and proof-body or appendix text that bled into the reference section during PDF extraction.
 
-**Stage 2, DBLP fuzzy-match accuracy:** Pass 2 resolves roughly **58–65%** (≈61% average across the four conferences) of the citations it's queried on. The title-extraction heuristic that builds the DBLP query is necessarily imprecise for citations with no clean title delimiter — the remainder are genuine DBLP misses, not pipeline bugs, and fall through to Pass 3 or `"none"`.
+**Stage 2, DBLP Query accuracy:** Pass 2 resolves roughly **58–65%** (≈61% average across the four conferences) of the citations it's queried on. The title-extraction heuristic that builds the DBLP query is necessarily imprecise for citations with no clean title delimiter — the remainder are genuine DBLP misses, not pipeline bugs, and fall through to Pass 3 or `"none"`.
 
 **Stage 2, regex precision/recall tradeoff (found during this round of fixes):** the connector-word guard that catches journal-name truncation (e.g. `"Mathematics of Computation"` → `"Computation"`) occasionally defers an already-correct single-word venue match to DBLP when a connector word happens to appear earlier in the sentence for unrelated reasons (e.g. `"Workshop Record of SASC"` → `"SASC"` deferred even though it was already right). Confirmed in 1 instance; expected to still resolve correctly via DBLP, just at the cost of an extra query.
 
-**Stage 3 (matching):** the dominant loss is venues not yet in `ABBREV_MAP` — known gaps include NSDI, SOSP, OSDI, EuroSys, and ICML (all appear in Oakland's top-15 unmatched list) — plus venue strings too garbled by upstream hyphen artifacts to fuzzy-match.
+
+Stage 3 (matching): TODO: updated matching rates and categories
 
 ---
 
