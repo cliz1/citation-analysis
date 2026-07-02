@@ -100,9 +100,6 @@ Everything below is a characterized, known gap in the pipeline.
 
 **Stage 2, DBLP Query accuracy:** Pass 2 resolves roughly **58–65%** (≈61% average across the four conferences) of the citations it's queried on. The title-extraction heuristic that builds the DBLP query is necessarily imprecise for citations with no clean title delimiter — the remainder are genuine DBLP misses, not pipeline bugs, and fall through to Pass 3 or `"none"`.
 
-**Stage 2, regex precision/recall tradeoff (found during this round of fixes):** the connector-word guard that catches journal-name truncation (e.g. `"Mathematics of Computation"` → `"Computation"`) occasionally defers an already-correct single-word venue match to DBLP when a connector word happens to appear earlier in the sentence for unrelated reasons (e.g. `"Workshop Record of SASC"` → `"SASC"` deferred even though it was already right). Confirmed in 1 instance; expected to still resolve correctly via DBLP, just at the cost of an extra query.
-
-
 Stage 3 (matching): TODO: updated matching rates and categories
 
 ---
