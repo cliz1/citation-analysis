@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project extracts and analyzes venue-level citation distributions from academic security and cryptography papers. Papers are sourced from four conferences: **EuroCrypt**, **Crypto**, **Oakland (IEEE S&P)**, and **USENIX Security**.
+This project extracts and analyzes citation distributions from academic security and cryptography papers. Papers are sourced from four conferences: **EuroCrypt**, **Crypto**, **Oakland (IEEE S&P)**, and **USENIX Security**.
 
 The pipeline runs in four stages across four scripts:
 
@@ -22,10 +22,11 @@ Reads paper metadata from a Google Sheet (one tab per conference), locates the c
 
 1. **Corpus loading** — Fetches paper titles and app-awareness scores from the Google Sheet; fuzzy-matches each title to a PDF in `ZOTERO_STORAGE`.
 2. **Text extraction** (`extract_text_from_pdf`) — Reads all pages of a matched PDF via `fitz`.
-3. **Reference section isolation** (`extract_references_section`) — Finds the last "References" / "Bibliography" heading and truncates at any trailing appendix or acknowledgements section.
+3. **Reference section isolation** (`extract_references_section`) — Finds the "References" / "Bibliography" heading and truncates at any trailing appendix or acknowledgements section.
 4. **Reference parsing** (`parse_references`) — Splits the section text into individual citation strings by detecting numeric (`[1]`, `1.`) and alpha (`[ABC+23]`, `ABC+23.`) citation markers.
 
-**Output:** `csv/<Conference>_citations_raw.csv` — one row per extracted citation, with `source_paper`, `app_awareness`, and `raw_reference`. `text/<Conference>/<title>.txt` - full text for each paper in the corpus. No venue information at this stage.
+**Output:** 1. `csv/<Conference>_citations_raw.csv` — one row per extracted citation, with `source_paper`, `app_awareness`, and `raw_reference`. 
+2. `text/<Conference>/<title>.txt` - full text for each paper in the corpus. No venue information at this stage.
 
 **Configuration** (top of script): TODO: externalized config changes
 
@@ -200,11 +201,19 @@ python venue_by_awareness.py
 # Or run stages 1–2 for all conferences with automatic DBLP cooldowns:
 ./run_all_conferences.sh
 
-TODO: new script updates (stage 3 and flags)
+TODO: new full pipeline script updates (stage 3 and flags)
 ```
+
+
+---
+
+## Notes for future expansion
+
+
 
 ---
 
 ## AI Use Disclosure
 
 Claude Code (Anthropic) was used as the primary tool for implementation and debugging throughout this pipeline. The author retained responsibility for validation, documentation, and design decisions. 
+
