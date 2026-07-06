@@ -28,12 +28,7 @@ Reads paper metadata from a Google Sheet (one tab per conference), locates the c
 **Output:** 1. `csv/<Conference>_citations_raw.csv` — one row per extracted citation, with `source_paper`, `app_awareness`, and `raw_reference`. 
 2. `text/<Conference>/<title>.txt` - full text for each paper in the corpus. No venue information at this stage.
 
-**Configuration** (top of script): TODO: externalized config changes
-
-```python
-ZOTERO_STORAGE = Path("/Users/.../Zotero/storage/")
-SPREADSHEET_ID = "..."
-```
+**Configuration:** All pipeline-wide config (paths, spreadsheet ID, tuning constants) lives in `config.py` at the repo root, and every value there can be overridden with an identically-named environment variable without touching code — e.g. `ZOTERO_STORAGE`, `SPREADSHEET_ID`, `CSV_DIR`, `DBLP_QUERY_DELAY_SECONDS`, `FUZZY_MATCH_CUTOFF`.
 
 ---
 
@@ -90,16 +85,18 @@ Everything below is a characterized, known gap in the pipeline.
 
 **Stage 1 (extraction):** hyphen artifacts from two-column PDF layouts fragment venue names; `dehyphenate()` mitigates but doesn't fully eliminate this. USENIX is worst-affected (two-column), EuroCrypt least (single-column LNCS). A small number of PDFs also have no detectable "References" heading, or have their final reference clipped by a directly-adjacent appendix section. TODO: add percentage from spot checking here
 
-**Stage 2 (venue assignment), structural gaps not pursued (would need architecture changes, not new patterns):**
+**Stage 2 (venue assignment), structural gaps not pursued (would need architecture changes):**
 - **Back-references** (`In: Wiener [53], https://doi.org/...`) — points to another entry in the same bibliography; ~3 entries.
 - **DOI-only references** — bare DOI, no venue text for the title heuristic to use; ~6 entries.
 - **Editor-preamble citations** (`In: Kaliski Jr. (ed.) CRYPTO '97`) — editor name sits where the venue acronym is expected.
 - **Niche abbreviated journals** (`Period. Math. Hungar.`, `Phys. Rev. A`, `Quantum Inf. Comput.`) — would need a large hand-built lookup table; ~12 entries.
-- **Generic-noun misfires** (`"...Test in Europe. ACM"` → `venue_raw = "Europe"`) — 4 of 14,209 citations (0.03%); not worth a denylist since the offending words aren't a closed set.
+- **Generic-noun misfires** (`"...Test in Europe. ACM"` → `venue_raw = "Europe"`) — ~4 entries.
 
 **Stage 2, citations with no venue to find** (not pattern gaps): physics/math/CS-theory journals outside what we track, books and textbooks, cross-references to other papers in the same proceedings, metadata-free preprints, GitHub/blog/lecture-note citations, and proof-body or appendix text that bled into the reference section during PDF extraction.
 
 **Stage 2, DBLP Query accuracy:** Pass 2 resolves roughly **58–65%** (≈61% average across the four conferences) of the citations it's queried on. The title-extraction heuristic that builds the DBLP query is necessarily imprecise for citations with no clean title delimiter — the remainder are genuine DBLP misses, not pipeline bugs, and fall through to Pass 3 or `"none"`.
+
+TODO: clarify what this accuracy means, and if necessary check if this would have changed recently for any reason. 
 
 Stage 3 (matching): TODO: updated matching rates and categories
 
@@ -157,8 +154,6 @@ Extends the venues file with two additional columns after venue normalization by
 
 For analysis, `venue_matched` is the primary field to aggregate on. `venue_raw` is useful for debugging unmatched or low-confidence rows.
 
-TODO: text and logs 
-
 ---
 
 ### `json/<Conference>_dblp_cache.json`
@@ -168,6 +163,9 @@ A key-value store mapping extracted reference titles to the DBLP-returned venue 
 Keyed by the title string passed to DBLP; values are the raw venue string returned. If you re-run `venue_export.py` on a conference that already has a cache file, only titles not already in the cache will trigger new API requests. This keeps runs fast and results reproducible.
 
 If you want to force a fresh DBLP lookup for a conference, delete its cache file before running.
+
+
+TODO: text and logs (which logs should stay, if any)
 
 ---
 
@@ -207,13 +205,16 @@ TODO: new full pipeline script updates (stage 3 and flags)
 
 ---
 
-## Notes for future expansion
+## Testing
 
+---
+
+## Notes for future work
 
 
 ---
 
 ## AI Use Disclosure
 
-Claude Code (Anthropic) was used as the primary tool for implementation and debugging throughout this pipeline. The author retained responsibility for validation, documentation, and design decisions. 
+Claude Code (Anthropic) was used as the primary tool for implementation and debugging throughout this pipeline. The author retains responsibility for validation, documentation, and design decisions. 
 
