@@ -3,19 +3,18 @@ import sys
 from collections import Counter
 import matplotlib.pyplot as plt
 import matplotlib.backends.backend_pdf as pdf_backend
+import config
 
 # ----------------------------
 # Configuration
 # ----------------------------
 
 INPUT_FILES = {
-    "EuroCrypt": "EuroCrypt_citations_matched.csv",
-    "Oakland":   "Oakland_citations_matched.csv",
-    "Crypto":    "Crypto_citations_matched.csv",
-    "USENIX":    "USENIX_citations_matched.csv",
+    conf: config.citations_matched_csv(conf)
+    for conf in ["EuroCrypt", "Oakland", "Crypto", "USENIX"]
 }
 
-TOP_N = 15  # how many venues to show per chart
+TOP_N = config.CHART_TOP_N  # how many venues to show per chart
 
 DISPLAY_NAMES = {
     "International Cryptology Conference": "CRYPTO",
@@ -160,7 +159,8 @@ def plot_venue_bar(ax, counts, title, top_n=TOP_N):
 # ----------------------------
 
 def main():
-    output_pdf = "venue_charts.pdf"
+    config.CHARTS_DIR.mkdir(exist_ok=True)
+    output_pdf = config.CHARTS_DIR / "venue_charts.pdf"
 
     all_counts = {}
     for venue_name, filepath in INPUT_FILES.items():

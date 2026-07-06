@@ -4,7 +4,8 @@ import html
 from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
 import re
- 
+import config
+
 ABBREV_MAP = {
     "CCS": "ACM Conference on Computer and Communications Security",
     "SP": "IEEE Symposium on Security and Privacy",
@@ -280,7 +281,7 @@ def main():
     output_file = input_file.replace("_citations_venues.csv", "_citations_matched.csv")
 
     dblp_venues = []
-    with open('dblp-labels.csv', 'r') as infile:
+    with open(config.DBLP_LABELS_FILE, 'r') as infile:
         reader = csv.reader(infile)
         next(reader)  # skip header
         for row in reader:
@@ -321,7 +322,7 @@ def main():
             best_match, score = process.extractOne(
                 venue_raw, dblp_venues, scorer=fuzz.token_sort_ratio
             )
-            if score >= 85:
+            if score >= config.FUZZY_MATCH_CUTOFF:
                 writer.writerow(row + [best_match, str(score)])
             else:
                 writer.writerow(row + ["", str(score)])

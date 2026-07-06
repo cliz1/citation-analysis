@@ -14,32 +14,42 @@ import certifi
 import urllib.error
 import pandas as pd
 import argparse
+import config
 
 # -----------------------------
 # Config
 # -----------------------------
- 
+
 _parser = argparse.ArgumentParser(description="Extract venues from raw citation CSV")
 _parser.add_argument("--conference", dest="conference", default="Crypto",
-                     choices=["Crypto", "EuroCrypt", "Oakland", "USENIX"],
+                     choices=config.CONFERENCES,
                      help="Conference to process (must match a citations_raw CSV)")
 CONFERENCE = _parser.parse_args().conference
 
-DBLP_CACHE_FILE = Path(f"json/{CONFERENCE}_dblp_cache.json")
-DBLP_MISSES_FILE = Path(f"logs/{CONFERENCE}_dblp_misses.txt")
+DBLP_CACHE_FILE = config.dblp_cache_json(CONFERENCE)
+DBLP_MISSES_FILE = config.dblp_misses_txt(CONFERENCE)
 DBLP_MISSES_FILE.parent.mkdir(exist_ok=True)
 dblp_cache: dict[str, dict] = {}
 if DBLP_CACHE_FILE.exists():
     with open(DBLP_CACHE_FILE) as _f:
-        dblp_cache = json.load(_f)
-print(f"Loaded {len(dblp_cache)} cached DBLP hits from {DBLP_CACHE_FILE}")
+        _loaded_cache = json.load(_f)
+    # Migrate legacy flat "__miss__" string sentinels (pre-miss-counting) into
+    # miss records with count=1, so they get re-verified rather than trusted
+    # as already-confirmed.
+    dblp_cache = {
+        k: ({"__miss__": True, "count": 1} if v == "__miss__" else v)
+        for k, v in _loaded_cache.items()
+    }
+_n_dblp_hits_loaded = sum(1 for v in dblp_cache.values() if not isinstance(v, dict) or not v.get("__miss__"))
+_n_dblp_misses_loaded = len(dblp_cache) - _n_dblp_hits_loaded
+print(f"Loaded {_n_dblp_hits_loaded} cached DBLP hits and {_n_dblp_misses_loaded} cached misses from {DBLP_CACHE_FILE}")
 
 
 # -----------------------------
 # Load Stage 1 CSV
 # -----------------------------
 
-_raw_csv = Path(f"csv/{CONFERENCE}_citations_raw.csv")
+_raw_csv = config.citations_raw_csv(CONFERENCE)
 if not _raw_csv.exists():
     raise FileNotFoundError(f"{_raw_csv} not found — run citation_export.py first")
 
@@ -391,9 +401,19 @@ class _DblpRateLimited(Exception):
     pass
 
 
+class _DblpRequestFailed(Exception):
+    """Request-level failure (timeout, non-429 HTTP error, bad response, etc).
+    Distinct from a confirmed miss: the caller must not cache this as _MISS,
+    since it says nothing about whether DBLP actually has the title — only
+    that we couldn't get an answer this time."""
+    pass
+
+
 def _fetch_dblp_venue(title: str) -> dict | None:
-    """Single DBLP title lookup; returns full info dict on hit, None on miss.
-    Raises _DblpRateLimited on HTTP 429 so the caller can bail instead of retrying.
+    """Single DBLP title lookup; returns full info dict on hit, None on a
+    confirmed miss (DBLP responded with no matching hits / no venue field).
+    Raises _DblpRateLimited on HTTP 429, or _DblpRequestFailed on any other
+    request-level failure — both must be left uncached by the caller.
     Always sleeps 1.5s after the HTTP call so rate-limit courtesy is enforced
     only when an actual network request is made (not on cache hits)."""
     try:
@@ -411,11 +431,11 @@ def _fetch_dblp_venue(title: str) -> dict | None:
     except urllib.error.HTTPError as e:
         if e.code == 429:
             raise _DblpRateLimited()
-        return None
-    except Exception:
-        return None
+        raise _DblpRequestFailed(str(e))
+    except Exception as e:
+        raise _DblpRequestFailed(str(e))
     finally:
-        time.sleep(1.5)
+        time.sleep(config.DBLP_QUERY_DELAY_SECONDS)
 
 
 def query_dblp_for_venue(raw_reference: str) -> str:
@@ -479,33 +499,52 @@ def query_dblp_for_venue(raw_reference: str) -> str:
             seen.add(candidate)
             variants.append(candidate)
 
-    _MISS = "__miss__"  # sentinel: variant was queried and got nothing from DBLP
+    def _is_miss_record(entry) -> bool:
+        return isinstance(entry, dict) and entry.get("__miss__") is True
 
     for i, variant in enumerate(variants):
-        # Check cache before hitting DBLP
-        if variant in dblp_cache:
-            if dblp_cache[variant] == _MISS:
-                continue  # confirmed miss for this prefix — try next shorter variant
-            raw_venue = dblp_cache[variant].get("venue", "")
+        cached_entry = dblp_cache.get(variant)
+
+        # Confirmed hit from a prior run — trust it, no re-query.
+        if cached_entry is not None and not _is_miss_record(cached_entry):
+            raw_venue = cached_entry.get("venue", "")
             if isinstance(raw_venue, list):
                 raw_venue = raw_venue[0] if raw_venue else ""
             venue = _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
             print(f"    DBLP cache hit ({len(variant.split())}w): '{variant[:70]}' → {venue}")
             return venue
 
+        # Confirmed miss — missed enough times across independent runs that
+        # a single-query fluke (silent throttling, index drift) is unlikely.
+        # Skip re-querying and try the next shorter variant.
+        if cached_entry is not None and cached_entry["count"] >= config.DBLP_MISS_CONFIRM_THRESHOLD:
+            print(f"    DBLP confirmed miss ({cached_entry['count']}x): '{variant[:70]}'")
+            continue
+
+        # Not cached, or an unconfirmed miss — query live either way.
         print(f"    DBLP query ({len(variant.split())}w): '{variant[:70]}'")
         try:
             info = _fetch_dblp_venue(variant)
         except _DblpRateLimited:
             print("    DBLP rate-limited (429) — skipping remaining variants")
             return ""
+        except _DblpRequestFailed as e:
+            # Request-level failure, not a confirmed miss — leave uncached so
+            # this variant is retried on the next run instead of being stuck
+            # as a permanent false miss.
+            print(f"    DBLP request failed ({e}) — leaving uncached, trying next variant")
+            continue
         if info:
             raw_venue = info.get("venue", "")
             if isinstance(raw_venue, list):
                 raw_venue = raw_venue[0] if raw_venue else ""
             dblp_cache[variant] = info
             return _DBLP_VENUE_MAP.get(raw_venue.lower(), raw_venue)
-        dblp_cache[variant] = _MISS
+
+        # Miss this time — increment the running count rather than trusting it
+        # on the first empty response.
+        prior_count = cached_entry["count"] if cached_entry is not None else 0
+        dblp_cache[variant] = {"__miss__": True, "count": prior_count + 1}
 
     return ""
 
@@ -687,15 +726,19 @@ df_real = df_citations[~is_fp]
 df_fps  = df_citations[is_fp]
 
 _csv_opts = dict(index=False, escapechar="\\", quoting=1)
-df_real.to_csv(f"csv/{CONFERENCE}_citations_venues.csv", **_csv_opts)
-df_fps.to_csv(f"csv/{CONFERENCE}_suspected_fps.csv", **_csv_opts)
+_venues_out = config.citations_venues_csv(CONFERENCE)
+_fps_out = config.suspected_fps_csv(CONFERENCE)
+df_real.to_csv(_venues_out, **_csv_opts)
+df_fps.to_csv(_fps_out, **_csv_opts)
 
-print(f"Saved {len(df_real)} citation rows to csv/{CONFERENCE}_citations_venues.csv")
-print(f"Saved {len(df_fps)} suspected FPs to csv/{CONFERENCE}_suspected_fps.csv (gitignored — manual audit)")
+print(f"Saved {len(df_real)} citation rows to {_venues_out}")
+print(f"Saved {len(df_fps)} suspected FPs to {_fps_out} (gitignored — manual audit)")
 
 with open(DBLP_CACHE_FILE, 'w') as _f:
     json.dump(dblp_cache, _f, indent=2)
-print(f"Saved {len(dblp_cache)} DBLP hits to {DBLP_CACHE_FILE}")
+_n_dblp_hits_saved = sum(1 for v in dblp_cache.values() if not (isinstance(v, dict) and v.get("__miss__")))
+_n_dblp_misses_saved = len(dblp_cache) - _n_dblp_hits_saved
+print(f"Saved {_n_dblp_hits_saved} DBLP hits and {_n_dblp_misses_saved} miss records to {DBLP_CACHE_FILE}")
 
 with open(DBLP_MISSES_FILE, 'w') as _f:
     _f.write(f"# DBLP misses for {CONFERENCE} — {n_dblp_misses} failed queries\n\n")

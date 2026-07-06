@@ -3,19 +3,18 @@ import sys
 from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
 import matplotlib.backends.backend_pdf as pdf_backend
+import config
 
 # ----------------------------
 # Configuration
 # ----------------------------
 
 INPUT_FILES = {
-    "EuroCrypt": "EuroCrypt_citations_matched.csv",
-    "Oakland":   "Oakland_citations_matched.csv",
-    "Crypto":    "Crypto_citations_matched.csv",
-    "USENIX":    "USENIX_citations_matched.csv",
+    conf: config.citations_matched_csv(conf)
+    for conf in ["EuroCrypt", "Oakland", "Crypto", "USENIX"]
 }
 
-TOP_N = 12
+TOP_N = config.AWARENESS_CHART_TOP_N
 
 DISPLAY_NAMES = {
     "International Cryptology Conference": "CRYPTO",
@@ -283,7 +282,8 @@ def make_iacr_summary_page(pdf, all_data):
 # ----------------------------
 
 def main():
-    output_pdf = "venue_by_awareness.pdf"
+    config.CHARTS_DIR.mkdir(exist_ok=True)
+    output_pdf = config.CHARTS_DIR / "venue_by_awareness.pdf"
 
     all_data = {}
     for source_venue, filepath in INPUT_FILES.items():

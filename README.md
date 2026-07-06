@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project extracts and analyzes venue-level citation distributions from academic security and cryptography papers. Papers are sourced from four conferences: **EuroCrypt**, **Crypto**, **Oakland (IEEE S&P)**, and **USENIX Security**.
+This project extracts and analyzes citation distributions from academic security and cryptography papers. Papers are sourced from four conferences: **EuroCrypt**, **Crypto**, **Oakland (IEEE S&P)**, and **USENIX Security**.
 
 The pipeline runs in four stages across four scripts:
 
@@ -22,17 +22,13 @@ Reads paper metadata from a Google Sheet (one tab per conference), locates the c
 
 1. **Corpus loading** — Fetches paper titles and app-awareness scores from the Google Sheet; fuzzy-matches each title to a PDF in `ZOTERO_STORAGE`.
 2. **Text extraction** (`extract_text_from_pdf`) — Reads all pages of a matched PDF via `fitz`.
-3. **Reference section isolation** (`extract_references_section`) — Finds the last "References" / "Bibliography" heading and truncates at any trailing appendix or acknowledgements section.
+3. **Reference section isolation** (`extract_references_section`) — Finds the "References" / "Bibliography" heading and truncates at any trailing appendix or acknowledgements section.
 4. **Reference parsing** (`parse_references`) — Splits the section text into individual citation strings by detecting numeric (`[1]`, `1.`) and alpha (`[ABC+23]`, `ABC+23.`) citation markers.
 
-**Output:** `csv/<Conference>_citations_raw.csv` — one row per extracted citation, with `source_paper`, `app_awareness`, and `raw_reference`. `text/<Conference>/<title>.txt` - full text for each paper in the corpus. No venue information at this stage.
+**Output:** 1. `csv/<Conference>_citations_raw.csv` — one row per extracted citation, with `source_paper`, `app_awareness`, and `raw_reference`. 
+2. `text/<Conference>/<title>.txt` - full text for each paper in the corpus. No venue information at this stage.
 
-**Configuration** (top of script): TODO: externalized config changes
-
-```python
-ZOTERO_STORAGE = Path("/Users/.../Zotero/storage/")
-SPREADSHEET_ID = "..."
-```
+**Configuration:** All pipeline-wide config (paths, spreadsheet ID, tuning constants) lives in `config.py` at the repo root, and every value there can be overridden with an identically-named environment variable without touching code — e.g. `ZOTERO_STORAGE`, `SPREADSHEET_ID`, `CSV_DIR`, `DBLP_QUERY_DELAY_SECONDS`, `FUZZY_MATCH_CUTOFF`.
 
 ---
 
@@ -44,7 +40,9 @@ Reads `csv/<Conference>_citations_raw.csv` and assigns a venue label to each cit
 
 **Pass 1 — Regex patterns** (`extract_venue()`): Pattern-matches known venue strings, journal abbreviations, ePrint identifiers, publisher URL domains, and structural cues (`In:`, `eds.`, ordinal prefixes) directly in the reference text. Handles the large majority of citations.
 
-**Pass 2 — DBLP title lookup** (`query_dblp_for_venue()`): If regex finds nothing, extracts a likely title from the reference string and queries the [DBLP API](https://dblp.org/faq/How+to+use+the+dblp+search+API.html). Results are cached per-conference in `json/<Conference>_dblp_cache.json` to avoid redundant calls across runs. TODO: DBLP misses are cached now, but ideally they shouldn't be for the first few runs? 
+**Pass 2 — DBLP title lookup** (`query_dblp_for_venue()`): If regex finds nothing, extracts a likely title from the reference string and queries the [DBLP API](https://dblp.org/faq/How+to+use+the+dblp+search+API.html). Results are cached per-conference in `json/<Conference>_dblp_cache.json` to avoid redundant calls across runs.
+
+DBLP failures aren't all equal: request errors (timeouts, non-429 HTTP errors, dropped connections) aren't cached and are simply retried next run. A 200-with-no-match is weaker than it looks — DBLP can return that under load with no error at all — so misses need `DBLP_MISS_CONFIRM_THRESHOLD` (default 3) consecutive misses across runs before they're trusted and skipped; a hit at any point overwrites it. See the [cache file format](#jsonconference_dblp_cachejson) below for details.
 
 **Pass 3 — Standards and grey literature** (`match_standards()`, `match_grey_lit()`): Post-DBLP pattern match for reference types DBLP cannot resolve: RFCs, NIST publications, FIPS standards, ISO/IEC documents, technical reports, theses, and books. Only runs on DBLP misses.
 
@@ -64,6 +62,8 @@ Takes `csv/<Conference>_citations_venues.csv` and normalizes the raw venue strin
 2. **Fuzzy match** — for strings not in the map, runs fuzzy string matching against a list of known venue names.
 
 **Output:** `csv/<Conference>_citations_matched.csv` — same rows as the venues file with added `venue_matched` and `match_score` columns.
+
+**Overall matching rate:** EuroCrypt **83.0%**, Crypto **81.8%**, USENIX **74.7%**, Oakland **72.1%**. See [Known Limitations](#known-limitations) for what's driving the remainder.
 
 ---
 
@@ -87,20 +87,22 @@ A work-in-progress approach that uses keyword matching to analyze the `"web"` ci
 
 Everything below is a characterized, known gap in the pipeline.
 
-**Stage 1 (extraction):** hyphen artifacts from two-column PDF layouts fragment venue names; `dehyphenate()` mitigates but doesn't fully eliminate this. USENIX is worst-affected (two-column), EuroCrypt least (single-column LNCS). A small number of PDFs also have no detectable "References" heading, or have their final reference clipped by a directly-adjacent appendix section. TODO: add percentage from spot checking here
+**Stage 1 (extraction):** hyphen artifacts from two-column PDF layouts fragment venue names; `dehyphenate()` mitigates but doesn't fully eliminate this. USENIX is worst-affected (two-column), EuroCrypt least (single-column LNCS). A small number of PDFs also have no detectable "References" heading, or have their final reference clipped by a directly-adjacent appendix section.
 
-**Stage 2 (venue assignment), structural gaps not pursued (would need architecture changes, not new patterns):**
+**Stage 1, citation-count accuracy:** spot-checked against a hand-verified true count across 80 papers (20 per conference; see `Grobid vs Our Pipeline - validation_spot_check.csv.csv`). Citation count is exact on 75.0% of papers and within ±1 on 87.5%, mean error 1.4% of true count. On the 40-paper subset also run through [GROBID](https://github.com/kermitt2/grobid) for comparison, our error (1.05%) is roughly a third of GROBID's (2.98%) — exact match 77.5% vs. 45.0%, within ±1 92.5% vs. 77.5%.
+
+**Stage 2 (venue assignment), structural gaps not pursued (would need architecture changes):**
 - **Back-references** (`In: Wiener [53], https://doi.org/...`) — points to another entry in the same bibliography; ~3 entries.
 - **DOI-only references** — bare DOI, no venue text for the title heuristic to use; ~6 entries.
 - **Editor-preamble citations** (`In: Kaliski Jr. (ed.) CRYPTO '97`) — editor name sits where the venue acronym is expected.
 - **Niche abbreviated journals** (`Period. Math. Hungar.`, `Phys. Rev. A`, `Quantum Inf. Comput.`) — would need a large hand-built lookup table; ~12 entries.
-- **Generic-noun misfires** (`"...Test in Europe. ACM"` → `venue_raw = "Europe"`) — 4 of 14,209 citations (0.03%); not worth a denylist since the offending words aren't a closed set.
+- **Generic-noun misfires** (`"...Test in Europe. ACM"` → `venue_raw = "Europe"`) — ~4 entries.
 
 **Stage 2, citations with no venue to find** (not pattern gaps): physics/math/CS-theory journals outside what we track, books and textbooks, cross-references to other papers in the same proceedings, metadata-free preprints, GitHub/blog/lecture-note citations, and proof-body or appendix text that bled into the reference section during PDF extraction.
 
-**Stage 2, DBLP Query accuracy:** Pass 2 resolves roughly **58–65%** (≈61% average across the four conferences) of the citations it's queried on. The title-extraction heuristic that builds the DBLP query is necessarily imprecise for citations with no clean title delimiter — the remainder are genuine DBLP misses, not pipeline bugs, and fall through to Pass 3 or `"none"`.
+**Stage 2, DBLP resolution rate:** of citations that reach Pass 2 (regex found nothing), **54.7–59.7%** get a venue directly from DBLP — the rest fall through to Pass 3 (standards/grey-lit) or end unresolved as `"none"`. This is a resolution rate, not a correctness check: a DBLP hit is trusted as-is, with no independent verification that it matched the right paper. The title-extraction heuristic that builds the DBLP query is necessarily imprecise for citations with no clean title delimiter, which accounts for a real share of the misses.
 
-Stage 3 (matching): TODO: updated matching rates and categories
+**Stage 3 (matching)**, unmatched remainder by cause: upstream regex artifacts like `"Springer"` mis-extracted as a venue or truncated fragments (`"Annual Symposium on"`) — top unmatched string in 3 of 4 conferences, and not actually a Stage 3 gap; Pass 3 grey-lit/standards labels with no canonical form (`Tech. Rep.`, `PhD Thesis`, `Whitepaper`); and genuine `ABBREV_MAP` gaps (`VLDB`, `SIGMOD`, `NSDI`, `IACR PKC`).
 
 ---
 
@@ -160,11 +162,23 @@ For analysis, `venue_matched` is the primary field to aggregate on. `venue_raw` 
 
 ### `json/<Conference>_dblp_cache.json`
 
-A key-value store mapping extracted reference titles to the DBLP-returned venue string. Produced and read by `venue_export.py` to avoid redundant API calls across runs.
+Maps extracted title variants to their DBLP lookup result. Two value shapes:
+- **Hit** — the full DBLP `info` dict (venue read from its `venue` field).
+- **Miss** — `{"__miss__": true, "count": N}`, re-queried live each run until `N` reaches `DBLP_MISS_CONFIRM_THRESHOLD`.
 
-Keyed by the title string passed to DBLP; values are the raw venue string returned. If you re-run `venue_export.py` on a conference that already has a cache file, only titles not already in the cache will trigger new API requests. This keeps runs fast and results reproducible — without the cache, DBLP results can shift as their database updates.
+Delete the cache file to force a fresh lookup for a conference.
 
-If you want to force a fresh DBLP lookup for a conference, delete its cache file before running.
+---
+
+### `text/<Conference>/<title>.txt`
+
+Full extracted text of each matched PDF, one file per paper. Produced by `citation_export.py` so later stages (or re-parsing) don't require re-reading the PDFs.
+
+### `logs/<Conference>_dblp_misses.txt`
+
+Raw `raw_reference` strings for citations that failed every pass (regex, DBLP, standards, grey-lit) — the `venue_source = "none"` rows. Produced by `venue_export.py`; useful as an audit list when tuning Pass 1/3 patterns.
+
+The other `logs/*_run.txt` files (`_citation_run`, `_venue_run`, `_venue_match_run`) are raw stdout captured via `tee` when a stage is run — handy for pulling stats from a specific run (e.g. the DBLP resolution rate above), but they're overwritten on every re-run and have no fixed schema, so don't treat them as stable output. The old flat `<Conference>_run.txt` files predate the citation/venue/match split and are stale — not worth keeping.
 
 ---
 
@@ -197,10 +211,27 @@ python venue_by_awareness.py
 
 # Or run stages 1–2 for all conferences with automatic DBLP cooldowns:
 ./run_all_conferences.sh
+
+TODO: new full pipeline script updates (stage 3 and flags)
 ```
+
+
+---
+
+## Testing
+
+---
+
+## Notes for future work
+
+prototypes for author affiliation, web breakdown 
+
+things that would be important to know if running the pipeline on a different or expanded corpus
+
 
 ---
 
 ## AI Use Disclosure
 
-Claude Code (Anthropic) was used as the primary tool for implementation and debugging throughout this pipeline. The author retained responsibility for validation, documentation, and design decisions. 
+Claude Code (Anthropic) was used as the primary tool for implementation and debugging throughout this pipeline. The author retains responsibility for validation, documentation, and design decisions. 
+
