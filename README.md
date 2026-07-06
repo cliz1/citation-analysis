@@ -228,7 +228,6 @@ prototypes for author affiliation, web breakdown
 
 things that would be important to know if running the pipeline on a different or expanded corpus
 
-
 ---
 
 ## AI Use Disclosure
