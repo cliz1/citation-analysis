@@ -12,6 +12,8 @@ citation_export.py  →  venue_export.py  →  venue_match.py  →  venue_charts
  (extraction)          (venue labels)       (normalization)           (visualization)
 ```
 
+See [Running the pipeline](#running-the-pipeline)
+
 ---
 
 ## Stage 1: Citation Extraction — `citation_export.py`
@@ -77,10 +79,6 @@ Produces a per-conference bar chart of the top 15 cited venues. Reads all four `
 
 Breaks down venue citation share by application awareness level (from the Google Sheet). Produces `venue_by_awareness.pdf`.
 
-### `web_venue_breakdown.py`
-
-A work-in-progress approach that uses keyword matching to analyze the `"web"` citation bucket in more detail.
-
 ---
 
 ## Known Limitations
@@ -89,7 +87,7 @@ Everything below is a characterized, known gap in the pipeline.
 
 **Stage 1 (extraction):** hyphen artifacts from two-column PDF layouts fragment venue names; `dehyphenate()` mitigates but doesn't fully eliminate this. USENIX is worst-affected (two-column), EuroCrypt least (single-column LNCS). A small number of PDFs also have no detectable "References" heading, or have their final reference clipped by a directly-adjacent appendix section.
 
-**Stage 1, citation-count accuracy:** spot-checked against a hand-verified true count across 80 papers (20 per conference; see `Grobid vs Our Pipeline - validation_spot_check.csv.csv`). Citation count is exact on 75.0% of papers and within ±1 on 87.5%, mean error 1.4% of true count. On the 40-paper subset also run through [GROBID](https://github.com/kermitt2/grobid) for comparison, our error (1.05%) is roughly a third of GROBID's (2.98%) — exact match 77.5% vs. 45.0%, within ±1 92.5% vs. 77.5%.
+**Stage 1, citation-count accuracy:** spot-checked against a hand-verified true count across 80 papers. Citation count is exact on 75.0% of papers and within ±1 on 87.5%, mean error 1.4% of true count. On the 40-paper subset also run through [GROBID](https://github.com/kermitt2/grobid) for comparison, our error (1.05%) is roughly a third of GROBID's (2.98%) — exact match 77.5% vs. 45.0%, within ±1 92.5% vs. 77.5%.
 
 **Stage 2 (venue assignment), structural gaps not pursued (would need architecture changes):**
 - **Back-references** (`In: Wiener [53], https://doi.org/...`) — points to another entry in the same bibliography; ~3 entries.
@@ -101,6 +99,10 @@ Everything below is a characterized, known gap in the pipeline.
 **Stage 2, citations with no venue to find** (not pattern gaps): physics/math/CS-theory journals outside what we track, books and textbooks, cross-references to other papers in the same proceedings, metadata-free preprints, GitHub/blog/lecture-note citations, and proof-body or appendix text that bled into the reference section during PDF extraction.
 
 **Stage 2, DBLP resolution rate:** of citations that reach Pass 2 (regex found nothing), **54.7–59.7%** get a venue directly from DBLP — the rest fall through to Pass 3 (standards/grey-lit) or end unresolved as `"none"`. This is a resolution rate, not a correctness check: a DBLP hit is trusted as-is, with no independent verification that it matched the right paper. The title-extraction heuristic that builds the DBLP query is necessarily imprecise for citations with no clean title delimiter, which accounts for a real share of the misses.
+
+**Stage 2, venue assignment rate:** The following is the share of citations in each conference which are assigned a venue during stage 2: EuroCrypt **95.1%**, Crypto **96.3%**, Oakland **93.2%**, USENIX **94.0%**.
+
+**Stage 2/3, venue-assignment accuracy (spot-checked):** a hand-verified sample of 200 citations found the pipeline's final assigned venue correct **93.0%** of the time (186/200, after fixing regex bugs the check surfaced). Of the 14 misses: 8 are regex extraction defects, 4 got no venue at all, 2 are DBLP resolving to the wrong paper.
 
 **Stage 3 (matching)**, unmatched remainder by cause: upstream regex artifacts like `"Springer"` mis-extracted as a venue or truncated fragments (`"Annual Symposium on"`) — top unmatched string in 3 of 4 conferences, and not actually a Stage 3 gap; Pass 3 grey-lit/standards labels with no canonical form (`Tech. Rep.`, `PhD Thesis`, `Whitepaper`); and genuine `ABBREV_MAP` gaps (`VLDB`, `SIGMOD`, `NSDI`, `IACR PKC`).
 
@@ -180,6 +182,8 @@ Raw `raw_reference` strings for citations that failed every pass (regex, DBLP, s
 
 The other `logs/*_run.txt` files (`_citation_run`, `_venue_run`, `_venue_match_run`) are raw stdout captured via `tee` when a stage is run — handy for pulling stats from a specific run (e.g. the DBLP resolution rate above), but they're overwritten on every re-run and have no fixed schema, so don't treat them as stable output. The old flat `<Conference>_run.txt` files predate the citation/venue/match split and are stale — not worth keeping.
 
+TODO: either put logs/_run.txt in here, or untrack them from repo/stop generating them in the scripts?
+
 ---
 
 ## Dependencies
@@ -209,24 +213,22 @@ python venue_match.py csv/Crypto_citations_venues.csv
 python venue_charts.py
 python venue_by_awareness.py
 
-# Or run stages 1–2 for all conferences with automatic DBLP cooldowns:
-./run_all_conferences.sh
-
-TODO: new full pipeline script updates (stage 3 and flags)
+# Or run stages 1-3 for all four conferences, with automatic DBLP cooldowns
+# between conferences and flags to skip stages you've already run:
+./run_all_conferences.sh [--skip-extraction] [--skip-venue] [--skip-matching]
 ```
-
-
----
-
-## Testing
-
----
 
 ## Notes for future work
 
-prototypes for author affiliation, web breakdown 
+**Prototypes** (`scripts/`, standalone — not wired into `config.py` or the main pipeline): `author_affiliations.py` classifies each paper's author affiliations as Academic/Government/Industry/Unknown and charts the split by application-awareness level; `web_venue_breakdown.py` is a work-in-progress keyword-based breakdown of the `"web"` citation bucket.
 
-things that would be important to know if running the pipeline on a different or expanded corpus
+**Adapting to a different or expanded corpus:**
+- `citation_export.py`'s Google Sheet loader assumes a fixed column layout (title in column A, a conference filter code in column C, app-awareness in column E) — a differently-structured sheet needs those column indices updated.
+- Adding a conference means a new sheet tab plus a new entry in `config.CONFERENCES`; the two must stay in sync.
+- Pass 1's regex patterns (`ABBREV_MAP`, `_DBLP_VENUE_MAP`, standards/grey-lit patterns) were hand-tuned against the venues that actually turned up across these four conferences' bibliographies — a corpus drawing from different subfields will hit venues these patterns don't cover yet.
+- Two-column vs. single-column PDF layout drives how much hyphenation noise survives extraction (USENIX/Oakland worst, EuroCrypt/Crypto's LNCS layout best) — check a new corpus's typical formatting against `dehyphenate()`'s assumptions.
+- DBLP's coverage is strong for CS/security venues but weak outside it; a corpus with more physics/math/interdisciplinary citations will see a lower Pass 2 resolution rate.
+- `DBLP_QUERY_DELAY_SECONDS` and `DBLP_MISS_CONFIRM_THRESHOLD` were tuned against this corpus's citation volume — a much larger corpus will hit DBLP's rate limits more often and may need a longer delay or higher miss-confirm threshold.
 
 ---
 
