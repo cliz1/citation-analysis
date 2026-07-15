@@ -40,7 +40,7 @@ DBLP_QUERY_DELAY_SECONDS = float(os.environ.get("DBLP_QUERY_DELAY_SECONDS", "1.5
 # place. A variant is only treated as a confirmed, cache-skippable miss once
 # it has missed this many times across independent runs.
 DBLP_MISS_CONFIRM_THRESHOLD = int(os.environ.get("DBLP_MISS_CONFIRM_THRESHOLD", "3"))
-FUZZY_MATCH_CUTOFF = int(os.environ.get("FUZZY_MATCH_CUTOFF", "85"))
+FUZZY_MATCH_CUTOFF = int(os.environ.get("FUZZY_MATCH_CUTOFF", "45"))
 CHART_TOP_N = int(os.environ.get("CHART_TOP_N", "15"))
 AWARENESS_CHART_TOP_N = int(os.environ.get("AWARENESS_CHART_TOP_N", "12"))
 
