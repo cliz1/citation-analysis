@@ -1,5 +1,6 @@
 import csv
-
+import math
+from venueGroupings import *
 
 # Global Variables Hard Coded For Checks
 nonAcademicCitations = [
@@ -39,6 +40,7 @@ def filterData(inputData, comparisonStr : str, location : int):
             outputData.append(citation)
     return outputData
 
+
 def filterDataInclusiveList(inputData, comparisonList, location: int):
     outputData = []
     for citation in inputData:
@@ -46,6 +48,28 @@ def filterDataInclusiveList(inputData, comparisonList, location: int):
             if comparisonStr in citation[location]:
                 outputData.append(citation)
     return outputData
+
+
+# Takes a dictionary with venue and count pairs. Filters data into groupings based on our grouping.
+def filterToGroups(inputData):
+    outputData = {}
+    total = 0
+    for groupingKey in venueGroupings.keys():
+        outputData[groupingKey] = 0
+    for venue in inputData.keys():
+        failure = True
+        count = 0
+        for groupingKey in venueGroupings.keys():
+            if venue in venueGroupings[groupingKey]:
+                outputData[groupingKey] += inputData[venue]
+                failure = False
+                count += 1
+                total += inputData[venue]
+            if count > 1:
+                print("WTF")
+        if failure:
+            print("FAILED TO FIND:", venue)
+    return outputData, total
 
 
 # Input 2D array formated to CSV data, counts the venues within the data and returns a dict with them.
@@ -75,6 +99,22 @@ def topNVenues(inputData, n, filterNonAcademic = False):
             totalCount += v
     return topNData, totalCount
 
+# Takes a dict with labels and counts, outputs a Shannon's Entropy calculation, NOT normalized.
+def calculateShannonsEntropy(inputData, base=2, normalize = False):
+    total = sum(inputData.values())
+    entropy = 0
+    countOfLabels = 0
+
+    for count in inputData.values():
+        if count > 0:
+            p = count / total
+            entropy -= p * math.log(p, base)
+            countOfLabels += 1
+    if normalize:
+        entropy /= math.log(countOfLabels, base)
+
+    return entropy
+
 
 # Diction printer to ease translation
 def printDictionary(inputDict, n = 15):
@@ -92,30 +132,42 @@ def printDictionary(inputDict, n = 15):
 def topNcitations(inputData, n, keyword):
     print("\n\nTop {0} Venues for {1}\n -------------------------".format(n, keyword))
     venueCounter = countVenues(inputData)
+    entropy = calculateShannonsEntropy(venueCounter, 2, True)
     topVenues, total = topNVenues(venueCounter, n)
     printDictionary(topVenues, n)
-    print("Total citations:", total)
+    print("Total citations and entropy:", total, entropy)
 
 def topNCitationsAcademicOnly(inputData, n, keyword):
     print("\n\nTop {0} Academic Citations for {1}\n -------------------------".format(n, keyword))
     venueCounter = countVenues(inputData)
+    entropy = calculateShannonsEntropy(venueCounter, 2, True)
     topVenues, total = topNVenues(venueCounter, n, True)
     printDictionary(topVenues, n)
-    print("Total citations:", total)
+    print("Total citations and entropy:", total, entropy)
 
+def doGroupedAnalysis(inputData, keyword):
+    print("\n\nGrouped Analysis for citations in {0}\n----------------------------".format(keyword))
+    venueCounter = countVenues(inputData)
+    entropy = calculateShannonsEntropy(venueCounter, 2, True)
+    groupedData, total = filterToGroups(venueCounter)
+    printDictionary(groupedData)
+    print("Total citations and entropy:", total, entropy)
 
 
 def main():
     combinedData = parseCSV("csv/Combined_citations_matched.csv")
     combinedAnalysis = False
-    VenueAnalysis = False
-    applicationEngagementAnalysis = True
+    VenueAnalysis = True
+    applicationEngagementAnalysis = False
     targetApplicationAnalysis = False
+    groupedAnalysis = True
 
     # Top 30 venues for all citations
     if combinedAnalysis:
         topNcitations(combinedData, 30, "Combined")
         topNCitationsAcademicOnly(combinedData, 15, "Combined")
+        if groupedAnalysis:
+            doGroupedAnalysis(combinedData, "Combined")
 
     # Top 12 sources and venues for each conference
     if VenueAnalysis:
@@ -133,6 +185,11 @@ def main():
         topNcitations(SPData, 12, keyword="Oakland")
         topNCitationsAcademicOnly(SPData, 12, keyword="Oakland")
 
+        if groupedAnalysis:
+            doGroupedAnalysis(CryptoData, "Crypto")
+            doGroupedAnalysis(EuroCryptData, "EuroCrypt")
+            doGroupedAnalysis(USENIXData, "USENIX Data")
+            doGroupedAnalysis(SPData, "SPData")
 
     # Top 24 Sources for each AA Level
     if applicationEngagementAnalysis:
@@ -145,6 +202,7 @@ def main():
         topNcitations(AE2Data, 24, "Application Gesturing")
         topNcitations(AE3Data, 24, "Application Aware")
         topNcitations(AE4Data, 24, "Application Motivated")
+
 
     # Top 12 Sources for Each Top Level TA Group
     if targetApplicationAnalysis:
