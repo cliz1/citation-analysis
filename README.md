@@ -52,7 +52,7 @@ DBLP failures aren't all equal: request errors (timeouts, non-429 HTTP errors, d
 
 **Output:** `csv/<Conference>_citations_venues.csv` — one row per real citation with venue labels added; `csv/<Conference>_suspected_fps.csv` — suspected parser artifacts for manual audit.
 
-**Overall extraction rate (venue assigned):** EuroCrypt **95.1%**, Crypto **96.3%**, Oakland **93.2%**, USENIX **94.0%**. See [Known Limitations](#known-limitations) below for the full breakdown of unresolved citations and known regex tradeoffs.
+**Overall extraction rate (venue guess):** EuroCrypt **95.1%**, Crypto **96.3%**, Oakland **93.2%**, USENIX **94.0%**. See [Known Limitations](#known-limitations) below for the full breakdown of unresolved citations and known regex tradeoffs.
 
 ---
 
@@ -65,11 +65,10 @@ Takes `csv/<Conference>_citations_venues.csv` and normalizes the raw venue strin
 
 **Output:** `csv/<Conference>_citations_matched.csv` — same rows as the venues file with added `venue_matched` and `match_score` columns.
 
-**Overall matching rate:** EuroCrypt **83.0%**, Crypto **81.8%**, USENIX **74.7%**, Oakland **72.1%**. See [Known Limitations](#known-limitations) for what's driving the remainder.
 
 ---
 
-## Stage 4: Visualization
+## Stage 4: Visualization and Analysis
 
 ### `venue_charts.py`
 
@@ -79,6 +78,23 @@ Produces a per-conference bar chart of the top 15 cited venues. Reads all four `
 
 Breaks down venue citation share by application awareness level (from the Google Sheet). Produces `venue_by_awareness.pdf`.
 
+### `venue_analysis.py`
+
+Modifiable script for printing specific counts across a number of distributions. 
+
+---
+
+
+## Verification
+
+In order to ensure accurate data we engaged in a number of hand audits for each stage of the pipeline.
+
+**Stage 1, citation-count accuracy:** spot-checked against a hand-verified true count across 80 papers. Citation count is exact on 75.0% of papers and within ±1 on 87.5%, mean error 1.4% of true count. On the 40-paper subset also run through [GROBID](https://github.com/kermitt2/grobid) for comparison, our error (1.05%) is roughly a third of GROBID's (2.98%) — exact match 77.5% vs. 45.0%, within ±1 92.5% vs. 77.5%.
+
+**Stage 2/3, venue-assignment accuracy:** a hand-verified sample of 200 citations found the pipeline's final assigned venue correct **93.0%** of the time (186/200, after fixing regex bugs the check surfaced). Of the 14 misses: 8 are regex extraction defects, 4 got no venue at all, 2 are DBLP resolving to the wrong paper.
+
+**Stage 2/3, papers with high fuzzy confidence:** a hand-verified sample on our final data set assigned the correct venue **98%** of the time (196/200), with one of those errors being due to a multiple versions of the paper being published. 
+
 ---
 
 ## Known Limitations
@@ -86,8 +102,6 @@ Breaks down venue citation share by application awareness level (from the Google
 Everything below is a characterized, known gap in the pipeline.
 
 **Stage 1 (extraction):** hyphen artifacts from two-column PDF layouts fragment venue names; `dehyphenate()` mitigates but doesn't fully eliminate this. USENIX is worst-affected (two-column), EuroCrypt least (single-column LNCS). A small number of PDFs also have no detectable "References" heading, or have their final reference clipped by a directly-adjacent appendix section.
-
-**Stage 1, citation-count accuracy:** spot-checked against a hand-verified true count across 80 papers. Citation count is exact on 75.0% of papers and within ±1 on 87.5%, mean error 1.4% of true count. On the 40-paper subset also run through [GROBID](https://github.com/kermitt2/grobid) for comparison, our error (1.05%) is roughly a third of GROBID's (2.98%) — exact match 77.5% vs. 45.0%, within ±1 92.5% vs. 77.5%.
 
 **Stage 2 (venue assignment), structural gaps not pursued (would need architecture changes):**
 - **Back-references** (`In: Wiener [53], https://doi.org/...`) — points to another entry in the same bibliography; ~3 entries.
@@ -101,8 +115,6 @@ Everything below is a characterized, known gap in the pipeline.
 **Stage 2, DBLP resolution rate:** of citations that reach Pass 2 (regex found nothing), **54.7–59.7%** get a venue directly from DBLP — the rest fall through to Pass 3 (standards/grey-lit) or end unresolved as `"none"`. This is a resolution rate, not a correctness check: a DBLP hit is trusted as-is, with no independent verification that it matched the right paper. The title-extraction heuristic that builds the DBLP query is necessarily imprecise for citations with no clean title delimiter, which accounts for a real share of the misses.
 
 **Stage 2, venue assignment rate:** The following is the share of citations in each conference which are assigned a venue during stage 2: EuroCrypt **95.1%**, Crypto **96.3%**, Oakland **93.2%**, USENIX **94.0%**.
-
-**Stage 2/3, venue-assignment accuracy (spot-checked):** a hand-verified sample of 200 citations found the pipeline's final assigned venue correct **93.0%** of the time (186/200, after fixing regex bugs the check surfaced). Of the 14 misses: 8 are regex extraction defects, 4 got no venue at all, 2 are DBLP resolving to the wrong paper.
 
 **Stage 3 (matching)**, unmatched remainder by cause: upstream regex artifacts like `"Springer"` mis-extracted as a venue or truncated fragments (`"Annual Symposium on"`) — top unmatched string in 3 of 4 conferences, and not actually a Stage 3 gap; Pass 3 grey-lit/standards labels with no canonical form (`Tech. Rep.`, `PhD Thesis`, `Whitepaper`); and genuine `ABBREV_MAP` gaps (`VLDB`, `SIGMOD`, `NSDI`, `IACR PKC`).
 
