@@ -267,6 +267,7 @@ venueGroupings = {'CRYPTO':
 'General and Reference': ['SIAM Journal on Computing',
 'Communications of the ACM',
 'IEEE Access',
+'SN Computer Science',
 'IEEE Transactions on Computers',
 'Computer Science',
 'ACM Transactions on Computer Systems (TOCS)',
@@ -304,9 +305,16 @@ venueGroupings = {'CRYPTO':
 'BMC Medical Informatics & Decision Making',
 ],
 
-'UNGROUPED': [
-'web',
+'Preprints': [
 'arXiv',
+'ePrint',
+],
+
+'Web' : [
+'web'
+],
+
+'Non-Research Paper':[
 'GitHub',
 'Tech. Rep.',
 'PhD Thesis',
@@ -317,9 +325,11 @@ venueGroupings = {'CRYPTO':
 'Tech. Rep. National',
 'IETF Draft',
 'Whitepaper',
-'SN Computer Science',
 'Cambridge university press',
 'SIGACT News',
+],
+
+'UNGROUPED': [
 'Communications and Computer Sciences',
 'SIGMETRICS Performance Evaluation Review',
 'Bell Labs Technical Journal',
@@ -340,7 +350,6 @@ venueGroupings = {'CRYPTO':
 'Wiley',
 'Acta Informatica',
 'JSIAM Letters',
- 'ePrint',
 'Integration',
 'IEEE Journal of Selected Areas in Communications']}
 

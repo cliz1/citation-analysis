@@ -1,5 +1,5 @@
 # citation_export.py
-# Nathaniel Clizbe (github.com/cliz1), January 2026
+# [redacted], January 2026
 from pathlib import Path
 import fitz
 import re
@@ -19,7 +19,7 @@ import argparse
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
 # Paths
-ZOTERO_STORAGE = Path("/Users/nathanielclizbe/Zotero/storage/")
+ZOTERO_STORAGE = Path("/Users/[redacted]/Zotero/storage/")
 
 SPREADSHEET_ID = "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE"
 

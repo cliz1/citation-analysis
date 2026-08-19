@@ -12,14 +12,14 @@ CONFERENCES = ["Crypto", "EuroCrypt", "Oakland", "USENIX"]
 # Google Sheets (Stage 1)
 # -----------------------------
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1I2eZyK7PIhXEMwy30w8BgEcuRrLQQw4wK6GlxfAsuWE")
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "[redacted]")
 CREDENTIALS_FILE = Path(os.environ.get("CREDENTIALS_FILE", "credentials.json"))
 TOKEN_FILE = Path(os.environ.get("TOKEN_FILE", "token.pickle"))
 
 # -----------------------------
 # Local paths
 # -----------------------------
-ZOTERO_STORAGE = Path(os.environ.get("ZOTERO_STORAGE", "/Users/nathanielclizbe/Zotero/storage/"))
+ZOTERO_STORAGE = Path(os.environ.get("ZOTERO_STORAGE", "/Users/[redacted]/Zotero/storage/"))
 
 CSV_DIR = Path(os.environ.get("CSV_DIR", "csv"))
 JSON_DIR = Path(os.environ.get("JSON_DIR", "json"))

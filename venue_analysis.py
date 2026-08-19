@@ -51,7 +51,7 @@ def filterDataInclusiveList(inputData, comparisonList, location: int):
 
 
 # Takes a dictionary with venue and count pairs. Filters data into groupings based on our grouping.
-def filterToGroups(inputData):
+def filterToGroups(inputData, onlyAcademic = True):
     outputData = {}
     total = 0
     for groupingKey in venueGroupings.keys():
@@ -61,12 +61,12 @@ def filterToGroups(inputData):
         count = 0
         for groupingKey in venueGroupings.keys():
             if venue in venueGroupings[groupingKey]:
-                outputData[groupingKey] += inputData[venue]
                 failure = False
+                if not (onlyAcademic == False or not (groupingKey == "Web" or groupingKey == "Non-Research Paper")):
+                    continue
+                outputData[groupingKey] += inputData[venue]
                 count += 1
                 total += inputData[venue]
-            if count > 1:
-                print("WTF")
         if failure:
             print("FAILED TO FIND:", venue)
     return outputData, total
@@ -81,6 +81,23 @@ def countVenues(inputData):
         else:
             venueCounter[citation[7]] = 1
     return venueCounter
+
+
+# Takes a source and 2D array formated to our CSV data, calculates the probability squared.
+def calculateConcentration(inputData, label):
+    countOfLabelFromPaper = dict()
+    totalOfLabel = 0
+    for citation in inputData:
+        if citation[7] == label:
+            totalOfLabel += 1
+            if citation[0] in countOfLabelFromPaper:
+                countOfLabelFromPaper[citation[0]] += 1
+            else:
+                countOfLabelFromPaper[citation[0]] = 1
+    totalProbSquared = 0
+    for key in countOfLabelFromPaper:
+        totalProbSquared += (countOfLabelFromPaper[key]/totalOfLabel)**2
+    return totalProbSquared, countOfLabelFromPaper
 
 
 # Takes a dictionary of key and number pairs. Orders based on largest numbers and returns top n and the total count.
@@ -99,20 +116,22 @@ def topNVenues(inputData, n, filterNonAcademic = False):
             totalCount += v
     return topNData, totalCount
 
+
 # Takes a dict with labels and counts, outputs a Shannon's Entropy calculation, NOT normalized.
-def calculateShannonsEntropy(inputData, base=2, normalize = False):
+def calculateShannonsEntropy(inputData, base=2, normalize = True, countWeb = False):
     total = sum(inputData.values())
     entropy = 0
     countOfLabels = 0
-
-    for count in inputData.values():
+    for sourceLabel in inputData.keys():
+        if sourceLabel == "web" and countWeb == False:
+            continue
+        count = inputData[sourceLabel]
         if count > 0:
             p = count / total
             entropy -= p * math.log(p, base)
             countOfLabels += 1
     if normalize:
         entropy /= math.log(countOfLabels, base)
-
     return entropy
 
 
@@ -157,10 +176,11 @@ def doGroupedAnalysis(inputData, keyword):
 def main():
     combinedData = parseCSV("csv/Combined_citations_matched.csv")
     combinedAnalysis = False
-    VenueAnalysis = True
-    applicationEngagementAnalysis = False
+    VenueAnalysis = False
+    applicationEngagementAnalysis = True
     targetApplicationAnalysis = False
-    groupedAnalysis = True
+    groupedAnalysis = False
+    labelConcentration = False
 
     # Top 30 venues for all citations
     if combinedAnalysis:
@@ -201,8 +221,14 @@ def main():
         topNcitations(AE1Data, 24, "Application Agnostic")
         topNcitations(AE2Data, 24, "Application Gesturing")
         topNcitations(AE3Data, 24, "Application Aware")
-        topNcitations(AE4Data, 24, "Application Motivated")
+        topNcitations(AE4Data, 35, "Application Motivated")
 
+        if labelConcentration:
+            valueAE1, countDictAE1 = calculateConcentration(AE1Data, 'web')
+            valueAE2, countDictAE2 = calculateConcentration(AE2Data, 'web')
+            valueAE3, countDictAE3 = calculateConcentration(AE3Data, 'web')
+            valueAE4, countDictAE4 = calculateConcentration(AE4Data, 'web')
+            print("Concentration of each AE level in order:", valueAE1, valueAE2, valueAE3, valueAE4)
 
     # Top 12 Sources for Each Top Level TA Group
     if targetApplicationAnalysis:

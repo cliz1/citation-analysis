@@ -1,5 +1,5 @@
 # venue_export.py
-# Nathaniel Clizbe (github.com/cliz1), January 2026
+# [redacted]
 # Reads {CONFERENCE}_citations_raw.csv produced by citation_export.py and runs
 # venue extraction (regex → DBLP → standards → grey literature) on each citation.
 # Outputs {CONFERENCE}_citations_venues.csv and {CONFERENCE}_suspected_fps.csv.

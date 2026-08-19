@@ -14,8 +14,8 @@
 
 set -euo pipefail
 
-SKIP_EXTRACTION=false
-SKIP_VENUE=false
+SKIP_EXTRACTION=true
+SKIP_VENUE=true
 SKIP_MATCHING=false
 for arg in "$@"; do
     [[ "$arg" == "--skip-extraction" ]] && SKIP_EXTRACTION=true
