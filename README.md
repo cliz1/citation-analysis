@@ -8,6 +8,11 @@ Within this repository are two main sets of files, the definitions and data from
 
 Paper codes are available in Excel or CSVs, and the definitions used in said analysis are available in markdown or PDF.
 
+Our finalized citation analysis---after filtering out low fuzzy match papers---is available in `csv/Combined_citations_matched.csv`
+
+
+## Codebase Overview
+
 Our codebase extracts and analyzes citation distributions from academic security and cryptography papers. Papers are sourced from four conferences: **EuroCrypt**, **Crypto**, **Oakland (IEEE S&P)**, and **USENIX Security**.
 
 The pipeline runs in four stages across four scripts:
