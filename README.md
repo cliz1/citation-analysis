@@ -174,6 +174,12 @@ For analysis, `venue_matched` is the primary field to aggregate on. `venue_raw` 
 
 ---
 
+### `csv/Combined_citations_matched.csv`
+
+Finalized data set combining all individual citations, removing citations with low fuzzy match score, and adding extra columns to provide source paper information pulled from paper annotation.
+
+---
+
 ### `json/<Conference>_dblp_cache.json`
 
 Maps extracted title variants to their DBLP lookup result. Two value shapes:
