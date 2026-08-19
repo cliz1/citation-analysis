@@ -1,4 +1,4 @@
-# Citation Analysis Pipeline
+## Alice and Bob or Amazon and Bitcoin? Towards an Understanding of Cryptography’s Engagement With Application Open Science Artifact
 
 ## Overview
 
@@ -11,7 +11,7 @@ Paper codes are available in Excel or CSVs, and the definitions used in said ana
 Our finalized citation analysis---after filtering out low fuzzy match papers---is available in `csv/Combined_citations_matched.csv`
 
 
-## Codebase Overview
+## Citation Analysis Pipeline Codebase Overview
 
 Our codebase extracts and analyzes citation distributions from academic security and cryptography papers. Papers are sourced from four conferences: **EuroCrypt**, **Crypto**, **Oakland (IEEE S&P)**, and **USENIX Security**.
 
