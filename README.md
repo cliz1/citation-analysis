@@ -1,4 +1,4 @@
-## Alice and Bob or Amazon and Bitcoin? Towards an Understanding of Cryptography’s Engagement With Application Open Science Artifact
+# Alice and Bob or Amazon and Bitcoin? Towards an Understanding of Cryptography’s Engagement With Application, Open Science Artifact
 
 ## Overview
 
