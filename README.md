@@ -230,18 +230,6 @@ python venue_by_awareness.py
 ./run_all_conferences.sh [--skip-extraction] [--skip-venue] [--skip-matching]
 ```
 
-## Notes for future work
-
-**Prototypes** (`scripts/`, standalone — not wired into `config.py` or the main pipeline): `author_affiliations.py` classifies each paper's author affiliations as Academic/Government/Industry/Unknown and charts the split by application-awareness level; `web_venue_breakdown.py` is a work-in-progress keyword-based breakdown of the `"web"` citation bucket.
-
-**Adapting to a different or expanded corpus:**
-- `citation_export.py`'s Google Sheet loader assumes a fixed column layout (title in column A, a conference filter code in column C, app-awareness in column E) — a differently-structured sheet needs those column indices updated.
-- Adding a conference means a new sheet tab plus a new entry in `config.CONFERENCES`; the two must stay in sync.
-- Pass 1's regex patterns (`ABBREV_MAP`, `_DBLP_VENUE_MAP`, standards/grey-lit patterns) were hand-tuned against the venues that actually turned up across these four conferences' bibliographies — a corpus drawing from different subfields will hit venues these patterns don't cover yet.
-- Two-column vs. single-column PDF layout drives how much hyphenation noise survives extraction (USENIX/Oakland worst, EuroCrypt/Crypto's LNCS layout best) — check a new corpus's typical formatting against `dehyphenate()`'s assumptions.
-- DBLP's coverage is strong for CS/security venues but weak outside it; a corpus with more physics/math/interdisciplinary citations will see a lower Pass 2 resolution rate.
-- `DBLP_QUERY_DELAY_SECONDS` and `DBLP_MISS_CONFIRM_THRESHOLD` were tuned against this corpus's citation volume — a much larger corpus will hit DBLP's rate limits more often and may need a longer delay or higher miss-confirm threshold.
-
 ---
 
 ## AI Use Disclosure
