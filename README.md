@@ -184,20 +184,6 @@ Delete the cache file to force a fresh lookup for a conference.
 
 ---
 
-### `text/<Conference>/<title>.txt`
-
-Full extracted text of each matched PDF, one file per paper. Produced by `citation_export.py` so later stages (or re-parsing) don't require re-reading the PDFs.
-
-### `logs/<Conference>_dblp_misses.txt`
-
-Raw `raw_reference` strings for citations that failed every pass (regex, DBLP, standards, grey-lit) — the `venue_source = "none"` rows. Produced by `venue_export.py`; useful as an audit list when tuning Pass 1/3 patterns.
-
-The other `logs/*_run.txt` files (`_citation_run`, `_venue_run`, `_venue_match_run`) are raw stdout captured via `tee` when a stage is run — handy for pulling stats from a specific run (e.g. the DBLP resolution rate above), but they're overwritten on every re-run and have no fixed schema, so don't treat them as stable output. The old flat `<Conference>_run.txt` files predate the citation/venue/match split and are stale — not worth keeping.
-
-TODO: either put logs/_run.txt in here, or untrack them from repo/stop generating them in the scripts?
-
----
-
 ## Dependencies
 
 ```
