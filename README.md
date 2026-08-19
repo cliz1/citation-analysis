@@ -2,7 +2,13 @@
 
 ## Overview
 
-This project extracts and analyzes citation distributions from academic security and cryptography papers. Papers are sourced from four conferences: **EuroCrypt**, **Crypto**, **Oakland (IEEE S&P)**, and **USENIX Security**.
+This project contains all of the files necessary for evaluating the USENIX'27 submission: Alice and Bob or Amazon and Bitcoin? Towards an Understanding of Cryptography’s Engagement With Application.
+
+Within this repository are two main sets of files, the definitions and data from our coding and the code used in our citation analysis. 
+
+Paper codes are available in Excel or CSVs, and the definitions used in said analysis are available in markdown or PDF.
+
+Our codebase extracts and analyzes citation distributions from academic security and cryptography papers. Papers are sourced from four conferences: **EuroCrypt**, **Crypto**, **Oakland (IEEE S&P)**, and **USENIX Security**.
 
 The pipeline runs in four stages across four scripts:
 
@@ -11,8 +17,6 @@ citation_export.py  →  venue_export.py  →  venue_match.py  →  venue_charts
     stage 1               stage 2             stage 3                    stage 4
  (extraction)          (venue labels)       (normalization)           (visualization)
 ```
-
-See [Running the pipeline](#running-the-pipeline)
 
 ---
 
