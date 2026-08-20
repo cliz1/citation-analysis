@@ -8,7 +8,7 @@ Within this repository are two main sets of files, the definitions and data from
 
 Paper codes are available in Excel or CSVs, and the definitions used in said analysis are available in markdown or PDF.
 
-Our finalized citation analysis---after filtering out low fuzzy match papers---is available in `csv/Combined_citations_matched.csv`
+Our finalized citation analysis---after filtering out low fuzzy scored papers---is available in `csv/Combined_citations_matched.csv`
 
 
 ## Citation Analysis Pipeline Codebase Overview
