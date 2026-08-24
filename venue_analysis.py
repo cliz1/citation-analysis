@@ -15,12 +15,11 @@ targetApplicationMapping = {
     "OPI" : ['CNP', 'AUT', '1-BLK', 'ML', 'NWT', 'DAD'],
     "PDI" : ['CC', 'DCC', 'HWM'],
     "GOV" : ['DPI', 'SMG', 'DCC', 'SPG', 'PH', 'NIST', 'VOT', 'GVE', 'LE', 'NGO'],
-    "PRD" : ['ADD', 'WEB', 'MSG', 'LOC', 'BNK', 'PWD', 'DLD', 'RS', 'SE'],
+    "PRD" : ['ADD', 'WEB', 'MSG', 'LOC', 'PWD', 'DLD', 'RS', 'SE', 'BMD'],
     "PEP" : ['JUR', 'ACT', 'MIN', 'PGTS', 'IPS'],
     'FIN' : ['6-BLK', 'BNK', 'CUR', 'ASC'],
     'CRY' : ['CRY'],
     'PQC' : ['PQC'],
-    'BMD' : ['BMD']
 }
 
 
@@ -51,7 +50,7 @@ def filterDataInclusiveList(inputData, comparisonList, location: int):
 
 
 # Takes a dictionary with venue and count pairs. Filters data into groupings based on our grouping.
-def filterToGroups(inputData, onlyAcademic = True):
+def filterToGroups(inputData, onlyAcademic = False):
     outputData = {}
     total = 0
     for groupingKey in venueGroupings.keys():
@@ -119,13 +118,15 @@ def topNVenues(inputData, n, filterNonAcademic = False):
 
 # Takes a dict with labels and counts, outputs a Shannon's Entropy calculation, NOT normalized.
 def calculateShannonsEntropy(inputData, base=2, normalize = True, countWeb = False):
-    total = sum(inputData.values())
+    counts = {
+        label: count
+        for label, count in inputData.items()
+        if count > 0 and (label != "web" or countWeb)
+    }
+    total = sum(counts.values())
     entropy = 0
     countOfLabels = 0
-    for sourceLabel in inputData.keys():
-        if sourceLabel == "web" and countWeb == False:
-            continue
-        count = inputData[sourceLabel]
+    for count in counts.values():
         if count > 0:
             p = count / total
             entropy -= p * math.log(p, base)
@@ -175,12 +176,12 @@ def doGroupedAnalysis(inputData, keyword):
 
 def main():
     combinedData = parseCSV("csv/Combined_citations_matched.csv")
-    combinedAnalysis = False
-    VenueAnalysis = False
+    combinedAnalysis = True
+    VenueAnalysis = True
     applicationEngagementAnalysis = True
-    targetApplicationAnalysis = False
-    groupedAnalysis = False
-    labelConcentration = False
+    targetApplicationAnalysis = True
+    groupedAnalysis = True
+    labelConcentration = True
 
     # Top 30 venues for all citations
     if combinedAnalysis:
@@ -218,7 +219,7 @@ def main():
         AE3Data = filterData(combinedData, "3", 2)
         AE4Data = filterData(combinedData, "4", 2)
 
-        topNcitations(AE1Data, 24, "Application Agnostic")
+        topNcitations(AE1Data, 45, "Application Agnostic")
         topNcitations(AE2Data, 24, "Application Gesturing")
         topNcitations(AE3Data, 24, "Application Aware")
         topNcitations(AE4Data, 35, "Application Motivated")
