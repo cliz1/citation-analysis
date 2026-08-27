@@ -336,7 +336,6 @@ Top level subfields:
 'Tech. Rep.',  
 'PhD Thesis',  
 'NIST Submission',  
-'web\_forum',  
 'Cambridge University Press',  
 'Technological Standards and Reports',  
 'Tech. Rep. National',  
