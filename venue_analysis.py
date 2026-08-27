@@ -176,11 +176,11 @@ def doGroupedAnalysis(inputData, keyword):
 
 def main():
     combinedData = parseCSV("csv/Combined_citations_matched.csv")
-    combinedAnalysis = True
-    VenueAnalysis = True
+    combinedAnalysis = False
+    VenueAnalysis = False
     applicationEngagementAnalysis = True
-    targetApplicationAnalysis = True
-    groupedAnalysis = True
+    targetApplicationAnalysis = False
+    groupedAnalysis = False
     labelConcentration = True
 
     # Top 30 venues for all citations
@@ -197,13 +197,13 @@ def main():
         USENIXData = filterData(combinedData, "USENIX", 1)
         SPData = filterData(combinedData, "Oakland", 1)
 
-        topNcitations(CryptoData, 12, "Crypto")
+        topNcitations(CryptoData, 55, "Crypto")
         topNCitationsAcademicOnly(CryptoData, 12, "Crypto")
-        topNcitations(EuroCryptData, 12, "EuroCrypt")
+        topNcitations(EuroCryptData, 55, "EuroCrypt")
         topNCitationsAcademicOnly(EuroCryptData, 12, "EuroCrypt")
-        topNcitations(USENIXData, 12, "USENIX")
+        topNcitations(USENIXData, 35, "USENIX")
         topNCitationsAcademicOnly(USENIXData, 12, "USENIX")
-        topNcitations(SPData, 12, keyword="Oakland")
+        topNcitations(SPData, 35, keyword="Oakland")
         topNCitationsAcademicOnly(SPData, 12, keyword="Oakland")
 
         if groupedAnalysis:
